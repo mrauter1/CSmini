@@ -9,6 +9,11 @@ import type { ParticipantIdentity } from "./protocol";
 import type { RoomTransport, RoomTransportEvents, RoomTransportStatus } from "./transport";
 
 const DATA_CHANNEL_LABEL = "dustline-room";
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+];
 
 interface WebRtcTransportOptions {
   roomId: string;
@@ -23,7 +28,7 @@ export class WebRtcRoomTransport implements RoomTransport {
   readonly localPeerId: string;
 
   private readonly connection = new RTCPeerConnection({
-    iceServers: [],
+    iceServers: DEFAULT_ICE_SERVERS,
     bundlePolicy: "max-bundle",
   });
   private dataChannel?: RTCDataChannel;
