@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const ROOT_URL = "http://127.0.0.1:4173/";
 const PREVIEW_PORT = "4173";
-const DEBUG_PORT = "9226";
+const DEBUG_PORT = "9223";
 const DEBUG_ORIGIN = `http://127.0.0.1:${DEBUG_PORT}`;
 const MAP_ID = "sandline-foundry";
 
@@ -83,19 +83,22 @@ function startProcess(command, args, options = {}) {
 
 async function stopProcess(record) {
   const child = record?.child;
-  if (!child) {
+  if (!child?.pid) {
     return;
   }
 
-  if (child.exitCode !== null || child.signalCode !== null) {
-    await Promise.race([
-      new Promise((resolve) => child.once("close", resolve)),
-      delay(250),
-    ]);
-    return;
-  }
+  const processGroupExists = () => {
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        return false;
+      }
+      throw error;
+    }
+  };
 
-  const waitForClose = new Promise((resolve) => child.once("close", resolve));
   const killTree = (signal) => {
     try {
       process.kill(-child.pid, signal);
@@ -106,15 +109,34 @@ async function stopProcess(record) {
     }
   };
 
-  killTree("SIGTERM");
+  if (!processGroupExists()) {
+    await Promise.race([
+      new Promise((resolve) => child.once("close", resolve)),
+      delay(250),
+    ]);
+    return;
+  }
 
-  const closedAfterTerm = await Promise.race([waitForClose.then(() => true), delay(2_000).then(() => false)]);
-  if (closedAfterTerm) {
+  const waitForProcessGroupExit = async (timeoutMs) => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (!processGroupExists()) {
+        return true;
+      }
+      await delay(100);
+    }
+
+    return !processGroupExists();
+  };
+
+  killTree("SIGTERM");
+  if (await waitForProcessGroupExit(2_000)) {
     return;
   }
 
   killTree("SIGKILL");
-  await Promise.race([waitForClose, delay(2_000)]);
+  await waitForProcessGroupExit(2_000);
 }
 
 class CdpPage {

@@ -81,19 +81,22 @@ function startProcess(command, args) {
 
 async function stopProcess(record) {
   const child = record?.child;
-  if (!child) {
+  if (!child?.pid) {
     return;
   }
 
-  if (child.exitCode !== null || child.signalCode !== null) {
-    await Promise.race([
-      new Promise((resolve) => child.once("close", resolve)),
-      delay(250),
-    ]);
-    return;
-  }
+  const processGroupExists = () => {
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        return false;
+      }
+      throw error;
+    }
+  };
 
-  const waitForClose = new Promise((resolve) => child.once("close", resolve));
   const killTree = (signal) => {
     try {
       process.kill(-child.pid, signal);
@@ -104,15 +107,34 @@ async function stopProcess(record) {
     }
   };
 
-  killTree("SIGTERM");
+  if (!processGroupExists()) {
+    await Promise.race([
+      new Promise((resolve) => child.once("close", resolve)),
+      delay(250),
+    ]);
+    return;
+  }
 
-  const closedAfterTerm = await Promise.race([waitForClose.then(() => true), delay(2_000).then(() => false)]);
-  if (closedAfterTerm) {
+  const waitForProcessGroupExit = async (timeoutMs) => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (!processGroupExists()) {
+        return true;
+      }
+      await delay(100);
+    }
+
+    return !processGroupExists();
+  };
+
+  killTree("SIGTERM");
+  if (await waitForProcessGroupExit(2_000)) {
     return;
   }
 
   killTree("SIGKILL");
-  await Promise.race([waitForClose, delay(2_000)]);
+  await waitForProcessGroupExit(2_000);
 }
 
 class CdpPage {
@@ -322,22 +344,32 @@ async function sendInputTick(page, movementX, movementZ, sprint = false) {
   );
 }
 
-async function hasRemoteInputReceipt(
+async function hasRemoteMovementAndInputReceipt(
   page,
+  initial,
   movementX,
   movementZ,
   sprint = false,
+  minimumDistance = 0.25,
 ) {
+  assert(initial, "Remote player was missing before the input-delivery check.");
   return page.evaluate(
     `(() => {
       const remote = window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0];
-      if (!remote) {
+      if (!remote?.position) {
         return false;
       }
 
-      return Math.abs((remote.inputMovement?.x ?? 0) - ${movementX}) < 0.01 &&
+      const inputMatches =
+        Math.abs((remote.inputMovement?.x ?? 0) - ${movementX}) < 0.01 &&
         Math.abs((remote.inputMovement?.z ?? 0) - ${movementZ}) < 0.01 &&
         Boolean(remote.inputSprint) === ${JSON.stringify(sprint)};
+      const movedDistance = Math.hypot(
+        remote.position.x - ${initial.x},
+        remote.position.z - ${initial.z},
+      );
+
+      return inputMatches && movedDistance > ${minimumDistance};
     })()`,
   );
 }
@@ -345,6 +377,7 @@ async function hasRemoteInputReceipt(
 async function driveGuestInputUntilObserved(
   hostPage,
   joinPage,
+  initialPosition,
   movementX,
   movementZ,
   sprint = false,
@@ -352,20 +385,26 @@ async function driveGuestInputUntilObserved(
 ) {
   const startedAt = Date.now();
 
-  await joinPage.bringToFront();
   await clearInputState(joinPage);
   await setInputState(joinPage, movementX, movementZ, sprint);
+  await hostPage.bringToFront();
 
   while (Date.now() - startedAt < timeoutMs) {
     await sendInputTick(joinPage, movementX, movementZ, sprint);
-    await hostPage.bringToFront();
 
-    if (await hasRemoteInputReceipt(hostPage, movementX, movementZ, sprint)) {
+    if (
+      await hasRemoteMovementAndInputReceipt(
+        hostPage,
+        initialPosition,
+        movementX,
+        movementZ,
+        sprint,
+      )
+    ) {
       return true;
     }
 
     await delay(120);
-    await joinPage.bringToFront();
   }
 
   return false;
@@ -373,6 +412,10 @@ async function driveGuestInputUntilObserved(
 
 async function clearInputState(page) {
   await page.evaluate("window.__dustlineQa__.clearInputState()");
+}
+
+async function teleportHost(page, x, z, yaw = 0) {
+  await page.evaluate(`window.__dustlineQa__.setPose(${x}, ${z}, ${yaw})`);
 }
 
 async function main() {
@@ -424,6 +467,11 @@ async function main() {
       "(window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0) === 2",
       10_000,
     );
+    await hostPage.bringToFront();
+    await hostPage.waitForExpression(
+      "(window.__dustlineQa__?.getState()?.match?.roomConnection?.lastSnapshotId ?? 0) > 0",
+      10_000,
+    );
     await joinPage.waitForExpression(
       "(window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0) > 0",
       10_000,
@@ -431,8 +479,9 @@ async function main() {
 
     const initialGuestOnHost = await readRemotePosition(hostPage);
     assert(
-      (await driveGuestInputUntilObserved(hostPage, joinPage, 0, 1, true)) === true,
-      "Guest input tick was not observed by the host.",
+      (await driveGuestInputUntilObserved(hostPage, joinPage, initialGuestOnHost, 0, 1, true)) ===
+        true,
+      "Guest input delivery was not reflected in the host state.",
     );
     const hostRemoteAfterGuestInput = await readRemotePosition(hostPage);
     const hostRemoteInputState = await hostPage.evaluate(
@@ -444,17 +493,19 @@ async function main() {
       "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
     );
     const initialHostOnGuest = await readRemotePosition(joinPage);
+    const hostLocalBeforeMove = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.position ?? null",
+    );
+    assert(hostLocalBeforeMove, "Host local position was unavailable before the host snapshot test.");
     await hostPage.bringToFront();
-    await setInputState(hostPage, 1, 0, true);
-    await delay(1_000);
-    await joinPage.bringToFront();
-    await delay(250);
-    await waitForRemoteMovement(joinPage, initialHostOnGuest);
+    await teleportHost(hostPage, hostLocalBeforeMove.x + 1.5, hostLocalBeforeMove.z, 0);
     await joinPage.waitForExpression(
       `(window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0) > ${guestSnapshotBeforeHostMove}`,
       10_000,
     );
-    await clearInputState(hostPage);
+    await joinPage.bringToFront();
+    await delay(250);
+    await waitForRemoteMovement(joinPage, initialHostOnGuest);
     const guestRemoteAfterHostInput = await readRemotePosition(joinPage);
     const guestSnapshotAfterHostMove = await joinPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
