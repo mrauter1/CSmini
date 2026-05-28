@@ -294,7 +294,7 @@ export function renderMapStage(
                 <p class="hud-label">Deploy Controls</p>
                 <h2>Pointer Lock Ready</h2>
                 <p data-ui="prompt">
-                  Click the viewport to lock the mouse. WASD moves, Shift sprints, ${escapeHtml(crouchLabel)} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.
+                  Click the viewport to lock the mouse. WASD moves, ${escapeHtml(crouchLabel)} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.
                 </p>
                 <div class="hud-overlay__actions">
                   <button class="button button--primary" data-action="lock-match">Lock Controls</button>
@@ -328,7 +328,7 @@ export function renderMapStage(
             <button class="button button--primary" data-action="show-menu">Return to Briefing</button>
           </div>
           <div class="control-grid">
-            ${controlHint("Move", "WASD + Shift")}
+            ${controlHint("Move", "WASD")}
             ${controlHint("Crouch", crouchLabel, "crouch-control")}
             ${controlHint("Jump", "Space")}
             ${controlHint("Interact", "E")}

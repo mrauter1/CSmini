@@ -38,7 +38,6 @@ import {
   PLAYER_CROUCH_MULTIPLIER,
   PLAYER_GRAVITY,
   PLAYER_JUMP_VELOCITY,
-  PLAYER_SPRINT_MULTIPLIER,
   PLAYER_WALK_SPEED,
   STANDING_EYE_HEIGHT,
   createPlayerMovementState,
@@ -51,7 +50,6 @@ import {
 import {
   CLASSIC_CROUCH_KEY_CODES,
   CROUCH_KEY_CODES,
-  SPRINT_KEY_CODES,
   crouchControlLabel,
   hasAnyKey,
 } from "./controls";
@@ -485,8 +483,6 @@ export class LocalMatch {
           standingEyeHeight: Number(STANDING_EYE_HEIGHT.toFixed(2)),
           crouchEyeHeight: Number(CROUCH_EYE_HEIGHT.toFixed(2)),
           walkSpeed: Number(PLAYER_WALK_SPEED.toFixed(2)),
-          sprintMultiplier: Number(PLAYER_SPRINT_MULTIPLIER.toFixed(2)),
-          sprintSpeed: Number((PLAYER_WALK_SPEED * PLAYER_SPRINT_MULTIPLIER).toFixed(2)),
           crouchMultiplier: Number(PLAYER_CROUCH_MULTIPLIER.toFixed(2)),
           crouchSpeed: Number((PLAYER_WALK_SPEED * PLAYER_CROUCH_MULTIPLIER).toFixed(2)),
           airControl: Number(PLAYER_AIR_CONTROL.toFixed(2)),
@@ -793,7 +789,6 @@ export class LocalMatch {
           enabled: true,
           moveX: 0,
           moveZ: 0,
-          sprinting: false,
           crouching: false,
           jumpRequested: frame === 0,
         },
@@ -1791,7 +1786,6 @@ export class LocalMatch {
         enabled: this.inputCaptured() && !this.playerDead,
         moveX,
         moveZ,
-        sprinting: hasAnyKey(this.movementKeys, SPRINT_KEY_CODES),
         crouching: this.crouchHeld(),
         jumpRequested: this.jumpRequested,
       },
@@ -3504,14 +3498,14 @@ export class LocalMatch {
     const crouchLabel = crouchControlLabel(this.classicCrouchAlias);
 
     if (this.activeMode === "shared") {
-      return `Click the viewport to engage controls. WASD moves, Shift sprints, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
+      return `Click the viewport to engage controls. WASD moves, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
     }
 
     if (this.options.mode === "shared" && this.sharedRoomFallbackReason) {
-      return `Click the viewport to engage controls. Shared-room sync could not start here, so the app stayed in the solo round without crashing. WASD moves, Shift sprints, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
+      return `Click the viewport to engage controls. Shared-room sync could not start here, so the app stayed in the solo round without crashing. WASD moves, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
     }
 
-    return `Click the viewport to engage controls. Pointer lock is used when available; fallback mouse-look stays browser-safe. WASD moves, Shift sprints, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
+    return `Click the viewport to engage controls. Pointer lock is used when available; fallback mouse-look stays browser-safe. WASD moves, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
   }
 
   private publishRoomState(force = false): void {

@@ -664,7 +664,7 @@ async function main() {
     );
     await dispatchWindowKey(localPage, "keyup", "ControlLeft", "Control");
 
-    await dispatchWindowKey(localPage, "keydown", "KeyZ", "z");
+    await dispatchWindowKey(localPage, "keydown", "ShiftLeft", "Shift");
     await localPage.waitForExpression(
       `(() => (window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? ${standingY}) < ${standingY - 0.25})()`,
       2_000,
@@ -674,7 +674,7 @@ async function main() {
       crouchState.localPlayer.position.y < standingY - 0.25,
       `Expected crouch to lower the camera. Standing ${standingY}, crouched ${crouchState.localPlayer.position.y}`,
     );
-    await dispatchWindowKey(localPage, "keyup", "KeyZ", "z");
+    await dispatchWindowKey(localPage, "keyup", "ShiftLeft", "Shift");
     await localPage.waitForExpression(
       `Math.abs((window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? 0) - ${standingY}) < 0.08`,
       2_000,
@@ -689,7 +689,7 @@ async function main() {
 
     await localPage.evaluate("window.__dustlineQa__.setPose(0, 14, 0)");
     await delay(120);
-    await dispatchWindowKey(localPage, "keydown", "KeyZ", "z");
+    await dispatchWindowKey(localPage, "keydown", "ShiftLeft", "Shift");
     await localPage.waitForExpression(
       `(() => (window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? ${standingY}) < ${standingY - 0.25})()`,
       2_000,
@@ -697,7 +697,7 @@ async function main() {
     const startCrouchMove = await getState(localPage);
     await holdKey(localPage, "KeyW", "w", 900);
     const endCrouchMove = await getState(localPage);
-    await dispatchWindowKey(localPage, "keyup", "KeyZ", "z");
+    await dispatchWindowKey(localPage, "keyup", "ShiftLeft", "Shift");
     await localPage.waitForExpression(
       `Math.abs((window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? 0) - ${standingY}) < 0.08`,
       3_000,
@@ -1551,7 +1551,7 @@ async function main() {
       checklist: {
         movementCadence: {
           result: "pass",
-          evidence: `Walk ${localBombStart.tuning.movement.walkSpeed}u/s, sprint ${localBombStart.tuning.movement.sprintSpeed}u/s, crouch ${localBombStart.tuning.movement.crouchSpeed}u/s; same-window move sample ${summary.movement.standingDistance} vs ${summary.movement.crouchDistance}.`,
+          evidence: `Walk ${localBombStart.tuning.movement.walkSpeed}u/s, crouch ${localBombStart.tuning.movement.crouchSpeed}u/s; same-window move sample ${summary.movement.standingDistance} vs ${summary.movement.crouchDistance}.`,
         },
         crouchReadability: {
           result: "pass",

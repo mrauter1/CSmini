@@ -21,8 +21,6 @@ Evidence base for this note:
 - Standing eye height: `1.62`
 - Crouched eye height: `1.08`
 - Walk speed: `8.6u/s`
-- Sprint multiplier: `1.12x`
-- Sprint speed: `9.63u/s`
 - Crouch multiplier: `0.56x`
 - Crouch speed: `4.82u/s`
 - Air control: `0.78`
@@ -30,7 +28,7 @@ Evidence base for this note:
 - Jump velocity: `5.25`
 - Fresh jump sample: peak `2.59`, landing `1.62`, airtime `0.767s`
 
-Rationale: the walk speed keeps rounds moving, but the limited sprint edge and strong crouch penalty keep corner clearing deliberate. The jump arc is readable and brief enough to avoid turning the prototype into an arena shooter.
+Rationale: the walk speed keeps rounds moving, but there is no sprint layer; the strong crouch penalty keeps corner clearing deliberate. The jump arc is readable and brief enough to avoid turning the prototype into an arena shooter.
 
 ### Weapon cadence
 
@@ -84,7 +82,7 @@ Test surfaces used for the checklist:
 ### Checklist Results
 
 - Movement cadence: `pass`
-  Evidence: fresh same-window travel sample was `1.03` standing vs `0.79` crouched, with walk `8.6u/s`, sprint `9.63u/s`, and crouch `4.82u/s`.
+  Evidence: fresh same-window travel sample was `1.03` standing vs `0.79` crouched, with walk `8.6u/s` and crouch `4.82u/s`.
 - Crouch readability: `pass`
   Evidence: camera dropped from `1.62` to `1.18` in the live sample, crouch speed stayed at `56%` of walk pace, and recoil kick dropped from `0.8` standing to `0.58` crouched.
 - Jump readability: `pass`

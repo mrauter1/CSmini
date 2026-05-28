@@ -26,8 +26,7 @@ Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The cu
 ## Controls
 
 - `WASD`: move
-- `Shift`: sprint
-- `Z`: crouch
+- `Shift`: crouch
 - `Ctrl`: optional classic crouch alias when enabled in match controls
 - `Space`: jump
 - `E`: objective interaction

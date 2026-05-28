@@ -8,7 +8,6 @@ export const CROUCH_EYE_HEIGHT = 1.08;
 export const STANDING_BODY_HEIGHT = 1.72;
 export const CROUCH_BODY_HEIGHT = 1.18;
 export const PLAYER_WALK_SPEED = 8.6;
-export const PLAYER_SPRINT_MULTIPLIER = 1.12;
 export const PLAYER_CROUCH_MULTIPLIER = 0.56;
 export const PLAYER_AIR_CONTROL = 0.78;
 export const PLAYER_GRAVITY = 13.6;
@@ -26,7 +25,6 @@ export interface MovementInputState {
   enabled: boolean;
   moveX: number;
   moveZ: number;
-  sprinting: boolean;
   crouching: boolean;
   jumpRequested: boolean;
 }
@@ -143,12 +141,8 @@ export function updatePlayerMovement(
 
     const movementScale = state.grounded ? 1 : PLAYER_AIR_CONTROL;
     const crouchScale = THREE.MathUtils.lerp(1, PLAYER_CROUCH_MULTIPLIER, state.crouchBlend);
-    const sprintScale =
-      input.sprinting && state.grounded && state.crouchBlend < 0.1
-        ? PLAYER_SPRINT_MULTIPLIER
-        : 1;
     const length = Math.hypot(input.moveX, input.moveZ);
-    const speed = PLAYER_WALK_SPEED * crouchScale * sprintScale * movementScale;
+    const speed = PLAYER_WALK_SPEED * crouchScale * movementScale;
 
     tempDelta
       .copy(tempForward)
