@@ -82,6 +82,21 @@ import {
   opposingTeam,
   resolveTeamPreference,
 } from "./teams";
+import {
+  buildPatrolRoute,
+  buildTacticalProfile,
+  buildVisibilityPoints,
+  chooseRepositionAnchor,
+  evaluateEnemyShotProfile,
+  evaluateVisibility,
+  resolveObjectiveAnchor,
+  rollEnemyShot,
+  type EnemyBehavior,
+  type EnemyShotProfile,
+  type EnemyStance,
+  type TacticalAnchor,
+  type TacticalProfile,
+} from "./tacticalAi";
 
 const FIRE_INTERVAL = 0.18;
 const RELOAD_DURATION = 1.05;
@@ -90,12 +105,19 @@ const RESERVE_AMMO = 120;
 const PLAYER_DAMAGE = 34;
 const ENEMY_DAMAGE = 14;
 const ENEMY_SPEED = 2.35;
-const ENEMY_FIRE_INTERVAL = 0.82;
-const ENEMY_ENGAGE_DISTANCE = 19;
+const ENEMY_FIRE_INTERVAL = 0.92;
+const ENEMY_ENGAGE_DISTANCE = 20;
 const HIT_INDICATOR_DURATION = 0.16;
 const DAMAGE_FLASH_DURATION = 0.2;
 const MUZZLE_FLASH_DURATION = 0.06;
 const REMOTE_LERP_SPEED = 12;
+const ENEMY_INVESTIGATION_WINDOW = 3.8;
+const ENEMY_PURSUIT_WINDOW = 4.8;
+const ENEMY_REPOSITION_WINDOW = 2.2;
+const PLAYER_NOISE_INTERVAL = 0.28;
+const PLAYER_NOISE_HEARING_RADIUS = 19;
+const ENEMY_CROUCH_EYE_HEIGHT = 1.08;
+const ENEMY_STANDING_EYE_HEIGHT = 1.45;
 
 const ENEMY_NAMES = ["Copper-2", "Vale-3", "Rook-4"];
 
@@ -174,6 +196,32 @@ interface EnemyActor {
   moveBlend: number;
   hitFlashUntil: number;
   spawnPoint: THREE.Vector3;
+  ai: {
+    role: "anchor" | "route" | "flank";
+    behavior: EnemyBehavior;
+    stance: EnemyStance;
+    targetLabel: string;
+    targetPosition: THREE.Vector3;
+    objectiveAnchor: TacticalAnchor;
+    patrolRoute: TacticalAnchor[];
+    patrolIndex: number;
+    lastKnownPlayerPosition: THREE.Vector3 | null;
+    lastHeardPosition: THREE.Vector3 | null;
+    lastSeenAt: number;
+    lastHeardAt: number;
+    lastDamagedAt: number;
+    lastVisibility: number;
+    canSeePlayer: boolean;
+    blockedBy: string | null;
+    repositionReason: "cover" | "angle" | null;
+    shotsFired: number;
+    shotHits: number;
+    shotMisses: number;
+    lastShotAt: number;
+    lastShotOutcome: "hit" | "miss" | null;
+    lastShotProfile: EnemyShotProfile | null;
+    rngState: number;
+  };
 }
 
 interface RemoteActor {
@@ -214,6 +262,7 @@ export class LocalMatch {
   private readonly controls: PointerLockControls;
   private readonly clock = new THREE.Clock();
   private readonly collisionWorld: CollisionWorld;
+  private readonly tacticalProfile: TacticalProfile;
   private readonly audio = new RetroAudio();
   private readonly environmentRaycastMeshes: THREE.Object3D[] = [];
   private readonly enemyRaycastMeshes: THREE.Object3D[] = [];
@@ -229,6 +278,7 @@ export class LocalMatch {
   private readonly tempDelta = new THREE.Vector3();
   private readonly tempLook = new THREE.Vector3();
   private readonly tempHitPoint = new THREE.Vector3();
+  private readonly tempEnemyMove = new THREE.Vector3();
   private readonly shotRay = new THREE.Ray();
   private readonly remoteHitBox = new THREE.Box3();
   private readonly lookEuler = new THREE.Euler(0, 0, 0, "YXZ");
@@ -265,11 +315,14 @@ export class LocalMatch {
   private jumpRequested = false;
   private interactHeld = false;
   private playerMoveBlend = 0;
+  private playerSpeed = 0;
   private playerGrounded = true;
   private playerCrouching = false;
   private playerEyeHeight = currentEyeHeight(createPlayerMovementState());
   private qaInvulnerable = false;
   private readonly hostageActors = new Map<string, HostageActor>();
+  private readonly lastPlayerNoisePosition = new THREE.Vector3();
+  private lastPlayerNoiseAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly host: HTMLElement,
@@ -311,6 +364,11 @@ export class LocalMatch {
 
     this.collisionWorld = buildCollisionWorld(map);
     this.teamSpawnPositions = this.collectTeamSpawnPositions();
+    this.tacticalProfile = buildTacticalProfile(
+      map,
+      this.collisionWorld,
+      currentBodyHeight(this.movementState),
+    );
     this.sharedRoom = this.initializeSharedRoom();
 
     this.host.replaceChildren(this.renderer.domElement);
@@ -386,6 +444,7 @@ export class LocalMatch {
         pointerCaptured: this.inputCaptured(),
         grounded: this.playerGrounded,
         crouching: this.playerCrouching,
+        speed: Number(this.playerSpeed.toFixed(2)),
         position: {
           x: Number(this.camera.position.x.toFixed(2)),
           y: Number(this.camera.position.y.toFixed(2)),
@@ -409,6 +468,48 @@ export class LocalMatch {
       },
       teamCounts: this.teamCountsSnapshot(),
       roster: this.rosterSnapshot(),
+      enemies: this.enemies.map((enemy) => ({
+        id: enemy.id,
+        name: enemy.name,
+        alive: enemy.alive,
+        health: enemy.health,
+        position: this.toPoint(enemy.avatar.group.position, 0),
+        ai: {
+          role: enemy.ai.role,
+          behavior: enemy.ai.behavior,
+          stance: enemy.ai.stance,
+          targetLabel: enemy.ai.targetLabel,
+          targetPosition: this.toPoint(enemy.ai.targetPosition, 0),
+          objectiveLabel: enemy.ai.objectiveAnchor.label,
+          patrolRoute: enemy.ai.patrolRoute.map((anchor) => anchor.label),
+          patrolIndex: enemy.ai.patrolIndex,
+          canSeePlayer: enemy.ai.canSeePlayer,
+          visibility: Number(enemy.ai.lastVisibility.toFixed(3)),
+          blockedBy: enemy.ai.blockedBy,
+          repositionReason: enemy.ai.repositionReason,
+          lastSeenAgo:
+            enemy.ai.lastSeenAt > Number.NEGATIVE_INFINITY
+              ? Number((this.gameNow() - enemy.ai.lastSeenAt).toFixed(2))
+              : null,
+          lastHeardAgo:
+            enemy.ai.lastHeardAt > Number.NEGATIVE_INFINITY
+              ? Number((this.gameNow() - enemy.ai.lastHeardAt).toFixed(2))
+              : null,
+          lastDamagedAgo:
+            enemy.ai.lastDamagedAt > Number.NEGATIVE_INFINITY
+              ? Number((this.gameNow() - enemy.ai.lastDamagedAt).toFixed(2))
+              : null,
+          shotsFired: enemy.ai.shotsFired,
+          shotHits: enemy.ai.shotHits,
+          shotMisses: enemy.ai.shotMisses,
+          lastShotAt:
+            enemy.ai.lastShotAt > Number.NEGATIVE_INFINITY
+              ? Number(enemy.ai.lastShotAt.toFixed(2))
+              : null,
+          lastShotOutcome: enemy.ai.lastShotOutcome,
+          lastShotProfile: enemy.ai.lastShotProfile,
+        },
+      })),
       remotePlayers: [...this.remoteActors.values()].map((actor) => ({
         id: actor.id,
         name: actor.name,
@@ -693,6 +794,99 @@ export class LocalMatch {
     return this.findRemoteShotTarget(environmentDistance)?.id ?? null;
   }
 
+  debugStageAiSightlineCase():
+    | {
+        enemyId: string;
+        enemyLabel: string;
+        blockerName: string;
+        enemyPosition: { x: number; y: number; z: number };
+        blockedPlayerPosition: { x: number; y: number; z: number };
+        clearPlayerPosition: { x: number; y: number; z: number };
+        blockedPlayerLabel: string;
+        clearPlayerLabel: string;
+      }
+    | null {
+    if (this.activeMode !== "local") {
+      return null;
+    }
+
+    const caseData = this.findAiSightlineCase();
+    if (!caseData) {
+      return null;
+    }
+
+    const enemy = this.enemies.find((entry) => entry.id === caseData.enemyId);
+    if (!enemy) {
+      return null;
+    }
+
+    enemy.avatar.group.position.copy(caseData.enemyPosition);
+    enemy.avatar.group.lookAt(
+      caseData.blockedPlayerPosition.x,
+      this.playerEyeHeight,
+      caseData.blockedPlayerPosition.z,
+    );
+    this.configureEnemyAi(enemy, this.enemies.indexOf(enemy));
+    this.lastPlayerNoiseAt = Number.NEGATIVE_INFINITY;
+    this.lastPlayerNoisePosition.copy(caseData.blockedPlayerPosition);
+    this.debugSetView(
+      caseData.blockedPlayerPosition.x,
+      currentEyeHeight(this.movementState),
+      caseData.blockedPlayerPosition.z,
+      caseData.enemyPosition.x,
+      ENEMY_STANDING_EYE_HEIGHT,
+      caseData.enemyPosition.z,
+    );
+
+    return {
+      enemyId: enemy.id,
+      enemyLabel: enemy.name,
+      blockerName: caseData.blockerName,
+      enemyPosition: this.toPoint(caseData.enemyPosition, ENEMY_STANDING_EYE_HEIGHT),
+      blockedPlayerPosition: this.toPoint(
+        caseData.blockedPlayerPosition,
+        currentEyeHeight(this.movementState),
+      ),
+      clearPlayerPosition: this.toPoint(
+        caseData.clearPlayerPosition,
+        currentEyeHeight(this.movementState),
+      ),
+      blockedPlayerLabel: caseData.blockedPlayerLabel,
+      clearPlayerLabel: caseData.clearPlayerLabel,
+    };
+  }
+
+  debugEvaluateEnemyShot(
+    combatantId: string,
+    overrides?: Partial<{
+      distance: number;
+      visibility: number;
+      targetSpeed: number;
+      shooterSpeed: number;
+      targetCrouching: boolean;
+      shooterCrouching: boolean;
+    }>,
+  ): EnemyShotProfile | null {
+    const enemy = this.enemies.find((entry) => entry.id === combatantId);
+    if (!enemy) {
+      return null;
+    }
+
+    return evaluateEnemyShotProfile({
+      distance:
+        overrides?.distance ??
+        enemy.avatar.group.position.distanceTo(
+          new THREE.Vector3(this.camera.position.x, 0, this.camera.position.z),
+        ),
+      visibility: overrides?.visibility ?? enemy.ai.lastVisibility,
+      targetSpeed: overrides?.targetSpeed ?? this.playerSpeed,
+      shooterSpeed: overrides?.shooterSpeed ?? (enemy.ai.behavior === "engage" ? 0.35 : ENEMY_SPEED),
+      targetCrouching: overrides?.targetCrouching ?? this.playerCrouching,
+      shooterCrouching:
+        overrides?.shooterCrouching ?? enemy.ai.stance === "crouched",
+    });
+  }
+
   private roundNow(): number {
     return Date.now() / 1000;
   }
@@ -838,6 +1032,7 @@ export class LocalMatch {
     this.playerHealth = 100;
     this.playerDead = false;
     this.playerMoveBlend = 0;
+    this.playerSpeed = 0;
     this.playerGrounded = true;
     this.playerCrouching = false;
     this.reloadEndsAt = 0;
@@ -854,6 +1049,8 @@ export class LocalMatch {
     this.movementState.crouchBlend = 0;
     this.movementState.spectatorUntil = 0;
     this.playerEyeHeight = currentEyeHeight(this.movementState);
+    this.lastPlayerNoiseAt = Number.NEGATIVE_INFINITY;
+    this.lastPlayerNoisePosition.copy(this.teamSpawnPositions[this.localTeamId]);
 
     this.spawnPlayer();
 
@@ -935,9 +1132,42 @@ export class LocalMatch {
         moveBlend: 0,
         hitFlashUntil: 0,
         spawnPoint,
+        ai: {
+          role: index === 0 ? "anchor" : index === 1 ? "route" : "flank",
+          behavior: index === 0 ? "objective" : "patrol",
+          stance: "standing",
+          targetLabel: "Spawn",
+          targetPosition: spawnPoint.clone(),
+          objectiveAnchor: resolveObjectiveAnchor(
+            this.tacticalProfile,
+            this.map,
+            this.roundState.activeMission,
+            this.bombState,
+            this.hostageState,
+            this.enemyTeamId,
+          ),
+          patrolRoute: [],
+          patrolIndex: 0,
+          lastKnownPlayerPosition: null,
+          lastHeardPosition: null,
+          lastSeenAt: Number.NEGATIVE_INFINITY,
+          lastHeardAt: Number.NEGATIVE_INFINITY,
+          lastDamagedAt: Number.NEGATIVE_INFINITY,
+          lastVisibility: 0,
+          canSeePlayer: false,
+          blockedBy: null,
+          repositionReason: null,
+          shotsFired: 0,
+          shotHits: 0,
+          shotMisses: 0,
+          lastShotAt: Number.NEGATIVE_INFINITY,
+          lastShotOutcome: null,
+          lastShotProfile: null,
+          rngState: (((index + 1) * 0x9e3779b9) ^ (this.roundState.roundNumber * 2654435761)) >>> 0,
+        },
       };
 
-      this.configureEnemyWaypoints(enemy, index);
+      this.configureEnemyAi(enemy, index);
       this.enemies.push(enemy);
     }
   }
@@ -954,7 +1184,7 @@ export class LocalMatch {
       enemy.spawnPoint = this.enemySpawnPoint(index);
       enemy.avatar.group.position.copy(enemy.spawnPoint);
       enemy.avatar.group.rotation.set(0, 0, 0);
-      this.configureEnemyWaypoints(enemy, index);
+      this.configureEnemyAi(enemy, index);
     }
   }
 
@@ -975,44 +1205,55 @@ export class LocalMatch {
     );
   }
 
-  private configureEnemyWaypoints(enemy: EnemyActor, index: number): void {
-    const focusLookup = new Map(
-      this.map.scene.focusPoints.map((focusPoint) => [focusPoint.id, focusPoint]),
+  private configureEnemyAi(enemy: EnemyActor, index: number): void {
+    const objectiveAnchor = resolveObjectiveAnchor(
+      this.tacticalProfile,
+      this.map,
+      this.roundState.activeMission,
+      this.bombState,
+      this.hostageState,
+      this.enemyTeamId,
     );
-    const routeTargets = this.map.tacticalRoutes
-      .map((routeNote) => focusLookup.get(routeNote.focusId))
-      .filter((focusPoint): focusPoint is NonNullable<typeof focusPoint> => Boolean(focusPoint))
-      .map((focusPoint) => new THREE.Vector3(focusPoint.target[0], 0, focusPoint.target[2]));
-    const missionFocus = focusLookup.get(this.roundState.activeMission.focusId);
-    const missionTarget = missionFocus
-      ? new THREE.Vector3(missionFocus.target[0], 0, missionFocus.target[2])
-      : enemy.spawnPoint.clone();
-    const routeA = routeTargets[index % Math.max(routeTargets.length, 1)] ?? enemy.spawnPoint.clone();
-    const routeB =
-      routeTargets[(index + 1) % Math.max(routeTargets.length, 1)] ?? missionTarget.clone();
+    const patrolRoute = buildPatrolRoute(
+      this.tacticalProfile,
+      objectiveAnchor,
+      enemy.spawnPoint,
+      index,
+    );
 
-    enemy.waypoints = [
-      enemy.spawnPoint.clone(),
-      findOpenGroundPosition(
-        this.collisionWorld,
-        routeA,
-        PLAYER_RADIUS,
-        currentBodyHeight(this.movementState),
-      ),
-      findOpenGroundPosition(
-        this.collisionWorld,
-        routeB,
-        PLAYER_RADIUS,
-        currentBodyHeight(this.movementState),
-      ),
-      findOpenGroundPosition(
-        this.collisionWorld,
-        missionTarget,
-        PLAYER_RADIUS,
-        currentBodyHeight(this.movementState),
-      ),
-    ];
+    enemy.waypoints = patrolRoute.map((anchor) => anchor.position.clone());
     enemy.waypointIndex = 0;
+    enemy.ai.objectiveAnchor = objectiveAnchor;
+    enemy.ai.patrolRoute = patrolRoute;
+    enemy.ai.patrolIndex = Math.min(index, Math.max(0, patrolRoute.length - 1));
+    enemy.ai.behavior = enemy.ai.role === "anchor" ? "objective" : "patrol";
+    enemy.ai.stance = "standing";
+    enemy.ai.targetLabel =
+      enemy.ai.behavior === "objective"
+        ? objectiveAnchor.label
+        : patrolRoute[enemy.ai.patrolIndex]?.label ?? objectiveAnchor.label;
+    enemy.ai.targetPosition.copy(
+      enemy.ai.behavior === "objective"
+        ? objectiveAnchor.position
+        : patrolRoute[enemy.ai.patrolIndex]?.position ?? objectiveAnchor.position,
+    );
+    enemy.ai.lastKnownPlayerPosition = null;
+    enemy.ai.lastHeardPosition = null;
+    enemy.ai.lastSeenAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.lastHeardAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.lastDamagedAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.lastVisibility = 0;
+    enemy.ai.canSeePlayer = false;
+    enemy.ai.blockedBy = null;
+    enemy.ai.repositionReason = null;
+    enemy.ai.shotsFired = 0;
+    enemy.ai.shotHits = 0;
+    enemy.ai.shotMisses = 0;
+    enemy.ai.lastShotAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.lastShotOutcome = null;
+    enemy.ai.lastShotProfile = null;
+    enemy.ai.rngState =
+      (((index + 1) * 0x9e3779b9) ^ (this.roundState.roundNumber * 2654435761)) >>> 0;
   }
 
   private resetRemoteActorsForRound(): void {
@@ -1409,6 +1650,9 @@ export class LocalMatch {
     if (this.movementKeys.has("KeyD")) moveX += 1;
     if (this.movementKeys.has("KeyA")) moveX -= 1;
 
+    const previousX = this.camera.position.x;
+    const previousZ = this.camera.position.z;
+
     const movement = updatePlayerMovement(
       this.movementState,
       this.camera,
@@ -1435,6 +1679,20 @@ export class LocalMatch {
     this.playerGrounded = movement.grounded;
     this.playerCrouching = movement.crouching;
     this.playerEyeHeight = movement.eyeHeight;
+    const horizontalDistance = Math.hypot(
+      this.camera.position.x - previousX,
+      this.camera.position.z - previousZ,
+    );
+    this.playerSpeed = delta > 0 ? horizontalDistance / delta : 0;
+
+    if (
+      this.roundState.phase === "active" &&
+      !this.playerDead &&
+      this.playerSpeed > (this.playerCrouching ? 1.95 : 2.85) &&
+      now - this.lastPlayerNoiseAt >= PLAYER_NOISE_INTERVAL
+    ) {
+      this.registerPlayerNoise(now);
+    }
 
     if (!this.inputCaptured() || this.playerDead) {
       return;
@@ -2137,6 +2395,7 @@ export class LocalMatch {
     );
     this.muzzleFlashUntil = now + MUZZLE_FLASH_DURATION;
     this.audio.fire();
+    this.registerPlayerNoise(now);
 
     this.scene.updateMatrixWorld(true);
     this.attackDirection.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
@@ -2184,6 +2443,7 @@ export class LocalMatch {
 
       enemy.health = Math.max(0, enemy.health - PLAYER_DAMAGE);
       enemy.hitFlashUntil = now + 0.12;
+      this.noteEnemyContact(enemy, now);
       this.hitIndicatorUntil = now + HIT_INDICATOR_DURATION;
       this.audio.hitConfirm();
 
@@ -2278,6 +2538,9 @@ export class LocalMatch {
   }
 
   private updateEnemies(delta: number, now: number): void {
+    const playerFeet = new THREE.Vector3(this.camera.position.x, 0, this.camera.position.z);
+    const playerVisibilityPoints = this.playerVisibilityPoints();
+
     for (const enemy of this.enemies) {
       enemy.recoil = THREE.MathUtils.damp(enemy.recoil, 0, 12, delta);
 
@@ -2298,66 +2561,214 @@ export class LocalMatch {
         continue;
       }
 
-      const playerFeet = new THREE.Vector3(this.camera.position.x, 0, this.camera.position.z);
-      const toPlayer = playerFeet.clone().sub(enemy.avatar.group.position);
-      const playerDistance = toPlayer.length();
-      const canEngage =
-        !this.playerDead &&
-        playerDistance <= ENEMY_ENGAGE_DISTANCE &&
-        hasLineOfSight(
-          this.collisionWorld,
-          enemy.avatar.group.position.clone().setY(1.45),
-          this.camera.position.clone(),
-        );
-
-      if (canEngage) {
-        enemy.avatar.group.lookAt(playerFeet.x, 0.9, playerFeet.z);
-
-        if (now >= enemy.nextFireAt) {
-          enemy.nextFireAt = now + ENEMY_FIRE_INTERVAL + Math.random() * 0.18;
-          enemy.recoil = 0.8;
-          this.applyPlayerDamage(ENEMY_DAMAGE, enemy.name, now);
-        }
-
-        enemy.moveBlend = THREE.MathUtils.damp(enemy.moveBlend, 0.18, 8, delta);
-        enemy.avatar.update(
-          now,
-          enemy.moveBlend,
-          true,
-          enemy.recoil,
-          enemy.hitFlashUntil > now ? 1 : 0,
-        );
-        continue;
+      const objectiveAnchor = resolveObjectiveAnchor(
+        this.tacticalProfile,
+        this.map,
+        this.roundState.activeMission,
+        this.bombState,
+        this.hostageState,
+        this.enemyTeamId,
+      );
+      if (enemy.ai.objectiveAnchor.focusId !== objectiveAnchor.focusId) {
+        this.configureEnemyAi(enemy, this.enemies.indexOf(enemy));
+      } else {
+        enemy.ai.objectiveAnchor = objectiveAnchor;
       }
 
-      const target = enemy.waypoints[enemy.waypointIndex] ?? enemy.spawnPoint;
-      const toWaypoint = target.clone().sub(enemy.avatar.group.position);
-      const distance = toWaypoint.length();
+      const previousVisibility = enemy.ai.canSeePlayer;
+      const enemyPosition = enemy.avatar.group.position;
+      const enemyEye = this.enemyEyePosition(enemy);
+      const toPlayer = playerFeet.clone().sub(enemyPosition);
+      const playerDistance = toPlayer.length();
+      const visibility = !this.playerDead
+        ? evaluateVisibility(this.collisionWorld, enemyEye, playerVisibilityPoints)
+        : 0;
+      const canSeePlayer =
+        !this.playerDead &&
+        playerDistance <= ENEMY_ENGAGE_DISTANCE &&
+        visibility >= 0.34;
+      enemy.ai.canSeePlayer = canSeePlayer;
+      enemy.ai.lastVisibility = visibility;
+      enemy.ai.blockedBy = canSeePlayer
+        ? null
+        : this.findBlockingGeometryName(enemyEye, this.camera.position.clone());
 
-      if (distance < 0.9) {
-        enemy.waypointIndex = (enemy.waypointIndex + 1) % enemy.waypoints.length;
+      const heardPlayer =
+        now - this.lastPlayerNoiseAt <= 1.6 &&
+        enemyPosition.distanceTo(this.lastPlayerNoisePosition) <= PLAYER_NOISE_HEARING_RADIUS;
+      if (heardPlayer) {
+        enemy.ai.lastHeardAt = now;
+        enemy.ai.lastHeardPosition = this.lastPlayerNoisePosition.clone();
+      }
+
+      if (canSeePlayer) {
+        enemy.ai.lastSeenAt = now;
+        enemy.ai.lastKnownPlayerPosition = playerFeet.clone();
+      }
+
+      let behavior: EnemyBehavior = enemy.ai.role === "anchor" ? "objective" : "patrol";
+      let stance: EnemyStance = enemy.ai.role === "anchor" ? "crouched" : "standing";
+      let targetPosition = enemy.ai.objectiveAnchor.position.clone();
+      let targetLabel = enemy.ai.objectiveAnchor.label;
+      let desiredSpeed = ENEMY_SPEED * 0.86;
+      let shotProfile: EnemyShotProfile | null = null;
+      let shouldShoot = false;
+      enemy.ai.repositionReason = null;
+
+      if (canSeePlayer) {
+        shotProfile = evaluateEnemyShotProfile({
+          distance: playerDistance,
+          visibility,
+          shooterSpeed: enemy.moveBlend > 0.45 ? ENEMY_SPEED : 0,
+          targetSpeed: this.playerSpeed,
+          targetCrouching: this.playerCrouching,
+          shooterCrouching: enemy.ai.stance === "crouched",
+        });
+
+        const underPressure = now - enemy.ai.lastDamagedAt <= ENEMY_REPOSITION_WINDOW;
+        const repositionChoice =
+          underPressure || visibility < 0.56 || playerDistance < 4.4
+            ? chooseRepositionAnchor({
+                profile: this.tacticalProfile,
+                world: this.collisionWorld,
+                bodyHeight: this.enemyBodyHeight(enemy),
+                enemyPosition,
+                enemyEyeHeight: this.enemyEyeHeight(enemy),
+                playerPosition: playerFeet,
+                playerVisibilityPoints,
+                objectiveAnchor: enemy.ai.objectiveAnchor,
+              })
+            : null;
+        const fallbackAnchor =
+          repositionChoice?.anchor ??
+          enemy.ai.patrolRoute[(enemy.ai.patrolIndex + 1) % Math.max(enemy.ai.patrolRoute.length, 1)] ??
+          enemy.ai.objectiveAnchor;
+
+        if (underPressure) {
+          behavior = "reposition";
+          stance = repositionChoice?.reason === "cover" ? "crouched" : "standing";
+          targetPosition = fallbackAnchor.position.clone();
+          targetLabel = fallbackAnchor.label;
+          desiredSpeed = ENEMY_SPEED * 1.04;
+          enemy.ai.repositionReason = repositionChoice?.reason ?? "angle";
+        } else if (repositionChoice) {
+          behavior = "reposition";
+          stance = repositionChoice.reason === "cover" ? "crouched" : "standing";
+          targetPosition = repositionChoice.anchor.position.clone();
+          targetLabel = repositionChoice.anchor.label;
+          desiredSpeed = ENEMY_SPEED * 1.04;
+          enemy.ai.repositionReason = repositionChoice.reason;
+        } else if (playerDistance > 11.5) {
+          behavior = "pursue";
+          stance = "standing";
+          targetPosition = playerFeet.clone();
+          targetLabel = "Last seen angle";
+          desiredSpeed = ENEMY_SPEED;
+          shouldShoot = visibility >= 0.72;
+        } else {
+          behavior = "engage";
+          stance = visibility < 0.58 ? "crouched" : "standing";
+          targetPosition = enemyPosition.clone();
+          targetLabel = visibility >= 0.72 ? "Clear shot" : "Partial angle";
+          desiredSpeed = playerDistance > 6.2 ? ENEMY_SPEED * 0.32 : 0;
+          shouldShoot = true;
+        }
+      } else if (
+        enemy.ai.lastKnownPlayerPosition &&
+        now - enemy.ai.lastSeenAt <= ENEMY_PURSUIT_WINDOW
+      ) {
+        behavior = "pursue";
+        stance = "standing";
+        targetPosition = enemy.ai.lastKnownPlayerPosition.clone();
+        targetLabel = "Last known position";
+        desiredSpeed = ENEMY_SPEED * 1.04;
+      } else if (
+        enemy.ai.lastHeardPosition &&
+        now - enemy.ai.lastHeardAt <= ENEMY_INVESTIGATION_WINDOW
+      ) {
+        behavior = "investigate";
+        stance = "standing";
+        targetPosition = enemy.ai.lastHeardPosition.clone();
+        targetLabel = "Sound contact";
+        desiredSpeed = ENEMY_SPEED * 0.95;
+      } else if (enemy.ai.role === "anchor") {
+        behavior = "objective";
+        stance = enemy.ai.role === "anchor" ? "crouched" : "standing";
+        targetPosition = enemy.ai.objectiveAnchor.position.clone();
+        targetLabel = enemy.ai.objectiveAnchor.label;
+        desiredSpeed = ENEMY_SPEED * 0.82;
       } else {
-        toWaypoint.normalize();
-        const deltaMove = new THREE.Vector3(
-          toWaypoint.x * ENEMY_SPEED * delta,
+        behavior = "patrol";
+        stance = "standing";
+        const routeTarget =
+          enemy.ai.patrolRoute[enemy.ai.patrolIndex] ?? enemy.ai.objectiveAnchor;
+        targetPosition = routeTarget.position.clone();
+        targetLabel = routeTarget.label;
+        desiredSpeed = ENEMY_SPEED * 0.88;
+      }
+
+      const toTarget = targetPosition.clone().sub(enemyPosition);
+      const targetDistance = toTarget.length();
+      if (behavior === "patrol" && targetDistance < 0.9 && enemy.ai.patrolRoute.length > 0) {
+        enemy.ai.patrolIndex = (enemy.ai.patrolIndex + 1) % enemy.ai.patrolRoute.length;
+        const nextPatrol = enemy.ai.patrolRoute[enemy.ai.patrolIndex] ?? enemy.ai.objectiveAnchor;
+        targetPosition = nextPatrol.position.clone();
+        targetLabel = nextPatrol.label;
+      }
+
+      const shouldMove = targetDistance > 0.5 && desiredSpeed > 0.02;
+      if (shouldMove) {
+        toTarget.normalize();
+        this.tempEnemyMove.set(
+          toTarget.x * desiredSpeed * delta,
           0,
-          toWaypoint.z * ENEMY_SPEED * delta,
+          toTarget.z * desiredSpeed * delta,
         );
 
         const next = resolveHorizontalMovement(
           this.collisionWorld,
-          enemy.avatar.group.position,
-          deltaMove,
+          enemyPosition,
+          this.tempEnemyMove,
           PLAYER_RADIUS * 0.9,
-          currentBodyHeight(this.movementState),
+          this.enemyBodyHeight(enemy, stance),
         );
 
-        enemy.avatar.group.position.x = next.x;
-        enemy.avatar.group.position.z = next.z;
-        enemy.avatar.group.lookAt(target.x, 0.9, target.z);
+        enemyPosition.x = next.x;
+        enemyPosition.z = next.z;
       }
 
-      enemy.moveBlend = THREE.MathUtils.damp(enemy.moveBlend, 1, 8, delta);
+      enemy.ai.behavior = behavior;
+      enemy.ai.stance = stance;
+      enemy.ai.targetLabel = targetLabel;
+      enemy.ai.targetPosition.copy(targetPosition);
+
+      const lookTarget = canSeePlayer ? playerFeet : targetPosition;
+      enemy.avatar.group.lookAt(lookTarget.x, this.enemyEyeHeight(enemy), lookTarget.z);
+
+      if (canSeePlayer && shotProfile && !previousVisibility) {
+        enemy.nextFireAt = Math.max(enemy.nextFireAt, now + shotProfile.reactionSeconds);
+      }
+
+      if (canSeePlayer && shouldShoot && shotProfile && now >= enemy.nextFireAt) {
+        const rolled = rollEnemyShot(enemy.ai.rngState, shotProfile);
+        enemy.ai.rngState = rolled.state;
+        enemy.ai.shotsFired += 1;
+        enemy.ai.lastShotAt = now;
+        enemy.ai.lastShotProfile = shotProfile;
+        enemy.ai.lastShotOutcome = rolled.result.hit ? "hit" : "miss";
+        enemy.nextFireAt =
+          now + ENEMY_FIRE_INTERVAL + shotProfile.missChance * 0.16 + Math.abs(rolled.result.offsetYawDegrees) * 0.01;
+        enemy.recoil = 0.8;
+
+        if (rolled.result.hit) {
+          enemy.ai.shotHits += 1;
+          this.applyPlayerDamage(ENEMY_DAMAGE, enemy.name, now);
+        } else {
+          enemy.ai.shotMisses += 1;
+        }
+      }
+
+      enemy.moveBlend = THREE.MathUtils.damp(enemy.moveBlend, shouldMove ? 1 : 0.16, 8, delta);
       enemy.avatar.update(
         now,
         enemy.moveBlend,
@@ -3003,6 +3414,180 @@ export class LocalMatch {
 
   private inputCaptured(): boolean {
     return this.controls.isLocked || this.fallbackLookEnabled;
+  }
+
+  private enemyEyeHeight(enemy: EnemyActor, stance = enemy.ai.stance): number {
+    return stance === "crouched" ? ENEMY_CROUCH_EYE_HEIGHT : ENEMY_STANDING_EYE_HEIGHT;
+  }
+
+  private enemyEyePosition(enemy: EnemyActor, stance = enemy.ai.stance): THREE.Vector3 {
+    return enemy.avatar.group.position.clone().setY(this.enemyEyeHeight(enemy, stance));
+  }
+
+  private enemyBodyHeight(enemy: EnemyActor, stance = enemy.ai.stance): number {
+    return stance === "crouched" ? 1.28 : 1.72;
+  }
+
+  private playerVisibilityPoints(): THREE.Vector3[] {
+    return buildVisibilityPoints(
+      new THREE.Vector3(this.camera.position.x, 0, this.camera.position.z),
+      this.playerEyeHeight,
+      this.playerCrouching,
+    );
+  }
+
+  private registerPlayerNoise(now: number): void {
+    this.lastPlayerNoiseAt = now;
+    this.lastPlayerNoisePosition.set(this.camera.position.x, 0, this.camera.position.z);
+  }
+
+  private noteEnemyContact(enemy: EnemyActor, now: number): void {
+    enemy.ai.lastDamagedAt = now;
+    enemy.ai.lastKnownPlayerPosition = new THREE.Vector3(
+      this.camera.position.x,
+      0,
+      this.camera.position.z,
+    );
+    enemy.ai.lastSeenAt = now;
+  }
+
+  private findBlockingGeometryName(origin: THREE.Vector3, target: THREE.Vector3): string | null {
+    const direction = target.clone().sub(origin);
+    const distance = direction.length();
+
+    if (distance <= 0.01) {
+      return null;
+    }
+
+    direction.normalize();
+    this.scene.updateMatrixWorld(true);
+    this.raycaster.set(origin, direction);
+
+    const hit = this.raycaster.intersectObjects(this.environmentRaycastMeshes, false)[0];
+    if (!hit || hit.distance >= distance - 0.2) {
+      return null;
+    }
+
+    return hit.object.name || "blocking geometry";
+  }
+
+  private findAiSightlineCase():
+    | {
+        enemyId: string;
+        enemyPosition: THREE.Vector3;
+        blockedPlayerPosition: THREE.Vector3;
+        clearPlayerPosition: THREE.Vector3;
+        blockedPlayerLabel: string;
+        clearPlayerLabel: string;
+        blockerName: string;
+      }
+    | null {
+    const enemy = this.enemies.find((entry) => entry.alive) ?? this.enemies[0];
+    if (!enemy) {
+      return null;
+    }
+
+    const playerEyeHeight = currentEyeHeight(this.movementState);
+    let bestCase:
+      | {
+          enemyPosition: THREE.Vector3;
+          blockedPlayerPosition: THREE.Vector3;
+          clearPlayerPosition: THREE.Vector3;
+          blockedPlayerLabel: string;
+          clearPlayerLabel: string;
+          blockerName: string;
+          score: number;
+        }
+      | null = null;
+
+    for (const enemyAnchor of this.tacticalProfile.anchors) {
+      const objectiveDistance = enemyAnchor.position.distanceTo(enemy.ai.objectiveAnchor.position);
+      if (objectiveDistance > 14) {
+        continue;
+      }
+
+      const enemyEye = enemyAnchor.position.clone().setY(ENEMY_STANDING_EYE_HEIGHT);
+
+      for (const blockedAnchor of this.tacticalProfile.anchors) {
+        if (blockedAnchor.id === enemyAnchor.id) {
+          continue;
+        }
+
+        const blockedDistance = enemyAnchor.position.distanceTo(blockedAnchor.position);
+        if (blockedDistance < 6 || blockedDistance > 20) {
+          continue;
+        }
+
+        const blockedVisibility = evaluateVisibility(
+          this.collisionWorld,
+          enemyEye,
+          buildVisibilityPoints(blockedAnchor.position, playerEyeHeight, false),
+        );
+        if (blockedVisibility > 0.05) {
+          continue;
+        }
+
+        const blockerName = this.findBlockingGeometryName(
+          enemyEye,
+          blockedAnchor.position.clone().setY(playerEyeHeight),
+        );
+        if (!blockerName) {
+          continue;
+        }
+
+        for (const clearAnchor of this.tacticalProfile.anchors) {
+          if (clearAnchor.id === enemyAnchor.id || clearAnchor.id === blockedAnchor.id) {
+            continue;
+          }
+
+          const clearDistance = enemyAnchor.position.distanceTo(clearAnchor.position);
+          if (clearDistance < 6 || clearDistance > 20) {
+            continue;
+          }
+
+          const clearVisibility = evaluateVisibility(
+            this.collisionWorld,
+            enemyEye,
+            buildVisibilityPoints(clearAnchor.position, playerEyeHeight, false),
+          );
+          if (clearVisibility < 0.67) {
+            continue;
+          }
+
+          const score =
+            objectiveDistance +
+            blockedAnchor.position.distanceTo(clearAnchor.position) * 0.14 +
+            clearDistance * 0.1;
+          if (bestCase && score >= bestCase.score) {
+            continue;
+          }
+
+          bestCase = {
+            enemyPosition: enemyAnchor.position.clone(),
+            blockedPlayerPosition: blockedAnchor.position.clone(),
+            clearPlayerPosition: clearAnchor.position.clone(),
+            blockedPlayerLabel: blockedAnchor.label,
+            clearPlayerLabel: clearAnchor.label,
+            blockerName,
+            score,
+          };
+        }
+      }
+    }
+
+    if (!bestCase) {
+      return null;
+    }
+
+    return {
+      enemyId: enemy.id,
+      enemyPosition: bestCase.enemyPosition,
+      blockedPlayerPosition: bestCase.blockedPlayerPosition,
+      clearPlayerPosition: bestCase.clearPlayerPosition,
+      blockedPlayerLabel: bestCase.blockedPlayerLabel,
+      clearPlayerLabel: bestCase.clearPlayerLabel,
+      blockerName: bestCase.blockerName,
+    };
   }
 
   private findDebugDuelPair(): [THREE.Vector3, THREE.Vector3] | null {

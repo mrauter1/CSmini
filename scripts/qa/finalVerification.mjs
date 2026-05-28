@@ -422,6 +422,21 @@ async function aimAt(page, combatantId) {
   assert(aimed, `Could not aim at combatant ${combatantId}`);
 }
 
+async function stageAiSightlineCase(page) {
+  const sightlineCase = await page.evaluate("window.__dustlineQa__.stageAiSightlineCase()");
+  assert(sightlineCase, "Expected a deterministic AI sightline case");
+  await delay(180);
+  return sightlineCase;
+}
+
+async function evaluateEnemyShot(page, combatantId, overrides = undefined) {
+  const profile = await page.evaluate(
+    `window.__dustlineQa__.evaluateEnemyShot(${JSON.stringify(combatantId)}, ${JSON.stringify(overrides)})`,
+  );
+  assert(profile, `Expected an AI shot profile for ${combatantId}`);
+  return profile;
+}
+
 async function startPreview() {
   const preview = startProcess("npm", [
     "run",
@@ -475,6 +490,8 @@ async function main() {
       respawn: {},
       bombLocal: {},
       hostageLocal: {},
+      aiLocal: {},
+      aiSoloRound: {},
       bombShared: {},
       hostageShared: {},
       shared: {},
@@ -818,7 +835,235 @@ async function main() {
       phaseAfterReset: localHostageReset.round.phase,
     };
 
+    await setTeamPreference(localPage, "amber");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await setInvulnerable(localPage, true);
+    await forceRoundActive(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
+      5_000,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemies = window.__dustlineQa__?.getState()?.enemies ?? [];
+          return enemies.some((enemy) => enemy?.ai?.behavior === 'objective')
+            && enemies.some((enemy) => enemy?.ai?.behavior === 'patrol');
+        })()
+      `,
+      6_000,
+    );
+
+    const aiOpeningState = await getState(localPage);
+    const openingBehaviors = aiOpeningState.enemies.map((enemy) => enemy.ai.behavior);
+    const sightlineCase = await stageAiSightlineCase(localPage);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.ai?.canSeePlayer === false && Boolean(enemy?.ai?.blockedBy);
+        })()
+      `,
+      4_000,
+    );
+    const blockedSightState = await getState(localPage);
+    const blockedEnemy = blockedSightState.enemies.find(
+      (enemy) => enemy.id === sightlineCase.enemyId,
+    );
+    assert(blockedEnemy, "Expected blocked-sight AI state for the staged enemy");
+    assert(
+      blockedEnemy.ai.canSeePlayer === false,
+      "Expected the staged AI wall case to block direct detection",
+    );
+
+    await fire(localPage);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.ai?.behavior === 'investigate';
+        })()
+      `,
+      4_000,
+    );
+    const investigateState = await getState(localPage);
+    const investigateEnemy = investigateState.enemies.find(
+      (enemy) => enemy.id === sightlineCase.enemyId,
+    );
+    assert(
+      investigateEnemy?.ai?.shotsFired === 0,
+      "Expected the blocked-sight investigate case to withhold fire through geometry",
+    );
+
+    await setView(localPage, sightlineCase.clearPlayerPosition, sightlineCase.enemyPosition);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.ai?.canSeePlayer === true
+            && enemy?.ai?.shotsFired >= 4
+            && enemy?.ai?.shotHits >= 1
+            && enemy?.ai?.shotMisses >= 1;
+        })()
+      `,
+      12_000,
+    );
+    const engageState = await getState(localPage);
+    const engageEnemy = engageState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
+    assert(engageEnemy?.ai?.behavior === "engage", "Expected the staged AI to enter engage behavior");
+
+    await aimAt(localPage, sightlineCase.enemyId);
+    await fire(localPage);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.ai?.behavior === 'reposition';
+        })()
+      `,
+      5_000,
+    );
+    const repositionState = await getState(localPage);
+    const repositionEnemy = repositionState.enemies.find(
+      (enemy) => enemy.id === sightlineCase.enemyId,
+    );
+
+    await setView(localPage, sightlineCase.blockedPlayerPosition, sightlineCase.enemyPosition);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.ai?.canSeePlayer === false && enemy?.ai?.behavior === 'pursue';
+        })()
+      `,
+      6_000,
+    );
+    const pursueState = await getState(localPage);
+    const pursueEnemy = pursueState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
+
+    const closeStandingShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
+      distance: 6,
+      visibility: 1,
+      shooterSpeed: 0,
+      targetSpeed: 0.2,
+      targetCrouching: false,
+      shooterCrouching: false,
+    });
+    const farMovingShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
+      distance: 18,
+      visibility: 0.62,
+      shooterSpeed: 1.8,
+      targetSpeed: 3.8,
+      targetCrouching: false,
+      shooterCrouching: false,
+    });
+    const crouchedPartialShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
+      distance: 10,
+      visibility: 0.35,
+      shooterSpeed: 0.3,
+      targetSpeed: 1.2,
+      targetCrouching: true,
+      shooterCrouching: true,
+    });
+
+    assert(
+      closeStandingShot.hitChance > farMovingShot.hitChance,
+      "Expected long-range moving targets to lower AI hit chance",
+    );
+    assert(
+      closeStandingShot.hitChance > crouchedPartialShot.hitChance,
+      "Expected crouched partial exposure to lower AI hit chance",
+    );
+    assert(
+      farMovingShot.spreadDegrees > closeStandingShot.spreadDegrees,
+      "Expected movement and range to widen AI spread",
+    );
+    assert(
+      crouchedPartialShot.missChance > closeStandingShot.missChance,
+      "Expected crouch and visibility penalties to raise AI miss chance",
+    );
+
+    summary.aiLocal = {
+      mapId: aiOpeningState.mapId,
+      roundMission: aiOpeningState.round.missionLabel,
+      observedOpeningBehaviors: openingBehaviors,
+      sightlineCase: {
+        blockerName: sightlineCase.blockerName,
+        blockedPlayerLabel: sightlineCase.blockedPlayerLabel,
+        clearPlayerLabel: sightlineCase.clearPlayerLabel,
+      },
+      blockedVisibility: blockedEnemy.ai.visibility,
+      investigateBehavior: investigateEnemy.ai.behavior,
+      engageBehavior: engageEnemy.ai.behavior,
+      repositionBehavior: repositionEnemy?.ai?.behavior ?? null,
+      repositionReason: repositionEnemy?.ai?.repositionReason ?? null,
+      pursueBehavior: pursueEnemy?.ai?.behavior ?? null,
+      shotTotals: {
+        fired: engageEnemy.ai.shotsFired,
+        hits: engageEnemy.ai.shotHits,
+        misses: engageEnemy.ai.shotMisses,
+      },
+      closeStandingShot,
+      farMovingShot,
+      crouchedPartialShot,
+    };
+
     await setInvulnerable(localPage, false);
+    await setTeamPreference(localPage, "amber");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await forceRoundActive(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
+      5_000,
+    );
+    const soloRoundCase = await stageAiSightlineCase(localPage);
+    await setView(localPage, soloRoundCase.clearPlayerPosition, soloRoundCase.enemyPosition);
+    const soloRoundStart = await getState(localPage);
+    const soloRoundStartEnemy = soloRoundStart.enemies.find(
+      (enemy) => enemy.id === soloRoundCase.enemyId,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /cleared the roster/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      20_000,
+    );
+    const soloRoundResolved = await getState(localPage);
+    const soloRoundEnemy = soloRoundResolved.enemies.find(
+      (enemy) => enemy.id === soloRoundCase.enemyId,
+    );
+    assert(
+      soloRoundResolved.localPlayer.dead === true,
+      "Expected the bounded solo AI round to end by live elimination",
+    );
+    assert(
+      soloRoundEnemy &&
+        (soloRoundEnemy.ai.shotsFired > 0 ||
+          (soloRoundStartEnemy &&
+          Math.hypot(
+            soloRoundEnemy.position.x - soloRoundStartEnemy.position.x,
+            soloRoundEnemy.position.z - soloRoundStartEnemy.position.z,
+          ) > 1)),
+      "Expected the solo AI round to progress without deadlock",
+    );
+
+    summary.aiSoloRound = {
+      resolution: soloRoundResolved.round.result,
+      playerDead: soloRoundResolved.localPlayer.dead,
+      enemyBehaviorAtResolution: soloRoundEnemy?.ai?.behavior ?? null,
+      enemyShotsFired: soloRoundEnemy?.ai?.shotsFired ?? 0,
+      blockerName: soloRoundCase.blockerName,
+    };
 
     const sharedPageOne = await createPage(`${ROOT_URL}?qa=1`);
     const sharedPageTwo = await createPage(`${ROOT_URL}?qa=1`);

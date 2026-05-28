@@ -242,3 +242,22 @@ export function hasLineOfSight(
     rayIntersectsCollider(origin, direction, collider, distance - 0.2),
   );
 }
+
+export function visibilityFraction(
+  world: CollisionWorld,
+  origin: THREE.Vector3,
+  targets: THREE.Vector3[],
+): number {
+  if (targets.length === 0) {
+    return 0;
+  }
+
+  let visibleCount = 0;
+  for (const target of targets) {
+    if (hasLineOfSight(world, origin, target)) {
+      visibleCount += 1;
+    }
+  }
+
+  return visibleCount / targets.length;
+}

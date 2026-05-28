@@ -427,6 +427,48 @@ export class TacticalShellApp {
     return this.match?.debugSharedTarget() ?? null;
   }
 
+  debugStageAiSightlineCase():
+    | {
+        enemyId: string;
+        enemyLabel: string;
+        blockerName: string;
+        enemyPosition: { x: number; y: number; z: number };
+        blockedPlayerPosition: { x: number; y: number; z: number };
+        clearPlayerPosition: { x: number; y: number; z: number };
+        blockedPlayerLabel: string;
+        clearPlayerLabel: string;
+      }
+    | null {
+    return this.match?.debugStageAiSightlineCase() ?? null;
+  }
+
+  debugEvaluateEnemyShot(
+    combatantId: string,
+    overrides?: Partial<{
+      distance: number;
+      visibility: number;
+      targetSpeed: number;
+      shooterSpeed: number;
+      targetCrouching: boolean;
+      shooterCrouching: boolean;
+    }>,
+  ):
+    | {
+        distance: number;
+        visibility: number;
+        shooterSpeed: number;
+        targetSpeed: number;
+        targetCrouching: boolean;
+        shooterCrouching: boolean;
+        reactionSeconds: number;
+        spreadDegrees: number;
+        hitChance: number;
+        missChance: number;
+      }
+    | null {
+    return this.match?.debugEvaluateEnemyShot(combatantId, overrides) ?? null;
+  }
+
   private readMode(value: string | undefined): MatchMode | undefined {
     if (value === "shared" || value === "local") {
       return value;
