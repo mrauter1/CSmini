@@ -751,6 +751,10 @@ export class TacticalShellApp {
     this.match?.debugSetInputState(movementX, movementZ, sprint);
   }
 
+  debugSendInputTick(movementX: number, movementZ: number, sprint = false): boolean {
+    return this.match?.debugSendInputTick(movementX, movementZ, sprint) ?? false;
+  }
+
   debugClearInputState(): void {
     this.match?.debugClearInputState();
   }

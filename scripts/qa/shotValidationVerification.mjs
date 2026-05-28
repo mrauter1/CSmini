@@ -415,9 +415,13 @@ async function main() {
     const acceptedBeforeId = await currentResultId(joinPage);
     const acceptedBeforeCount = await currentResultCount(joinPage);
     await joinPage.evaluate("window.__dustlineQa__.fire()");
-    await delay(35);
+    await delay(20);
+    const acceptedClaimTick = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.sharedCombat?.lastShotClaim?.tick ?? 0",
+    );
+    assert(acceptedClaimTick > 0, "Guest did not record the accepted claim tick.");
     const forgedSent = await joinPage.evaluate(
-      "window.__dustlineQa__.submitShotClaim({ tick: Date.now() - 140 })",
+      `window.__dustlineQa__.submitShotClaim({ tick: ${acceptedClaimTick} + 40 })`,
     );
     assert(forgedSent === true, "Guest could not submit the immediate forged shot claim.");
     const acceptedLastResult = await waitForResult(joinPage, acceptedBeforeId);

@@ -382,6 +382,12 @@ export class LocalMatch {
         team: actor.team,
         status: actor.status,
         health: actor.health,
+        lastInputSequence: actor.lastInputSequence,
+        inputMovement: {
+          x: Number(actor.inputMovement.x.toFixed(2)),
+          z: Number(actor.inputMovement.y.toFixed(2)),
+        },
+        inputSprint: actor.inputSprint,
         position: {
           x: Number(actor.displayPosition.x.toFixed(2)),
           y: Number(actor.displayPosition.y.toFixed(2)),
@@ -584,6 +590,32 @@ export class LocalMatch {
       movementZ,
       sprint,
     };
+  }
+
+  debugSendInputTick(movementX: number, movementZ: number, sprint = false): boolean {
+    if (this.sharedRole !== "guest" || !this.sharedRoom) {
+      return false;
+    }
+
+    this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    const actions: string[] = [];
+    if (sprint) {
+      actions.push("sprint");
+    }
+    if (this.reloadEndsAt > performance.now() / 1000) {
+      actions.push("reload");
+    }
+
+    this.lastInputSignature = "";
+    this.lastInputSentAt = 0;
+
+    return this.sharedRoom.sendInputTick({
+      tick: Date.now(),
+      sequence: this.nextInputSequence++,
+      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
+      movement: [movementX, movementZ],
+      actions,
+    });
   }
 
   debugClearInputState(): void {

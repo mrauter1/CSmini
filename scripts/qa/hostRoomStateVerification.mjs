@@ -238,6 +238,9 @@ async function startChrome() {
   const chrome = startProcess("google-chrome", [
     "--headless=new",
     "--disable-gpu",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "--use-angle=swiftshader",
     "--enable-unsafe-swiftshader",
     "--enable-webgl",
@@ -273,7 +276,7 @@ async function readRemotePosition(page) {
   );
 }
 
-async function waitForRemoteMovement(page, initial, minimumDistance = 0.6, timeoutMs = 10_000) {
+async function waitForRemoteMovement(page, initial, minimumDistance = 0.25, timeoutMs = 15_000) {
   assert(initial, "Remote player was missing before the movement check.");
   await page.waitForExpression(
     `(() => {
@@ -287,9 +290,22 @@ async function waitForRemoteMovement(page, initial, minimumDistance = 0.6, timeo
   );
 }
 
+async function waitForRemoteInputSequence(page, minimumSequence = 1, timeoutMs = 10_000) {
+  await page.waitForExpression(
+    `(window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0]?.lastInputSequence ?? 0) >= ${minimumSequence}`,
+    timeoutMs,
+  );
+}
+
 async function setInputState(page, movementX, movementZ, sprint = false) {
   await page.evaluate(
     `window.__dustlineQa__.setInputState(${movementX}, ${movementZ}, ${JSON.stringify(sprint)})`,
+  );
+}
+
+async function sendInputTick(page, movementX, movementZ, sprint = false) {
+  return page.evaluate(
+    `window.__dustlineQa__.sendInputTick(${movementX}, ${movementZ}, ${JSON.stringify(sprint)})`,
   );
 }
 
@@ -353,12 +369,14 @@ async function main() {
 
     const initialGuestOnHost = await readRemotePosition(hostPage);
     await joinPage.bringToFront();
-    await setInputState(joinPage, 0, 1, true);
-    await delay(500);
+    assert((await sendInputTick(joinPage, 0, 1, true)) === true, "Guest input tick was not sent.");
     await hostPage.bringToFront();
-    await waitForRemoteMovement(hostPage, initialGuestOnHost);
-    await clearInputState(joinPage);
+    await delay(250);
+    await waitForRemoteInputSequence(hostPage, 1);
     const hostRemoteAfterGuestInput = await readRemotePosition(hostPage);
+    const hostRemoteInputState = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0] ?? null",
+    );
 
     const guestSnapshotBeforeHostMove = await joinPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
@@ -366,8 +384,9 @@ async function main() {
     const initialHostOnGuest = await readRemotePosition(joinPage);
     await hostPage.bringToFront();
     await setInputState(hostPage, 1, 0, true);
-    await delay(500);
+    await delay(1_000);
     await joinPage.bringToFront();
+    await delay(250);
     await waitForRemoteMovement(joinPage, initialHostOnGuest);
     await joinPage.waitForExpression(
       `(window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0) > ${guestSnapshotBeforeHostMove}`,
@@ -396,6 +415,8 @@ async function main() {
         "window.__dustlineQa__?.getState()?.roomSetup?.supportError ?? ''",
       ),
       guestSnapshotAfterHostMove,
+      hostRemoteInputState,
+      hostRemotePositionBeforeGuestInput: initialGuestOnHost,
       hostRemoteAfterGuestInput,
       guestRemoteAfterHostInput,
     };

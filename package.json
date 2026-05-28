@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "qa:local-flow": "node scripts/qa/localFlowVerification.mjs",
     "qa:manual-signaling": "node scripts/qa/manualSignalingVerification.mjs",
     "qa:host-room": "node scripts/qa/hostRoomStateVerification.mjs",
     "qa:shot-validation": "node scripts/qa/shotValidationVerification.mjs",

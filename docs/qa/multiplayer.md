@@ -1,89 +1,154 @@
 # Multiplayer QA
 
+Date: 2026-05-28
+
 ## Scope
 
-This note captures the current verification evidence for `multiplayer-rooms-and-shared-combat`.
+This note records the current durable evidence for the browser-hosted multiplayer branch:
 
-- Same-map shared-room presence
-- Different-map room isolation
-- Cross-tab shooting, damage, death, and respawn
-- Join / leave / disconnect cleanup
-- Shared-room fallback when `BroadcastChannel` is unavailable
+- manual WebRTC offer and answer signaling
+- room connection establishment
+- join and accept flow
+- roster materialization on both peers
+- guest input delivery to the host
+- host snapshot delivery to the guest
+- disconnect cleanup and guest recovery after host exit
+- host-authoritative shot acceptance and rejection
+- preserved local solo flow in the same final QA surface
 
 ## Commands
 
 ```bash
 npm run typecheck
 npm run build
-npm run preview -- --host 127.0.0.1 --strictPort --port 4173
-google-chrome --headless=new --use-angle=swiftshader --enable-unsafe-swiftshader --enable-webgl --ignore-gpu-blocklist --remote-debugging-port=9222 --user-data-dir=/tmp/dustline-chrome7 about:blank
+npm run qa:local-flow
+npm run qa:manual-signaling
+npm run qa:host-room
+npm run qa:shot-validation
+npm run qa:final
+npm test
 ```
 
-Targeted browser verification then ran against `http://127.0.0.1:4173/?qa=1` using a small Chrome DevTools Protocol harness that:
+## Automated Coverage
 
-- opened three pages in one browser profile
-- joined `Sandline Foundry` in page 1 and page 2 with `Join Room`
-- joined `Transit Crates` in page 3 to confirm map-based room isolation
-- moved page 1 and page 2 into a clear shared line of sight on `Sandline Foundry`
-- fired three page-1 shots into page 2
-- waited through page-2 death and respawn
-- closed page 2 to confirm remote cleanup
-- separately forced `BroadcastChannel` missing on a fresh page and requested `Join Room` to confirm a clean `Solo Drill` fallback
+### `npm run qa:manual-signaling`
 
-Note: headless Chrome throttles background tabs, so the harness explicitly brought the active verification tab to the foreground before pose, death, respawn, and disconnect observations. This is a harness constraint, not a user-facing gameplay requirement.
+Coverage:
 
-## Fresh Results
+- host offer generation
+- guest answer generation from the pasted offer
+- host answer application
+- WebRTC DataChannel connection establishment
+- roster population after both peers enter the arena
 
-### Same-map presence and isolation
+Observed result on the current branch:
 
-- Page 1 roster on `Sandline Foundry`: local `Cinder-45` plus remote `Nova-37`
-- Page 2 roster on `Sandline Foundry`: local `Nova-37` plus remote `Cinder-45`
-- Page 3 roster on `Transit Crates`: only local `Rivet-36`
-- Result: same-map tabs shared presence; different-map tab stayed isolated
+- offer and answer blobs were both generated with non-trivial payload length
+- host and guest both reached `connected`
+- both peers entered `sandline-foundry`
+- both peers reported roster length `2`
 
-### Shared combat
+### `npm run qa:host-room`
 
-- Page 1 moved to `(-2, 14)` and page 2 moved to `(6, 14)` on `Sandline Foundry`
-- Page 1 fired three shots after aiming at the replicated page-2 operator
-- Page 2 local roster changed to:
-  - `Nova-37`, `0 HP`, `respawning`, `1 death`
-- Page 1 roster changed to:
-  - `Cinder-45`, `1 elimination`
-  - remote `Nova-37`, `0 HP`, `respawning`
-- Result: damage, death, and score propagation held across the room
+Coverage:
 
-### Respawn
+- two-browser room join
+- guest input tick delivery
+- host-side receipt of guest input sequencing
+- host snapshot delivery to the guest
+- guest recovery after host disconnect
 
-- After the respawn timer elapsed, page 2 local roster returned to:
-  - `Nova-37`, `100 HP`, `alive`
-- Page 1 remote roster returned to:
-  - remote `Nova-37`, `100 HP`, `alive`
-- Result: respawn propagated cleanly across clients
+Observed result on the current branch:
 
-### Leave / disconnect
+- both peers entered the room and saw roster length `2`
+- the host recorded guest input sequences greater than `0`
+- the guest received authoritative snapshot ids greater than `0`
+- closing the host returned the guest to the room setup screen with a recoverable error message
+- host movement still changed the guest-side replicated remote position through later snapshots
 
-- Closing page 2 removed the remote operator from page 1
-- Page 1 roster returned to only the local `Cinder-45`
-- Result: leave / disconnect cleanup worked without crashes or stale room entries
+### `npm run qa:shot-validation`
 
-### Missing multiplayer support fallback
+Coverage:
 
-- A fresh page was loaded with `BroadcastChannel` disabled before document scripts ran
-- Requesting `Join Room` on `Sandline Foundry` produced:
-  - `activeMode: local`
-  - `remotePlayers: 0`
-  - HUD note: `Shared room requested, but BroadcastChannel is unavailable in this browser, so shared-room sync cannot start. Solo drill armed instead.`
-- Result: missing shared-room support fell back to the local drill without crashing
+- guest shot claims cannot directly mutate health
+- clear line-of-sight shot acceptance
+- blocked shot rejection through cover
+- impossible follow-up fire-rate rejection
+- authoritative shooter ammo reconciliation after rejection
 
-### Runtime errors
+Observed result on the current branch:
 
-- Captured JavaScript exceptions: none
-- Captured Chrome log-level errors from the app pages: none
+- blocked claim returned `decision: rejected` with `reason: blocked-by-cover`
+- blocked claim preserved authoritative host health at `100`
+- clear shot returned `decision: accepted` with `damage: 34`
+- authoritative host health dropped to `66` after the accepted hit
+- immediate forged follow-up returned `decision: rejected` with `reason: fire-rate`
+- rejected follow-up preserved authoritative guest ammo at `22`
 
-## Current Evidence Summary
+### `npm run qa:local-flow`
 
-- Shared-room presence works for two tabs on the same map
-- Map id cleanly isolates rooms
-- Shooting, death, and respawn propagate across clients
-- Disconnect cleanup removes stale remote operators
-- Missing shared-room support falls back to a working solo drill with an explicit HUD message
+Coverage:
+
+- menu -> roster -> solo match path
+- control engagement
+- ammo change after firing
+- death overlay
+- clean return to the roster
+
+Observed result on the current branch:
+
+- roster rendered `5` map cards
+- engaging controls hid the prompt panel
+- ammo changed from `24` to `23`
+- forced death exposed the death overlay
+- returning to the catalog left `0` gameplay canvases behind
+
+### `npm run qa:final`
+
+`qa:final` is now the deterministic aggregate suite. It runs:
+
+- `qa:local-flow`
+- `qa:manual-signaling`
+- `qa:host-room`
+- `qa:shot-validation`
+
+This intentionally replaces the older screenshot-heavy final harness as the repo's primary verifier-facing QA hook. The older visual artifacts under `assets/screenshots/` and `docs/qa/visual-report.md` remain historical reference material, but the final gate for this branch is the deterministic room-state and combat suite above.
+
+### `npm test`
+
+`npm test` runs:
+
+```bash
+npm run build
+npm run qa:final
+```
+
+That means the finished multiplayer branch now gates on the static build plus the deterministic end-to-end suite above.
+
+## Automated Vs Manual Evidence
+
+Automated today:
+
+- local solo flow
+- manual signaling state
+- WebRTC connection establishment
+- join and accept flow
+- roster replication
+- guest input -> host movement
+- host snapshot -> guest replication
+- disconnect cleanup
+- blocked and accepted shot validation
+- fire-rate rejection and ammo reconciliation
+
+Still manual:
+
+- real remote-device testing across independent home or mobile networks
+- NAT and firewall edge cases that may need STUN or TURN later
+- subjective feel checks for latency, packet loss, and long sessions
+
+## Current Limitations
+
+- The transport currently uses `RTCPeerConnection` with `iceServers: []`, so direct connectivity can fail on tougher NAT combinations.
+- Manual signaling is intentionally zero-backend and therefore still awkward for users.
+- The UX is polished for one host plus one guest first.
+- Host migration is still a follow-up item, not part of the shipped implementation.
