@@ -13,6 +13,8 @@ export type JoinRejectReason =
   | "room-full"
   | "unsupported-version";
 export type ShotResultDecision = "accepted" | "rejected" | "adjusted";
+export type RoomLifecyclePhase = "waiting" | "active" | "ended";
+export type RoundLifecyclePhase = "staging" | "live" | "reset";
 
 export type NetworkVector2 = [number, number];
 export type NetworkVector3 = [number, number, number];
@@ -28,41 +30,22 @@ export interface ParticipantRecord extends ParticipantIdentity {
   joinedAt: number;
 }
 
-export interface RoomPresenceSnapshot extends ParticipantIdentity {
+export interface RoomPresenceSnapshot extends ParticipantRecord {
   health: number;
   eliminations: number;
   deaths: number;
   status: CombatantStatus;
   position: NetworkVector3;
   look: NetworkVector3;
+  respawnAt: number;
   updatedAt: number;
-  team: TeamAssignment;
 }
 
-export interface OutboundRoomPresence {
-  health: number;
-  eliminations: number;
-  deaths: number;
-  status: CombatantStatus;
-  position: NetworkVector3;
-  look: NetworkVector3;
-  team?: TeamAssignment;
-}
-
-export interface RoomHitEvent {
-  attackerId: string;
-  attackerName: string;
-  targetId: string;
-  damage: number;
-  sentAt: number;
-}
-
-export interface RoomEliminationEvent {
-  attackerId: string;
-  attackerName: string;
-  targetId: string;
-  targetName: string;
-  sentAt: number;
+export interface ObjectiveStateSnapshot {
+  objectiveId: string;
+  phase: string;
+  value?: number;
+  detail?: string;
 }
 
 interface EnvelopeBase<Type extends string, Payload> {
@@ -113,13 +96,6 @@ export type ParticipantUpdateMessage = EnvelopeBase<
   }
 >;
 
-export type PresenceUpdateMessage = EnvelopeBase<
-  "presence-update",
-  {
-    presence: RoomPresenceSnapshot;
-  }
->;
-
 export type InputTickMessage = EnvelopeBase<
   "input-tick",
   {
@@ -136,14 +112,10 @@ export type HostSnapshotMessage = EnvelopeBase<
   {
     snapshotId: number;
     hostPeerId: string;
-    roster: Array<{
-      peerId: string;
-      team: TeamAssignment;
-      health: number;
-      status: CombatantStatus;
-      position: NetworkVector3;
-      look: NetworkVector3;
-    }>;
+    phase: RoomLifecyclePhase;
+    roundPhase: RoundLifecyclePhase;
+    objective: ObjectiveStateSnapshot;
+    roster: RoomPresenceSnapshot[];
   }
 >;
 
@@ -186,31 +158,11 @@ export type ObjectiveEventMessage = EnvelopeBase<
   }
 >;
 
-export type CombatHitMessage = EnvelopeBase<
-  "combat-hit",
-  {
-    attackerId: string;
-    attackerName: string;
-    targetId: string;
-    damage: number;
-  }
->;
-
-export type CombatEliminationMessage = EnvelopeBase<
-  "combat-elimination",
-  {
-    attackerId: string;
-    attackerName: string;
-    targetId: string;
-    targetName: string;
-  }
->;
-
 export type HeartbeatMessage = EnvelopeBase<
   "heartbeat",
   {
     rosterCount: number;
-    phase: "idle" | "waiting" | "active";
+    phase: RoomLifecyclePhase;
   }
 >;
 
@@ -226,18 +178,17 @@ export type RoomMessage =
   | JoinAcceptedMessage
   | JoinRejectedMessage
   | ParticipantUpdateMessage
-  | PresenceUpdateMessage
   | InputTickMessage
   | HostSnapshotMessage
   | ShotClaimMessage
   | ShotResultMessage
   | ObjectiveEventMessage
-  | CombatHitMessage
-  | CombatEliminationMessage
   | HeartbeatMessage
   | DisconnectMessage;
 
 export type RoomMessageType = RoomMessage["type"];
+export type RoomInputTick = InputTickMessage["payload"];
+export type HostRoomSnapshot = HostSnapshotMessage["payload"];
 
 export function encodeRoomMessage(message: RoomMessage): string {
   return JSON.stringify(message);
@@ -266,8 +217,6 @@ export function parseRoomMessage(value: unknown): RoomMessage | null {
       return isJoinRejectedPayload(value.payload) ? value : null;
     case "participant-update":
       return isParticipantUpdatePayload(value.payload) ? value : null;
-    case "presence-update":
-      return isPresenceUpdatePayload(value.payload) ? value : null;
     case "input-tick":
       return isInputTickPayload(value.payload) ? value : null;
     case "host-snapshot":
@@ -278,10 +227,6 @@ export function parseRoomMessage(value: unknown): RoomMessage | null {
       return isShotResultPayload(value.payload) ? value : null;
     case "objective-event":
       return isObjectiveEventPayload(value.payload) ? value : null;
-    case "combat-hit":
-      return isCombatHitPayload(value.payload) ? value : null;
-    case "combat-elimination":
-      return isCombatEliminationPayload(value.payload) ? value : null;
     case "heartbeat":
       return isHeartbeatPayload(value.payload) ? value : null;
     case "disconnect":
@@ -354,12 +299,6 @@ function isParticipantUpdatePayload(
   return isParticipantRecord(payload.participant);
 }
 
-function isPresenceUpdatePayload(
-  payload: Record<string, unknown>,
-): payload is PresenceUpdateMessage["payload"] {
-  return isRoomPresenceSnapshot(payload.presence);
-}
-
 function isInputTickPayload(
   payload: Record<string, unknown>,
 ): payload is InputTickMessage["payload"] {
@@ -379,8 +318,11 @@ function isHostSnapshotPayload(
   return (
     isSafeNumber(payload.snapshotId) &&
     typeof payload.hostPeerId === "string" &&
+    isRoomLifecyclePhase(payload.phase) &&
+    isRoundLifecyclePhase(payload.roundPhase) &&
+    isObjectiveStateSnapshot(payload.objective) &&
     Array.isArray(payload.roster) &&
-    payload.roster.every(isHostSnapshotEntry)
+    payload.roster.every(isRoomPresenceSnapshot)
   );
 }
 
@@ -420,42 +362,14 @@ function isObjectiveEventPayload(
 ): payload is ObjectiveEventMessage["payload"] {
   return (
     typeof payload.eventId === "string" &&
-    typeof payload.objectiveId === "string" &&
-    typeof payload.phase === "string" &&
-    (typeof payload.value === "undefined" || isSafeNumber(payload.value)) &&
-    (typeof payload.detail === "undefined" || typeof payload.detail === "string")
-  );
-}
-
-function isCombatHitPayload(
-  payload: Record<string, unknown>,
-): payload is CombatHitMessage["payload"] {
-  return (
-    typeof payload.attackerId === "string" &&
-    typeof payload.attackerName === "string" &&
-    typeof payload.targetId === "string" &&
-    isSafeNumber(payload.damage)
-  );
-}
-
-function isCombatEliminationPayload(
-  payload: Record<string, unknown>,
-): payload is CombatEliminationMessage["payload"] {
-  return (
-    typeof payload.attackerId === "string" &&
-    typeof payload.attackerName === "string" &&
-    typeof payload.targetId === "string" &&
-    typeof payload.targetName === "string"
+    isObjectiveStateSnapshot(payload)
   );
 }
 
 function isHeartbeatPayload(
   payload: Record<string, unknown>,
 ): payload is HeartbeatMessage["payload"] {
-  return (
-    isSafeNumber(payload.rosterCount) &&
-    (payload.phase === "idle" || payload.phase === "waiting" || payload.phase === "active")
-  );
+  return isSafeNumber(payload.rosterCount) && isRoomLifecyclePhase(payload.phase);
 }
 
 function isDisconnectPayload(
@@ -484,7 +398,7 @@ function isParticipantRecord(value: unknown): value is ParticipantRecord {
 
 function isRoomPresenceSnapshot(value: unknown): value is RoomPresenceSnapshot {
   return (
-    isParticipantIdentity(value) &&
+    isParticipantRecord(value) &&
     isRecord(value) &&
     isSafeNumber(value.health) &&
     isSafeNumber(value.eliminations) &&
@@ -492,20 +406,18 @@ function isRoomPresenceSnapshot(value: unknown): value is RoomPresenceSnapshot {
     isCombatantStatus(value.status) &&
     isVector3(value.position) &&
     isVector3(value.look) &&
-    isSafeNumber(value.updatedAt) &&
-    isTeamAssignment(value.team)
+    isSafeNumber(value.respawnAt) &&
+    isSafeNumber(value.updatedAt)
   );
 }
 
-function isHostSnapshotEntry(value: unknown): boolean {
+function isObjectiveStateSnapshot(value: unknown): value is ObjectiveStateSnapshot {
   return (
     isRecord(value) &&
-    typeof value.peerId === "string" &&
-    isTeamAssignment(value.team) &&
-    isSafeNumber(value.health) &&
-    isCombatantStatus(value.status) &&
-    isVector3(value.position) &&
-    isVector3(value.look)
+    typeof value.objectiveId === "string" &&
+    typeof value.phase === "string" &&
+    (typeof value.value === "undefined" || isSafeNumber(value.value)) &&
+    (typeof value.detail === "undefined" || typeof value.detail === "string")
   );
 }
 
@@ -560,4 +472,12 @@ function isJoinRejectReason(value: unknown): value is JoinRejectReason {
 
 function isShotResultDecision(value: unknown): value is ShotResultDecision {
   return value === "accepted" || value === "rejected" || value === "adjusted";
+}
+
+function isRoomLifecyclePhase(value: unknown): value is RoomLifecyclePhase {
+  return value === "waiting" || value === "active" || value === "ended";
+}
+
+function isRoundLifecyclePhase(value: unknown): value is RoundLifecyclePhase {
+  return value === "staging" || value === "live" || value === "reset";
 }

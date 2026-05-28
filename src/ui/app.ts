@@ -34,10 +34,11 @@ interface RoomSetupState {
 }
 
 const NOOP_ROOM_HANDLERS: SharedRoomHandlers = {
-  onPresence: () => undefined,
+  onParticipant: () => undefined,
   onLeave: () => undefined,
-  onHit: () => undefined,
-  onElimination: () => undefined,
+  onInput: () => undefined,
+  onSnapshot: () => undefined,
+  onRoomClosed: () => undefined,
 };
 
 export class TacticalShellApp {
@@ -182,6 +183,13 @@ export class TacticalShellApp {
           }
 
           this.exitMatchFlow(action === "catalog" ? "catalog" : "menu");
+        },
+        onRoomEnded: (reason) => {
+          if (token !== this.renderToken || this.screen !== "stage") {
+            return;
+          }
+
+          this.handleRoomEnded(reason);
         },
         onSnapshot: (snapshot) => {
           if (token !== this.renderToken || this.screen !== "stage") {
@@ -534,6 +542,16 @@ export class TacticalShellApp {
     this.roomSetup = undefined;
   }
 
+  private handleRoomEnded(reason: string): void {
+    const kind = this.roomSetup?.kind ?? "webrtc-join";
+    this.teardownMatch();
+    this.disposeRoomSetup();
+    this.activeMode = "shared";
+    this.screen = "room";
+    this.selectRoomKind(kind);
+    this.setRoomSupportError(reason);
+  }
+
   private exitMatchFlow(screen: "menu" | "catalog"): void {
     this.teardownMatch();
     this.disposeRoomSetup();
@@ -625,11 +643,20 @@ export class TacticalShellApp {
 
   debugGetState(): Record<string, unknown> | null {
     const matchState = this.match?.debugSnapshot() ?? null;
+    const roomSetupState = this.roomSetup
+      ? {
+          kind: this.roomSetup.kind,
+          supportError: this.roomSetup.supportError,
+          copyStatus: this.roomSetup.copyStatus,
+          phase: this.roomSetup.connection?.uiSnapshot.phase ?? "idle",
+          connection: this.roomSetup.connection?.debugSnapshot() ?? null,
+        }
+      : null;
 
     return {
       screen: this.screen,
       activeMode: this.activeMode,
-      roomSetup: this.roomSetup?.connection?.debugSnapshot() ?? this.roomSetup?.supportError ?? null,
+      roomSetup: roomSetupState,
       mapId:
         this.screen === "stage"
           ? ((matchState?.mapId as string | undefined) ?? null)
@@ -677,6 +704,14 @@ export class TacticalShellApp {
 
   debugForcePlayerDeath(attackerName?: string): void {
     this.match?.debugForcePlayerDeath(attackerName);
+  }
+
+  debugSetInputState(movementX: number, movementZ: number, sprint = false): void {
+    this.match?.debugSetInputState(movementX, movementZ, sprint);
+  }
+
+  debugClearInputState(): void {
+    this.match?.debugClearInputState();
   }
 
   debugAimAt(combatantId: string): boolean {

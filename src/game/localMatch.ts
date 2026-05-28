@@ -7,12 +7,14 @@ import {
   buildRoomId,
   createRoomIdentity,
   type CombatantStatus,
+  type HostRoomSnapshot,
   type MatchRoomConnection,
   type MatchMode,
-  type OutboundRoomPresence,
-  type RoomHitEvent,
+  type MatchRoomRole,
+  type ParticipantRecord,
+  type RoomInputEvent,
   type RoomIdentity,
-  type RoomPresenceSnapshot,
+  type TeamAssignment,
 } from "../net/matchRoomConnection";
 import {
   createCombatantAvatar,
@@ -85,6 +87,7 @@ interface LocalMatchOptions {
   sharedRoom?: MatchRoomConnection;
   sharedRoomFallbackReason?: string;
   onActionRequest?: (action: "catalog" | "menu") => void;
+  onRoomEnded?: (reason: string) => void;
   onSnapshot: (snapshot: LocalMatchSnapshot) => void;
 }
 
@@ -110,22 +113,34 @@ interface RemoteActor {
   id: string;
   name: string;
   accentColor: string;
+  team: TeamAssignment;
+  joinedAt: number;
   avatar: CombatantAvatar;
   health: number;
   eliminations: number;
   deaths: number;
   status: CombatantStatus;
+  respawnAt: number;
   targetPosition: THREE.Vector3;
   displayPosition: THREE.Vector3;
   forward: THREE.Vector3;
   moveBlend: number;
   hitFlashUntil: number;
   lastSeenAt: number;
+  lastInputSequence: number;
+  inputMovement: THREE.Vector2;
+  inputSprint: boolean;
 }
 
 interface FeedMessage {
   text: string;
   expiresAt: number;
+}
+
+interface DebugInputState {
+  movementX: number;
+  movementZ: number;
+  sprint: boolean;
 }
 
 export class LocalMatch {
@@ -159,6 +174,8 @@ export class LocalMatch {
 
   private sharedRoom?: MatchRoomConnection;
   private activeMode: MatchMode = "local";
+  private sharedRole?: MatchRoomRole;
+  private sharedTeam: TeamAssignment = "alpha";
   private sharedRoomFallbackReason = "";
   private animationHandle = 0;
   private playerHealth = 100;
@@ -178,6 +195,14 @@ export class LocalMatch {
   private spawnIndex = 0;
   private feedMessage?: FeedMessage;
   private fallbackLookEnabled = false;
+  private debugInputState?: DebugInputState;
+  private lastInputSentAt = 0;
+  private nextInputSequence = 1;
+  private lastInputSignature = "";
+  private nextHostSnapshotId = 1;
+  private lastHostSnapshotId = 0;
+  private authoritativePosition?: THREE.Vector3;
+  private authoritativeRespawnAtMs = 0;
 
   constructor(
     private readonly host: HTMLElement,
@@ -277,6 +302,9 @@ export class LocalMatch {
       requestedMode: this.options.mode,
       activeMode: this.activeMode,
       roomId: this.activeMode === "shared" ? this.roomId : null,
+      sharedRole: this.sharedRole ?? null,
+      sharedTeam: this.sharedTeam,
+      lastHostSnapshotId: this.lastHostSnapshotId,
       localPlayer: {
         id: this.playerIdentity.id,
         name: this.playerIdentity.name,
@@ -293,6 +321,7 @@ export class LocalMatch {
       remotePlayers: [...this.remoteActors.values()].map((actor) => ({
         id: actor.id,
         name: actor.name,
+        team: actor.team,
         status: actor.status,
         health: actor.health,
         position: {
@@ -312,7 +341,9 @@ export class LocalMatch {
     this.camera.position.set(x, y, z);
     this.lookEuler.set(pitch, yaw, 0, "YXZ");
     this.camera.quaternion.setFromEuler(this.lookEuler);
-    this.publishRoomState(true);
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.publishHostSnapshot(true);
+    }
     this.emitSnapshot();
   }
 
@@ -326,7 +357,9 @@ export class LocalMatch {
   ): void {
     this.camera.position.set(x, y, z);
     this.camera.lookAt(targetX, targetY, targetZ);
-    this.publishRoomState(true);
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.publishHostSnapshot(true);
+    }
     this.emitSnapshot();
   }
 
@@ -365,8 +398,23 @@ export class LocalMatch {
   }
 
   debugForcePlayerDeath(attacker = "QA Rig"): void {
+    if (this.activeMode === "shared" && this.sharedRole === "guest") {
+      return;
+    }
     this.applyPlayerDamage(Math.max(this.playerHealth, 100), attacker, performance.now() / 1000);
     this.emitSnapshot();
+  }
+
+  debugSetInputState(movementX: number, movementZ: number, sprint = false): void {
+    this.debugInputState = {
+      movementX,
+      movementZ,
+      sprint,
+    };
+  }
+
+  debugClearInputState(): void {
+    this.debugInputState = undefined;
   }
 
   debugAimAt(combatantId: string): boolean {
@@ -383,7 +431,9 @@ export class LocalMatch {
     }
 
     this.camera.lookAt(targetPosition.x, targetPosition.y, targetPosition.z);
-    this.publishRoomState(true);
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.publishHostSnapshot(true);
+    }
     this.emitSnapshot();
     return true;
   }
@@ -445,10 +495,15 @@ export class LocalMatch {
     }
 
     this.options.sharedRoom.setHandlers({
-      onPresence: (presence, event) => {
-        this.upsertRemoteActor(presence);
+      onParticipant: (participant, event) => {
+        if (participant.id === this.playerIdentity.id || this.sharedRole !== "host") {
+          return;
+        }
+
+        this.ensureRemoteActorFromParticipant(participant);
         if (event === "joined") {
-          this.pushFeed(`${presence.name} linked into ${this.map.name}.`, 1.6);
+          this.pushFeed(`${participant.name} linked into ${this.map.name}.`, 1.6);
+          this.publishHostSnapshot(true);
         }
       },
       onLeave: (peerId, reason) => {
@@ -462,29 +517,65 @@ export class LocalMatch {
             1.4,
           );
         }
+        if (this.sharedRole === "host") {
+          this.publishHostSnapshot(true);
+        }
       },
-      onHit: (event) => {
-        this.handleRoomHit(event);
+      onInput: (event) => {
+        if (this.sharedRole === "host") {
+          this.handleSharedRoomInput(event);
+        }
       },
-      onElimination: (event) => {
-        this.handleRoomElimination(event);
+      onSnapshot: (snapshot) => {
+        if (this.sharedRole === "guest") {
+          this.applyHostSnapshot(snapshot);
+        }
+      },
+      onRoomClosed: (reason) => {
+        this.options.onRoomEnded?.(reason);
       },
     });
+    this.sharedRole = this.options.sharedRoom.role;
+    this.sharedTeam = this.sharedRole === "host" ? "alpha" : "bravo";
     this.activeMode = "shared";
+
+    if (this.sharedRole === "host") {
+      for (const participant of this.options.sharedRoom.participantsSnapshot) {
+        if (participant.id !== this.playerIdentity.id) {
+          this.ensureRemoteActorFromParticipant(participant);
+        }
+      }
+    } else if (this.options.sharedRoom.latestSnapshot) {
+      this.applyHostSnapshot(this.options.sharedRoom.latestSnapshot);
+    }
+
     return this.options.sharedRoom;
   }
 
-  private initialSpawnIndex(): number {
-    if (this.options.mode !== "shared") {
+  private initialSpawnIndex(identityId = this.playerIdentity.id): number {
+    if (this.options.mode !== "shared" && identityId === this.playerIdentity.id) {
       return 0;
     }
 
     let hash = 0;
-    for (const character of this.playerIdentity.id) {
+    for (const character of identityId) {
       hash = (hash * 33 + character.charCodeAt(0)) >>> 0;
     }
 
     return hash % Math.max(this.spawnCandidates.length, 1);
+  }
+
+  private sharedSpawnPoint(identityId: string, deaths = 0): THREE.Vector3 {
+    const index =
+      (this.initialSpawnIndex(identityId) + Math.max(0, deaths)) %
+      Math.max(this.spawnCandidates.length, 1);
+    const spawn = this.spawnCandidates[index] ?? this.spawnCandidates[0] ?? new THREE.Vector3();
+    return findOpenGroundPosition(
+      this.collisionWorld,
+      spawn.clone(),
+      PLAYER_RADIUS,
+      PLAYER_BODY_HEIGHT,
+    );
   }
 
   private readonly handlePointerLock = (): void => {
@@ -603,12 +694,15 @@ export class LocalMatch {
     this.playerHealth = 100;
     this.playerDead = false;
     this.playerRespawnsAt = 0;
+    this.authoritativeRespawnAtMs = 0;
     this.reloadEndsAt = 0;
     this.ammoInClip = CLIP_SIZE;
     this.reserveAmmo = RESERVE_AMMO;
     this.recoil = 0;
     this.weaponRig.setVisible(true);
-    this.publishRoomState(true);
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.publishHostSnapshot(true);
+    }
   }
 
   private spawnEnemies(): void {
@@ -674,15 +768,67 @@ export class LocalMatch {
     }
   }
 
-  private upsertRemoteActor(presence: RoomPresenceSnapshot): void {
+  private ensureRemoteActorFromParticipant(participant: ParticipantRecord): RemoteActor {
+    const spawnPosition = this.sharedSpawnPoint(participant.id);
+    const existing = this.remoteActors.get(participant.id);
+
+    if (existing) {
+      existing.name = participant.name;
+      existing.accentColor = participant.accentColor;
+      existing.team = participant.team;
+      existing.joinedAt = participant.joinedAt;
+      return existing;
+    }
+
+    const avatar = createCombatantAvatar(participant.accentColor);
+    avatar.group.position.copy(spawnPosition);
+    this.scene.add(avatar.group);
+
+    for (const mesh of avatar.hitMeshes) {
+      mesh.userData.combatantId = participant.id;
+      this.remoteRaycastMeshes.push(mesh);
+    }
+
+    const actor: RemoteActor = {
+      id: participant.id,
+      name: participant.name,
+      accentColor: participant.accentColor,
+      team: participant.team,
+      joinedAt: participant.joinedAt,
+      avatar,
+      health: 100,
+      eliminations: 0,
+      deaths: 0,
+      status: "alive",
+      respawnAt: 0,
+      targetPosition: spawnPosition.clone(),
+      displayPosition: spawnPosition.clone(),
+      forward: new THREE.Vector3(0, 0, -1),
+      moveBlend: 0,
+      hitFlashUntil: 0,
+      lastSeenAt: Date.now(),
+      lastInputSequence: 0,
+      inputMovement: new THREE.Vector2(),
+      inputSprint: false,
+    };
+    this.remoteActors.set(participant.id, actor);
+    return actor;
+  }
+
+  private upsertRemoteActorFromSnapshot(
+    presence: HostRoomSnapshot["roster"][number],
+  ): void {
     const existing = this.remoteActors.get(presence.id);
     if (existing) {
       existing.name = presence.name;
       existing.accentColor = presence.accentColor;
+      existing.team = presence.team;
+      existing.joinedAt = presence.joinedAt;
       existing.health = presence.health;
       existing.eliminations = presence.eliminations;
       existing.deaths = presence.deaths;
       existing.status = presence.status;
+      existing.respawnAt = presence.respawnAt;
       existing.targetPosition.set(presence.position[0], 0, presence.position[2]);
       existing.forward.set(presence.look[0], 0, presence.look[2]).normalize();
       existing.lastSeenAt = presence.updatedAt;
@@ -703,17 +849,23 @@ export class LocalMatch {
       id: presence.id,
       name: presence.name,
       accentColor: presence.accentColor,
+      team: presence.team,
+      joinedAt: presence.joinedAt,
       avatar,
       health: presence.health,
       eliminations: presence.eliminations,
       deaths: presence.deaths,
       status: presence.status,
+      respawnAt: presence.respawnAt,
       targetPosition: spawnPosition.clone(),
       displayPosition: spawnPosition.clone(),
       forward: new THREE.Vector3(presence.look[0], 0, presence.look[2]).normalize(),
       moveBlend: 0,
       hitFlashUntil: 0,
       lastSeenAt: presence.updatedAt,
+      lastInputSequence: 0,
+      inputMovement: new THREE.Vector2(),
+      inputSprint: false,
     });
   }
 
@@ -731,6 +883,99 @@ export class LocalMatch {
       if (this.remoteRaycastMeshes[index].userData.combatantId === peerId) {
         this.remoteRaycastMeshes.splice(index, 1);
       }
+    }
+  }
+
+  private handleSharedRoomInput(event: RoomInputEvent): void {
+    const participant = this.sharedRoom?.participantsSnapshot.find((entry) => entry.id === event.peerId);
+    if (!participant) {
+      return;
+    }
+
+    const actor = this.ensureRemoteActorFromParticipant(participant);
+    if (event.sequence <= actor.lastInputSequence) {
+      return;
+    }
+
+    const movementLength = Math.hypot(event.movement[0], event.movement[1]);
+    if (movementLength > 1.25) {
+      return;
+    }
+
+    actor.lastInputSequence = event.sequence;
+    actor.inputMovement.set(event.movement[0], event.movement[1]);
+    actor.inputSprint = event.actions.includes("sprint");
+    actor.lastSeenAt = event.sentAt;
+
+    const lookLength = Math.hypot(event.look[0], event.look[2]);
+    if (lookLength > 0.01) {
+      actor.forward.set(event.look[0], 0, event.look[2]).normalize();
+    }
+  }
+
+  private applyHostSnapshot(snapshot: HostRoomSnapshot): void {
+    if (snapshot.snapshotId <= this.lastHostSnapshotId) {
+      return;
+    }
+
+    this.lastHostSnapshotId = snapshot.snapshotId;
+    const remoteIds = new Set<string>();
+
+    for (const presence of snapshot.roster) {
+      if (presence.id === this.playerIdentity.id) {
+        this.applyAuthoritativeLocalState(presence);
+        continue;
+      }
+
+      remoteIds.add(presence.id);
+      this.upsertRemoteActorFromSnapshot(presence);
+    }
+
+    for (const peerId of [...this.remoteActors.keys()]) {
+      if (!remoteIds.has(peerId)) {
+        this.removeRemoteActor(peerId);
+      }
+    }
+  }
+
+  private applyAuthoritativeLocalState(
+    presence: HostRoomSnapshot["roster"][number],
+  ): void {
+    const previousHealth = this.playerHealth;
+    const wasDead = this.playerDead;
+    const now = performance.now() / 1000;
+    const nowMs = Date.now();
+
+    this.sharedTeam = presence.team;
+    this.playerHealth = presence.health;
+    this.playerEliminations = presence.eliminations;
+    this.playerDeaths = presence.deaths;
+    this.playerDead = presence.status !== "alive";
+    this.authoritativeRespawnAtMs = presence.respawnAt;
+    this.playerRespawnsAt =
+      presence.respawnAt > 0 ? now + Math.max(0, presence.respawnAt - nowMs) / 1000 : 0;
+
+    if (!this.authoritativePosition) {
+      this.authoritativePosition = new THREE.Vector3();
+    }
+    this.authoritativePosition.set(presence.position[0], PLAYER_EYE_HEIGHT, presence.position[2]);
+
+    if (presence.health < previousHealth && !this.playerDead) {
+      this.damageFlashUntil = now + DAMAGE_FLASH_DURATION;
+      this.audio.playerHit();
+    }
+
+    if (!wasDead && this.playerDead) {
+      this.audio.death();
+      this.weaponRig.setVisible(false);
+    } else if (wasDead && !this.playerDead) {
+      this.audio.respawn();
+      this.reloadEndsAt = 0;
+      this.ammoInClip = CLIP_SIZE;
+      this.reserveAmmo = RESERVE_AMMO;
+      this.weaponRig.setVisible(true);
+      this.camera.position.x = presence.position[0];
+      this.camera.position.z = presence.position[2];
     }
   }
 
@@ -855,6 +1100,7 @@ export class LocalMatch {
   private readonly handleBlur = (): void => {
     this.primaryFireHeld = false;
     this.movementKeys.clear();
+    this.debugInputState = undefined;
     this.fallbackLookEnabled = false;
     this.emitSnapshot();
   };
@@ -867,12 +1113,22 @@ export class LocalMatch {
 
     this.updatePlayer(delta, now);
     if (this.activeMode === "shared") {
+      if (this.sharedRole === "host") {
+        this.updateAuthoritativeRemoteActors(delta);
+      } else {
+        this.sendLocalInputTick(now);
+      }
       this.updateRemoteActors(delta, now);
+      if (this.sharedRole === "guest") {
+        this.reconcileAuthoritativePosition(delta);
+      }
     } else {
       this.updateEnemies(delta, now);
     }
     this.updateRespawns(now);
-    this.publishRoomState();
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.publishHostSnapshot();
+    }
     this.sharedRoom?.tick();
 
     this.weaponRig.update(
@@ -889,13 +1145,49 @@ export class LocalMatch {
   };
 
   private currentMoveBlend(): number {
-    const moving =
-      this.movementKeys.has("KeyW") ||
-      this.movementKeys.has("KeyA") ||
-      this.movementKeys.has("KeyS") ||
-      this.movementKeys.has("KeyD");
+    const movement = this.currentMovementState();
+    return movement.active && !this.playerDead ? 1 : 0;
+  }
 
-    return moving && this.inputCaptured() && !this.playerDead ? 1 : 0;
+  private currentMovementState(): {
+    moveX: number;
+    moveZ: number;
+    sprint: boolean;
+    active: boolean;
+  } {
+    if (this.debugInputState) {
+      const length = Math.hypot(this.debugInputState.movementX, this.debugInputState.movementZ);
+      return {
+        moveX: this.debugInputState.movementX,
+        moveZ: this.debugInputState.movementZ,
+        sprint: this.debugInputState.sprint,
+        active: length > 0.01,
+      };
+    }
+
+    if (!this.inputCaptured() || this.playerDead) {
+      return {
+        moveX: 0,
+        moveZ: 0,
+        sprint: false,
+        active: false,
+      };
+    }
+
+    let moveX = 0;
+    let moveZ = 0;
+
+    if (this.movementKeys.has("KeyW")) moveZ += 1;
+    if (this.movementKeys.has("KeyS")) moveZ -= 1;
+    if (this.movementKeys.has("KeyD")) moveX += 1;
+    if (this.movementKeys.has("KeyA")) moveX -= 1;
+
+    return {
+      moveX,
+      moveZ,
+      sprint: this.movementKeys.has("ShiftLeft") || this.movementKeys.has("ShiftRight"),
+      active: moveX !== 0 || moveZ !== 0,
+    };
   }
 
   private updatePlayer(delta: number, now: number): void {
@@ -908,32 +1200,25 @@ export class LocalMatch {
       this.pushFeed("Magazine seated.", 1.2);
     }
 
-    if (!this.inputCaptured() || this.playerDead) {
+    if (this.playerDead) {
       return;
     }
 
-    let moveX = 0;
-    let moveZ = 0;
+    const movement = this.currentMovementState();
 
-    if (this.movementKeys.has("KeyW")) moveZ += 1;
-    if (this.movementKeys.has("KeyS")) moveZ -= 1;
-    if (this.movementKeys.has("KeyD")) moveX += 1;
-    if (this.movementKeys.has("KeyA")) moveX -= 1;
-
-    if (moveX !== 0 || moveZ !== 0) {
+    if (movement.active) {
       this.tempForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
       this.tempForward.y = 0;
       this.tempForward.normalize();
       this.tempRight.crossVectors(this.tempForward, new THREE.Vector3(0, 1, 0)).normalize();
 
-      const sprinting = this.movementKeys.has("ShiftLeft") || this.movementKeys.has("ShiftRight");
-      const speed = PLAYER_SPEED * (sprinting ? PLAYER_SPRINT_MULTIPLIER : 1);
-      const length = Math.hypot(moveX, moveZ);
+      const speed = PLAYER_SPEED * (movement.sprint ? PLAYER_SPRINT_MULTIPLIER : 1);
+      const length = Math.hypot(movement.moveX, movement.moveZ);
 
       this.tempDelta
         .copy(this.tempForward)
-        .multiplyScalar((moveZ / length) * speed * delta)
-        .addScaledVector(this.tempRight, (moveX / length) * speed * delta);
+        .multiplyScalar((movement.moveZ / length) * speed * delta)
+        .addScaledVector(this.tempRight, (movement.moveX / length) * speed * delta);
 
       const next = resolveHorizontalMovement(
         this.collisionWorld,
@@ -946,7 +1231,7 @@ export class LocalMatch {
       this.camera.position.z = next.z;
     }
 
-    if (this.primaryFireHeld && now >= this.nextShotAt) {
+    if (this.primaryFireHeld && this.inputCaptured() && now >= this.nextShotAt) {
       this.fire(now);
     }
   }
@@ -981,18 +1266,26 @@ export class LocalMatch {
 
     if (this.activeMode === "shared") {
       const remoteTarget = this.findRemoteShotTarget(environmentDistance);
-      if (!remoteTarget) {
-        return;
-      }
-
-      if (!this.sharedRoom?.sendHit(remoteTarget.id, PLAYER_DAMAGE)) {
+      if (!remoteTarget || this.sharedRole !== "host" || remoteTarget.status !== "alive") {
         return;
       }
 
       remoteTarget.hitFlashUntil = now + 0.12;
       this.hitIndicatorUntil = now + HIT_INDICATOR_DURATION;
       this.audio.hitConfirm();
-      this.pushFeed(`${remoteTarget.name} tagged.`, 0.8);
+      remoteTarget.health = Math.max(0, remoteTarget.health - PLAYER_DAMAGE);
+
+      if (remoteTarget.health <= 0) {
+        remoteTarget.deaths += 1;
+        remoteTarget.status = "respawning";
+        remoteTarget.respawnAt = Date.now() + PLAYER_RESPAWN_DELAY * 1000;
+        this.playerEliminations += 1;
+        this.pushFeed(`${remoteTarget.name} dropped.`, 1.7);
+      } else {
+        this.pushFeed(`${remoteTarget.name} tagged.`, 0.8);
+      }
+
+      this.publishHostSnapshot(true);
       return;
     }
 
@@ -1080,6 +1373,106 @@ export class LocalMatch {
 
     this.reloadEndsAt = performance.now() / 1000 + RELOAD_DURATION;
     this.pushFeed("Reloading...", RELOAD_DURATION);
+  }
+
+  private updateAuthoritativeRemoteActors(delta: number): void {
+    for (const actor of this.remoteActors.values()) {
+      if (actor.status !== "alive") {
+        continue;
+      }
+
+      const inputLength = actor.inputMovement.length();
+      if (inputLength <= 0.01) {
+        continue;
+      }
+
+      this.tempForward.copy(actor.forward);
+      if (this.tempForward.lengthSq() <= 0.01) {
+        this.tempForward.set(0, 0, -1);
+      } else {
+        this.tempForward.normalize();
+      }
+
+      this.tempRight.crossVectors(this.tempForward, new THREE.Vector3(0, 1, 0)).normalize();
+
+      const speed = PLAYER_SPEED * (actor.inputSprint ? PLAYER_SPRINT_MULTIPLIER : 1);
+      this.tempDelta
+        .copy(this.tempForward)
+        .multiplyScalar((actor.inputMovement.y / inputLength) * speed * delta)
+        .addScaledVector(this.tempRight, (actor.inputMovement.x / inputLength) * speed * delta);
+
+      const next = resolveHorizontalMovement(
+        this.collisionWorld,
+        actor.targetPosition,
+        this.tempDelta,
+        PLAYER_RADIUS,
+        PLAYER_BODY_HEIGHT,
+      );
+
+      actor.targetPosition.set(next.x, 0, next.z);
+    }
+  }
+
+  private sendLocalInputTick(now: number): void {
+    if (!this.sharedRoom || this.sharedRole !== "guest") {
+      return;
+    }
+
+    this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    const movement = this.currentMovementState();
+    const actions: string[] = [];
+    if (movement.sprint) {
+      actions.push("sprint");
+    }
+    if (this.reloadEndsAt > now) {
+      actions.push("reload");
+    }
+
+    const signature = [
+      movement.moveX.toFixed(2),
+      movement.moveZ.toFixed(2),
+      actions.join(","),
+      this.tempLook.x.toFixed(2),
+      this.tempLook.z.toFixed(2),
+    ].join("|");
+
+    if (signature === this.lastInputSignature && now - this.lastInputSentAt < 0.12) {
+      return;
+    }
+
+    this.lastInputSignature = signature;
+    this.lastInputSentAt = now;
+    this.sharedRoom.sendInputTick({
+      tick: Date.now(),
+      sequence: this.nextInputSequence++,
+      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
+      movement: [movement.moveX, movement.moveZ],
+      actions,
+    });
+  }
+
+  private reconcileAuthoritativePosition(delta: number): void {
+    if (!this.authoritativePosition) {
+      return;
+    }
+
+    const errorX = this.authoritativePosition.x - this.camera.position.x;
+    const errorZ = this.authoritativePosition.z - this.camera.position.z;
+    const distance = Math.hypot(errorX, errorZ);
+
+    if (distance > 2 || this.playerDead) {
+      this.camera.position.x = this.authoritativePosition.x;
+      this.camera.position.z = this.authoritativePosition.z;
+      return;
+    }
+
+    if (distance < 0.02) {
+      return;
+    }
+
+    const blend = 1 - Math.exp(-10 * delta);
+    this.camera.position.x += errorX * blend;
+    this.camera.position.z += errorZ * blend;
   }
 
   private updateRemoteActors(delta: number, now: number): void {
@@ -1184,41 +1577,11 @@ export class LocalMatch {
     }
   }
 
-  private handleRoomHit(event: RoomHitEvent): void {
-    const now = performance.now() / 1000;
-    this.applyPlayerDamage(event.damage, event.attackerName, now, event.attackerId);
-  }
-
-  private handleRoomElimination(event: {
-    attackerId: string;
-    attackerName: string;
-    targetId: string;
-    targetName: string;
-  }): void {
-    if (event.attackerId === this.playerIdentity.id) {
-      this.playerEliminations += 1;
-      this.pushFeed(`${event.targetName} dropped.`, 1.7);
-    }
-
-    const attacker = this.remoteActors.get(event.attackerId);
-    if (attacker) {
-      attacker.eliminations += 1;
-    }
-
-    const target = this.remoteActors.get(event.targetId);
-    if (target) {
-      target.deaths += 1;
-      target.health = 0;
-      target.status = "respawning";
-      target.hitFlashUntil = performance.now() / 1000 + 0.16;
-    }
-  }
-
   private applyPlayerDamage(
     amount: number,
     attacker: string,
     now: number,
-    attackerId?: string,
+    _attackerId?: string,
   ): void {
     if (this.playerDead) {
       return;
@@ -1227,21 +1590,17 @@ export class LocalMatch {
     this.playerHealth = Math.max(0, this.playerHealth - amount);
     this.damageFlashUntil = now + DAMAGE_FLASH_DURATION;
     this.audio.playerHit();
-    this.publishRoomState(true);
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.publishHostSnapshot(true);
+    }
 
     if (this.playerHealth <= 0) {
       this.playerDead = true;
       this.playerDeaths += 1;
       this.playerRespawnsAt = now + PLAYER_RESPAWN_DELAY;
+      this.authoritativeRespawnAtMs = Date.now() + PLAYER_RESPAWN_DELAY * 1000;
 
-      if (this.activeMode === "shared" && attackerId) {
-        this.sharedRoom?.sendElimination(
-          attackerId,
-          attacker,
-          this.playerIdentity.id,
-          this.playerIdentity.name,
-        );
-      } else {
+      if (this.activeMode !== "shared") {
         const killer = this.enemies.find((enemy) => enemy.name === attacker);
         if (killer) {
           killer.eliminations += 1;
@@ -1250,7 +1609,9 @@ export class LocalMatch {
 
       this.audio.death();
       this.pushFeed(`${attacker} dropped you.`, PLAYER_RESPAWN_DELAY);
-      this.publishRoomState(true);
+      if (this.activeMode === "shared" && this.sharedRole === "host") {
+        this.publishHostSnapshot(true);
+      }
       return;
     }
 
@@ -1258,7 +1619,12 @@ export class LocalMatch {
   }
 
   private updateRespawns(now: number): void {
-    if (this.playerDead && this.playerRespawnsAt > 0 && now >= this.playerRespawnsAt) {
+    if (
+      this.playerDead &&
+      this.playerRespawnsAt > 0 &&
+      now >= this.playerRespawnsAt &&
+      !(this.activeMode === "shared" && this.sharedRole === "guest")
+    ) {
       this.spawnPlayer();
     }
 
@@ -1271,6 +1637,22 @@ export class LocalMatch {
         enemy.avatar.group.position.copy(enemy.spawnPoint);
         enemy.waypointIndex = 0;
         enemy.hitFlashUntil = 0;
+      }
+    }
+
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      const nowMs = Date.now();
+      for (const actor of this.remoteActors.values()) {
+        if (actor.status !== "respawning" || actor.respawnAt <= 0 || nowMs < actor.respawnAt) {
+          continue;
+        }
+
+        actor.health = 100;
+        actor.status = "alive";
+        actor.respawnAt = 0;
+        actor.hitFlashUntil = 0;
+        actor.targetPosition.copy(this.sharedSpawnPoint(actor.id, actor.deaths));
+        actor.displayPosition.copy(actor.targetPosition);
       }
     }
   }
@@ -1413,28 +1795,82 @@ export class LocalMatch {
     return "Click the viewport to engage controls. Pointer lock is used when available; fallback mouse-look stays browser-safe. WASD moves, Shift sprints, left click or Space fires, R reloads, and M reopens map select.";
   }
 
-  private publishRoomState(force = false): void {
-    if (this.activeMode !== "shared" || !this.sharedRoom) {
+  private publishHostSnapshot(force = false): void {
+    if (this.activeMode !== "shared" || this.sharedRole !== "host" || !this.sharedRoom) {
       return;
     }
 
-    this.sharedRoom.publish(this.roomPresence(), force);
+    this.sharedRoom.publishHostSnapshot(this.buildHostSnapshot(), force);
   }
 
-  private roomPresence(): OutboundRoomPresence {
-    this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+  private buildHostSnapshot(): HostRoomSnapshot {
+    const now = Date.now();
+    const phase = this.remoteActors.size > 0 ? "active" : "waiting";
 
     return {
+      snapshotId: this.nextHostSnapshotId++,
+      hostPeerId: this.playerIdentity.id,
+      phase,
+      roundPhase: phase === "active" ? "live" : "staging",
+      objective: {
+        objectiveId: "sandbox-room",
+        phase: phase === "active" ? "contested" : "idle",
+        value: this.remoteActors.size + 1,
+        detail:
+          phase === "active"
+            ? "Host is replicating the room state."
+            : "Host is waiting for another operator.",
+      },
+      roster: [
+        this.buildLocalPresenceSnapshot(now),
+        ...[...this.remoteActors.values()]
+          .sort((left, right) => left.name.localeCompare(right.name))
+          .map((actor) => this.buildRemotePresenceSnapshot(actor, now)),
+      ],
+    };
+  }
+
+  private buildLocalPresenceSnapshot(now: number): HostRoomSnapshot["roster"][number] {
+    this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    const localParticipant = this.sharedRoom?.participantsSnapshot.find(
+      (entry) => entry.id === this.playerIdentity.id,
+    );
+
+    return {
+      id: this.playerIdentity.id,
+      name: this.playerIdentity.name,
+      accentColor: this.playerIdentity.accentColor,
+      team: this.sharedTeam,
+      joinedAt: localParticipant?.joinedAt ?? now,
       health: this.playerHealth,
       eliminations: this.playerEliminations,
       deaths: this.playerDeaths,
       status: this.playerDead ? "respawning" : "alive",
-      position: [this.camera.position.x, this.camera.position.y, this.camera.position.z] as [
-        number,
-        number,
-        number,
-      ],
-      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z] as [number, number, number],
+      position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
+      respawnAt: this.playerDead ? this.authoritativeRespawnAtMs : 0,
+      updatedAt: now,
+    };
+  }
+
+  private buildRemotePresenceSnapshot(
+    actor: RemoteActor,
+    now: number,
+  ): HostRoomSnapshot["roster"][number] {
+    return {
+      id: actor.id,
+      name: actor.name,
+      accentColor: actor.accentColor,
+      team: actor.team,
+      joinedAt: actor.joinedAt,
+      health: actor.health,
+      eliminations: actor.eliminations,
+      deaths: actor.deaths,
+      status: actor.status,
+      position: [actor.targetPosition.x, PLAYER_EYE_HEIGHT, actor.targetPosition.z],
+      look: [actor.forward.x, 0, actor.forward.z],
+      respawnAt: actor.respawnAt,
+      updatedAt: now,
     };
   }
 

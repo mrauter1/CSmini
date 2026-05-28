@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "qa:manual-signaling": "node scripts/qa/manualSignalingVerification.mjs",
+    "qa:host-room": "node scripts/qa/hostRoomStateVerification.mjs",
     "qa:final": "node scripts/qa/finalVerification.mjs",
     "test": "npm run build && node scripts/qa/finalVerification.mjs"
   },

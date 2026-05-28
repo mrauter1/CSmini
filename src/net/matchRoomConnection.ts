@@ -7,38 +7,45 @@ import {
   type CombatantStatus,
   decodeRoomMessage,
   encodeRoomMessage,
-  isFreshRoomMessage,
-  ROOM_PROTOCOL,
-  ROOM_PROTOCOL_VERSION,
-  type OutboundRoomPresence,
+  type HostRoomSnapshot,
   type ParticipantIdentity,
   type ParticipantRecord,
-  type RoomEliminationEvent,
-  type RoomHitEvent,
+  type RoomInputTick,
+  type RoomLifecyclePhase,
   type RoomMessage,
-  type RoomPresenceSnapshot,
+  ROOM_PROTOCOL,
+  ROOM_PROTOCOL_VERSION,
   type TeamAssignment,
+  isFreshRoomMessage,
 } from "./protocol";
 import type { RoomTransport, RoomTransportPhase, RoomTransportStatus } from "./transport";
 import { WebRtcRoomTransport } from "./webrtcTransport";
 
-const HEARTBEAT_MS = 100;
 const HEARTBEAT_PULSE_MS = 900;
+const SNAPSHOT_PULSE_MS = 85;
 const STALE_PEER_MS = 2_400;
+const BROADCAST_HOST_KEY_PREFIX = "dustline.broadcast-host:";
 const OPERATOR_CALLSIGNS = ["Atlas", "Bishop", "Cinder", "Lancer", "Nova", "Pike", "Rivet", "Sable"];
 const OPERATOR_ACCENTS = ["#CFA66F", "#6F8FAA", "#819B58", "#B86E4E", "#7A8E96", "#A88E5E"];
 const SESSION_KEY = "dustline.operator-seed";
 
 export type MatchMode = "local" | "shared";
 export type RoomConnectionKind = "broadcast" | "webrtc-host" | "webrtc-join";
+export type MatchRoomRole = "host" | "guest";
 
 export interface RoomIdentity extends ParticipantIdentity {}
 
+export interface RoomInputEvent extends RoomInputTick {
+  peerId: string;
+  sentAt: number;
+}
+
 export interface SharedRoomHandlers {
-  onPresence: (presence: RoomPresenceSnapshot, event: "joined" | "updated") => void;
+  onParticipant: (participant: ParticipantRecord, event: "joined" | "updated") => void;
   onLeave: (peerId: string, reason: "leave" | "stale") => void;
-  onHit: (event: RoomHitEvent) => void;
-  onElimination: (event: RoomEliminationEvent) => void;
+  onInput: (event: RoomInputEvent) => void;
+  onSnapshot: (snapshot: HostRoomSnapshot) => void;
+  onRoomClosed: (reason: string) => void;
 }
 
 export interface RoomConnectionUiSnapshot {
@@ -52,25 +59,26 @@ export interface RoomConnectionUiSnapshot {
 }
 
 export interface RoomConnectionDebugSnapshot extends RoomConnectionUiSnapshot {
+  role: MatchRoomRole;
+  hostPeerId?: string;
+  participantCount: number;
   peerCount: number;
   peerIds: string[];
+  lastSnapshotId: number;
 }
 
 export interface MatchRoomConnection {
   readonly kind: RoomConnectionKind;
+  readonly role: MatchRoomRole;
   readonly roomId: string;
   readonly identity: RoomIdentity;
-  readonly peersSnapshot: RoomPresenceSnapshot[];
+  readonly hostPeerId?: string;
+  readonly participantsSnapshot: ParticipantRecord[];
+  readonly latestSnapshot?: HostRoomSnapshot;
   readonly uiSnapshot: RoomConnectionUiSnapshot;
   setHandlers(handlers: SharedRoomHandlers): void;
-  publish(presence: OutboundRoomPresence, force?: boolean): void;
-  sendHit(targetId: string, damage: number): boolean;
-  sendElimination(
-    attackerId: string,
-    attackerName: string,
-    targetId: string,
-    targetName: string,
-  ): void;
+  publishHostSnapshot(snapshot: HostRoomSnapshot, force?: boolean): void;
+  sendInputTick(input: RoomInputTick): boolean;
   tick(now?: number): void;
   dispose(): void;
   subscribe(listener: () => void): () => void;
@@ -90,8 +98,15 @@ interface BaseConnectionOptions {
   roomId: string;
   mapId: string;
   identity: RoomIdentity;
+  role: MatchRoomRole;
+  hostPeerId?: string;
   handlers: SharedRoomHandlers;
   transport: RoomTransport;
+}
+
+interface BroadcastHostClaim {
+  peerId: string;
+  updatedAt: number;
 }
 
 export function detectSharedRoomSupport(kind: RoomConnectionKind): {
@@ -129,17 +144,23 @@ export function createBroadcastMatchRoomConnection(
   identity: RoomIdentity,
   handlers: SharedRoomHandlers,
 ): MatchRoomConnection {
+  const hostClaim = claimBroadcastHost(roomId, identity.id);
   const transport = new BroadcastRoomTransport(roomId, identity.id, {
     onMessage: () => undefined,
   });
 
-  return new BroadcastMatchRoomConnection({
-    roomId,
-    mapId,
-    identity,
-    handlers,
-    transport,
-  });
+  return new BroadcastMatchRoomConnection(
+    {
+      roomId,
+      mapId,
+      identity,
+      role: hostClaim.peerId === identity.id ? "host" : "guest",
+      hostPeerId: hostClaim.peerId,
+      handlers,
+      transport,
+    },
+    `${BROADCAST_HOST_KEY_PREFIX}${roomId}`,
+  );
 }
 
 export function createHostMatchRoomConnection(
@@ -166,6 +187,8 @@ export function createHostMatchRoomConnection(
     roomId,
     mapId,
     identity,
+    role: "host",
+    hostPeerId: identity.id,
     handlers,
     transport,
   });
@@ -194,6 +217,7 @@ export function createJoinMatchRoomConnection(
     roomId,
     mapId,
     identity,
+    role: "guest",
     handlers,
     transport,
   });
@@ -201,21 +225,24 @@ export function createJoinMatchRoomConnection(
 
 abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   readonly roomId: string;
+  readonly role: MatchRoomRole;
   readonly identity: RoomIdentity;
-  readonly peers = new Map<string, RoomPresenceSnapshot>();
   readonly participants = new Map<string, ParticipantRecord>();
   readonly lastSeqByPeer = new Map<string, number>();
   readonly lastSeenByPeer = new Map<string, number>();
   readonly listeners = new Set<() => void>();
 
+  hostPeerId?: string;
+  latestSnapshot?: HostRoomSnapshot;
+
   protected readonly mapId: string;
   protected handlers: SharedRoomHandlers;
   protected readonly transport: RoomTransport;
-  protected lastPresence?: RoomPresenceSnapshot;
-  protected lastPresenceSentAt = 0;
   protected lastHeartbeatAt = 0;
+  protected lastSnapshotSentAt = 0;
   protected nextSeq = 1;
   protected joined = false;
+  protected roomClosed = false;
   protected uiState: RoomConnectionUiSnapshot;
 
   protected constructor(
@@ -224,7 +251,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   ) {
     this.roomId = options.roomId;
     this.mapId = options.mapId;
+    this.role = options.role;
     this.identity = options.identity;
+    this.hostPeerId = options.hostPeerId;
     this.handlers = options.handlers;
     this.transport = options.transport;
     this.uiState = this.createUiState(this.transport.getStatus());
@@ -232,8 +261,13 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     this.bindTransport();
   }
 
-  get peersSnapshot(): RoomPresenceSnapshot[] {
-    return [...this.peers.values()].sort((left, right) => left.name.localeCompare(right.name));
+  get participantsSnapshot(): ParticipantRecord[] {
+    return [...this.participants.values()].sort((left, right) => {
+      if (left.joinedAt !== right.joinedAt) {
+        return left.joinedAt - right.joinedAt;
+      }
+      return left.name.localeCompare(right.name);
+    });
   }
 
   get uiSnapshot(): RoomConnectionUiSnapshot {
@@ -244,67 +278,45 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     this.handlers = handlers;
   }
 
-  publish(presence: OutboundRoomPresence, force = false): void {
-    const now = Date.now();
-    this.lastPresence = {
-      id: this.identity.id,
-      name: this.identity.name,
-      accentColor: this.identity.accentColor,
-      health: presence.health,
-      eliminations: presence.eliminations,
-      deaths: presence.deaths,
-      status: presence.status,
-      position: presence.position,
-      look: presence.look,
-      updatedAt: now,
-      team: presence.team ?? this.defaultTeam(),
-    };
-
-    if (!force && now - this.lastPresenceSentAt < HEARTBEAT_MS) {
+  publishHostSnapshot(snapshot: HostRoomSnapshot, force = false): void {
+    if (this.role !== "host") {
       return;
     }
 
-    this.flushPresence(now);
+    this.latestSnapshot = snapshot;
+
+    const now = Date.now();
+    if (!force && now - this.lastSnapshotSentAt < SNAPSHOT_PULSE_MS) {
+      return;
+    }
+
+    this.flushSnapshot(now);
   }
 
-  sendHit(targetId: string, damage: number): boolean {
-    if (!this.peers.has(targetId)) {
+  sendInputTick(input: RoomInputTick): boolean {
+    if (this.role !== "guest") {
       return false;
     }
 
-    return this.sendMessage("combat-hit", {
-      attackerId: this.identity.id,
-      attackerName: this.identity.name,
-      targetId,
-      damage,
-    });
-  }
-
-  sendElimination(
-    attackerId: string,
-    attackerName: string,
-    targetId: string,
-    targetName: string,
-  ): void {
-    this.sendMessage("combat-elimination", {
-      attackerId,
-      attackerName,
-      targetId,
-      targetName,
-    });
+    return this.sendMessage("input-tick", input, this.hostPeerId);
   }
 
   tick(now = Date.now()): void {
     this.pruneStalePeers(now);
 
-    if (this.lastPresence && now - this.lastPresenceSentAt >= HEARTBEAT_MS) {
-      this.flushPresence(now);
+    if (
+      this.role === "host" &&
+      this.latestSnapshot &&
+      now - this.lastSnapshotSentAt >= SNAPSHOT_PULSE_MS
+    ) {
+      this.flushSnapshot(now);
     }
 
     if (now - this.lastHeartbeatAt >= HEARTBEAT_PULSE_MS) {
+      const phase = this.latestSnapshot?.phase ?? this.defaultLifecyclePhase();
       this.sendMessage("heartbeat", {
-        rosterCount: this.peers.size + 1,
-        phase: this.peers.size > 0 ? "active" : "waiting",
+        rosterCount: this.participants.size,
+        phase,
       });
       this.lastHeartbeatAt = now;
     }
@@ -327,8 +339,12 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   debugSnapshot(): RoomConnectionDebugSnapshot {
     return {
       ...this.uiState,
-      peerCount: this.peers.size,
-      peerIds: [...this.peers.keys()],
+      role: this.role,
+      hostPeerId: this.hostPeerId,
+      participantCount: this.participants.size,
+      peerCount: this.remoteParticipants().length,
+      peerIds: this.remoteParticipants().map((participant) => participant.id),
+      lastSnapshotId: this.latestSnapshot?.snapshotId ?? 0,
     };
   }
 
@@ -338,7 +354,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       phase: status.phase,
       title: this.defaultTitle(),
       detail: status.detail,
-      remoteName: this.peersSnapshot[0]?.name,
+      remoteName: this.remoteParticipants()[0]?.name,
     };
   }
 
@@ -348,24 +364,10 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       ...update,
       kind: this.kind,
       title: update.title ?? this.uiState.title,
-      remoteName: this.peersSnapshot[0]?.name ?? update.remoteName ?? this.uiState.remoteName,
+      remoteName:
+        this.remoteParticipants()[0]?.name ?? update.remoteName ?? this.uiState.remoteName,
     };
     this.emitStateChange();
-  }
-
-  protected flushPresence(now = Date.now()): void {
-    if (!this.lastPresence) {
-      return;
-    }
-
-    this.lastPresence = {
-      ...this.lastPresence,
-      updatedAt: now,
-    };
-    this.lastPresenceSentAt = now;
-    this.sendMessage("presence-update", {
-      presence: this.lastPresence,
-    });
   }
 
   protected sendMessage<Type extends RoomMessage["type"]>(
@@ -389,37 +391,49 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   protected rememberParticipant(participant: ParticipantRecord): void {
+    const existing = this.participants.get(participant.id);
     this.participants.set(participant.id, participant);
-    if (participant.id !== this.identity.id) {
-      this.lastSeenByPeer.set(participant.id, Date.now());
-    }
-  }
 
-  protected rememberPresence(presence: RoomPresenceSnapshot): void {
-    const existing = this.peers.get(presence.id);
-    this.peers.set(presence.id, presence);
-    this.lastSeenByPeer.set(presence.id, presence.updatedAt);
-    this.handlers.onPresence(presence, existing ? "updated" : "joined");
+    if (participant.id === this.identity.id) {
+      return;
+    }
+
+    this.lastSeenByPeer.set(participant.id, Date.now());
+    this.handlers.onParticipant(participant, existing ? "updated" : "joined");
     this.updateUiState({
-      remoteName: presence.name,
+      remoteName: participant.name,
     });
   }
 
   protected removePeer(peerId: string, reason: "leave" | "stale"): void {
-    const removedPresence = this.peers.delete(peerId);
+    const removedParticipant = this.participants.get(peerId);
     this.participants.delete(peerId);
     this.lastSeenByPeer.delete(peerId);
     this.lastSeqByPeer.delete(peerId);
-    if (removedPresence) {
+
+    if (removedParticipant) {
       this.handlers.onLeave(peerId, reason);
     }
+
+    const hostRemoved = peerId === this.hostPeerId && peerId !== this.identity.id;
+    if (hostRemoved && this.role === "guest") {
+      this.notifyRoomClosed(
+        reason === "stale" ? "Host room timed out." : "The host ended the room.",
+      );
+      return;
+    }
+
     this.updateUiState({
-      remoteName: this.peersSnapshot[0]?.name,
+      remoteName: this.remoteParticipants()[0]?.name,
       detail:
         this.transport.getStatus().phase === "connected"
-          ? this.peers.size > 0
-            ? `Connected with ${this.peers.size} remote operator${this.peers.size === 1 ? "" : "s"}.`
-            : "Connected. Awaiting another operator."
+          ? this.remoteParticipants().length > 0
+            ? `Connected with ${this.remoteParticipants().length} remote operator${
+                this.remoteParticipants().length === 1 ? "" : "s"
+              }.`
+            : this.role === "host"
+              ? "Connected. Awaiting another operator."
+              : "Connected. Waiting for host snapshots."
           : this.uiState.detail,
     });
   }
@@ -435,11 +449,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   protected defaultTeam(): TeamAssignment {
-    if (this.kind === "webrtc-join") {
-      return "bravo";
-    }
-
-    return "alpha";
+    return this.role === "host" ? "alpha" : "bravo";
   }
 
   protected buildParticipantRecord(team = this.defaultTeam()): ParticipantRecord {
@@ -451,6 +461,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   protected onTransportConnected(): void {
+    this.roomClosed = false;
+    this.rememberParticipant(this.buildParticipantRecord());
+
     if (this.kind === "webrtc-join" && !this.joined) {
       this.joined = true;
       this.sendMessage("join-request", {
@@ -458,23 +471,26 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         requestedRole: "guest",
         requestedTeam: "bravo",
         mapId: this.mapId,
-        capabilities: ["presence-update", "combat-hit", "combat-elimination", "manual-signaling"],
+        capabilities: ["input-tick", "host-snapshot", "manual-signaling"],
       });
       return;
     }
 
-    if (this.kind !== "webrtc-join") {
-      this.rememberParticipant(this.buildParticipantRecord());
-      this.sendMessage("participant-update", {
-        participant: this.buildParticipantRecord(),
-      });
+    if (this.role === "host") {
+      this.hostPeerId = this.identity.id;
     }
+
+    this.sendMessage("participant-update", {
+      participant: this.buildParticipantRecord(),
+    });
   }
 
   protected onTransportStatus(status: RoomTransportStatus): void {
     const detail =
-      status.phase === "connected" && this.peers.size > 0
-        ? `Connected with ${this.peers.size} remote operator${this.peers.size === 1 ? "" : "s"}.`
+      status.phase === "connected" && this.remoteParticipants().length > 0
+        ? `Connected with ${this.remoteParticipants().length} remote operator${
+            this.remoteParticipants().length === 1 ? "" : "s"
+          }.`
         : status.detail;
 
     this.updateUiState({
@@ -488,7 +504,14 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     }
 
     if (status.phase === "closed" || status.phase === "error") {
-      for (const peerId of [...this.peers.keys()]) {
+      if (this.role === "guest" && !this.roomClosed) {
+        this.notifyRoomClosed(
+          status.phase === "error" ? "The host connection failed." : "The room connection closed.",
+        );
+        return;
+      }
+
+      for (const peerId of [...this.lastSeenByPeer.keys()]) {
         this.removePeer(peerId, "leave");
       }
     }
@@ -511,6 +534,18 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return;
     }
 
+    if (this.remoteParticipants().length >= 1) {
+      this.sendMessage(
+        "join-rejected",
+        {
+          reason: "room-full",
+          detail: "This browser-hosted room is currently limited to one remote operator.",
+        },
+        message.fromPeerId,
+      );
+      return;
+    }
+
     const participant: ParticipantRecord = {
       ...message.payload.participant,
       team: message.payload.requestedTeam,
@@ -523,7 +558,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         participant,
         hostPeerId: this.identity.id,
         roomLabel: `${this.identity.name}'s room`,
-        roster: [this.buildParticipantRecord("alpha"), participant],
+        roster: this.participantsSnapshot,
       },
       message.fromPeerId,
     );
@@ -541,15 +576,16 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return;
     }
 
+    this.hostPeerId = message.payload.hostPeerId;
+    this.participants.clear();
+
     for (const participant of message.payload.roster) {
-      if (participant.id === this.identity.id) {
-        continue;
-      }
       this.rememberParticipant(participant);
     }
 
+    this.rememberParticipant(message.payload.participant);
     this.updateUiState({
-      detail: `Joined ${message.payload.roomLabel}. Waiting for shared snapshots.`,
+      detail: `Joined ${message.payload.roomLabel}. Waiting for host snapshots.`,
     });
   }
 
@@ -558,6 +594,19 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       phase: "error",
       detail: message.payload.detail,
     });
+  }
+
+  protected notifyRoomClosed(reason: string): void {
+    if (this.roomClosed) {
+      return;
+    }
+
+    this.roomClosed = true;
+    this.updateUiState({
+      phase: "closed",
+      detail: reason,
+    });
+    this.handlers.onRoomClosed(reason);
   }
 
   protected bindTransport(): void {
@@ -577,6 +626,23 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     for (const listener of this.listeners) {
       listener();
     }
+  }
+
+  protected remoteParticipants(): ParticipantRecord[] {
+    return this.participantsSnapshot.filter((participant) => participant.id !== this.identity.id);
+  }
+
+  protected defaultLifecyclePhase(): RoomLifecyclePhase {
+    return this.remoteParticipants().length > 0 ? "active" : "waiting";
+  }
+
+  private flushSnapshot(now: number): void {
+    if (!this.latestSnapshot) {
+      return;
+    }
+
+    this.lastSnapshotSentAt = now;
+    this.sendMessage("host-snapshot", this.latestSnapshot);
   }
 
   private readonly handleRawMessage = (raw: string): void => {
@@ -617,32 +683,35 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       case "participant-update":
         this.rememberParticipant(message.payload.participant);
         return;
-      case "presence-update":
-        this.rememberPresence(message.payload.presence);
-        return;
-      case "combat-hit":
-        if (message.payload.targetId === this.identity.id) {
-          this.handlers.onHit({
-            ...message.payload,
+      case "input-tick":
+        if (this.role === "host") {
+          this.handlers.onInput({
+            peerId: message.fromPeerId,
             sentAt: message.sentAt,
+            ...message.payload,
           });
         }
         return;
-      case "combat-elimination":
-        this.handlers.onElimination({
-          ...message.payload,
-          sentAt: message.sentAt,
-        });
-        return;
-      case "disconnect":
-        this.removePeer(message.fromPeerId, "leave");
-        return;
-      case "heartbeat":
-      case "input-tick":
       case "host-snapshot":
+        if (this.role !== "guest") {
+          return;
+        }
+
+        if (this.hostPeerId && message.fromPeerId !== this.hostPeerId) {
+          return;
+        }
+
+        this.latestSnapshot = message.payload;
+        this.handlers.onSnapshot(message.payload);
+        return;
       case "shot-claim":
       case "shot-result":
       case "objective-event":
+        return;
+      case "heartbeat":
+        return;
+      case "disconnect":
+        this.removePeer(message.fromPeerId, "leave");
         return;
       default:
         return;
@@ -662,11 +731,44 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
 }
 
 class BroadcastMatchRoomConnection extends BaseMatchRoomConnection {
-  constructor(options: BaseConnectionOptions) {
+  constructor(
+    options: BaseConnectionOptions,
+    private readonly hostClaimKey: string,
+  ) {
     super("broadcast", options);
     this.updateUiState({
-      detail: "Open the same map in another tab or use the WebRTC room flow for separate browsers.",
+      detail:
+        this.role === "host"
+          ? "Dev-room host armed. Open the same map in another tab."
+          : "Dev-room guest ready. Waiting for host snapshots.",
     });
+  }
+
+  override tick(now = Date.now()): void {
+    if (this.role === "host") {
+      writeBroadcastHostClaim(this.hostClaimKey, {
+        peerId: this.identity.id,
+        updatedAt: now,
+      });
+    } else if (!this.roomClosed) {
+      const claim = readBroadcastHostClaim(this.hostClaimKey);
+      if (!claim || claim.peerId !== this.hostPeerId || now - claim.updatedAt > STALE_PEER_MS) {
+        this.notifyRoomClosed("The dev-room host is no longer available.");
+      }
+    }
+
+    super.tick(now);
+  }
+
+  override dispose(): void {
+    if (this.role === "host") {
+      const claim = readBroadcastHostClaim(this.hostClaimKey);
+      if (claim?.peerId === this.identity.id) {
+        clearBroadcastHostClaim(this.hostClaimKey);
+      }
+    }
+
+    super.dispose();
   }
 }
 
@@ -757,4 +859,60 @@ function hashString(value: string): number {
   return hash >>> 0;
 }
 
-export type { CombatantStatus, OutboundRoomPresence, RoomEliminationEvent, RoomHitEvent, RoomPresenceSnapshot };
+function claimBroadcastHost(roomId: string, peerId: string): BroadcastHostClaim {
+  const key = `${BROADCAST_HOST_KEY_PREFIX}${roomId}`;
+  const now = Date.now();
+  const existing = readBroadcastHostClaim(key);
+
+  if (!existing || now - existing.updatedAt > STALE_PEER_MS) {
+    const claim = {
+      peerId,
+      updatedAt: now,
+    };
+    writeBroadcastHostClaim(key, claim);
+    return claim;
+  }
+
+  return existing;
+}
+
+function readBroadcastHostClaim(key: string): BroadcastHostClaim | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as BroadcastHostClaim).peerId === "string" &&
+      typeof (parsed as BroadcastHostClaim).updatedAt === "number"
+    ) {
+      return parsed as BroadcastHostClaim;
+    }
+  } catch {
+    // Ignore storage corruption and fall back to a fresh claim.
+  }
+
+  return null;
+}
+
+function writeBroadcastHostClaim(key: string, claim: BroadcastHostClaim): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(claim));
+  } catch {
+    // Storage can be unavailable in hardened/private contexts.
+  }
+}
+
+function clearBroadcastHostClaim(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Ignore storage cleanup failures.
+  }
+}
+
+export type { CombatantStatus, HostRoomSnapshot, ParticipantRecord, RoomInputTick, TeamAssignment };

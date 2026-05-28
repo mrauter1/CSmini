@@ -47,6 +47,8 @@ declare global {
       sharedTarget: () => string | null;
       fire: () => void;
       forcePlayerDeath: (attackerName?: string) => void;
+      setInputState: (movementX: number, movementZ: number, sprint?: boolean) => void;
+      clearInputState: () => void;
     };
   }
 }
@@ -81,6 +83,9 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     sharedTarget: () => app.debugSharedTarget(),
     fire: () => app.debugFire(),
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),
+    setInputState: (movementX, movementZ, sprint) =>
+      app.debugSetInputState(movementX, movementZ, sprint),
+    clearInputState: () => app.debugClearInputState(),
   };
 }
 
