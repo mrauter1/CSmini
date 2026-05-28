@@ -1,5 +1,6 @@
 import type { SerializedRoundState } from "./rounds";
 import type { SerializedBombRuntimeState } from "./bombState";
+import type { SerializedHostageRuntimeState } from "./hostageState";
 import type { TeamId, TeamPreference } from "../types";
 
 const HEARTBEAT_MS = 100;
@@ -29,6 +30,7 @@ export interface RoomPresenceSnapshot {
   status: CombatantStatus;
   roundState: SerializedRoundState;
   bombState: SerializedBombRuntimeState | null;
+  hostageState: SerializedHostageRuntimeState | null;
   position: [number, number, number];
   look: [number, number, number];
   updatedAt: number;
@@ -43,6 +45,7 @@ export interface OutboundRoomPresence {
   status: CombatantStatus;
   roundState: SerializedRoundState;
   bombState: SerializedBombRuntimeState | null;
+  hostageState: SerializedHostageRuntimeState | null;
   position: [number, number, number];
   look: [number, number, number];
 }

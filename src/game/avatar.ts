@@ -25,6 +25,12 @@ export interface WeaponRig {
   setVisible(visible: boolean): void;
 }
 
+export interface HostageAvatar {
+  group: THREE.Group;
+  update(elapsed: number, moveBlend: number, escorted: boolean): void;
+  setVisible(visible: boolean): void;
+}
+
 function makeMaterial(color: string): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     color,
@@ -210,6 +216,89 @@ export function createWeaponRig(): WeaponRig {
       flash.visible = firing;
       flash.scale.setScalar(firing ? 1 + recoil * 1.5 : 1);
       flashMaterial.opacity = firing ? 0.9 : 0;
+    },
+    setVisible(visible) {
+      group.visible = visible;
+    },
+  };
+}
+
+export function createHostageAvatar(): HostageAvatar {
+  const group = new THREE.Group();
+  const coatMaterial = makeMaterial("#6F675C");
+  const accentMaterial = makeMaterial("#A38768");
+  const detailMaterial = makeMaterial("#343637");
+  const skinMaterial = makeMaterial("#C2A17E");
+
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.82, 1.02, 0.44), coatMaterial);
+  torso.position.y = 1.16;
+  torso.castShadow = true;
+  torso.receiveShadow = true;
+  group.add(torso);
+
+  const vest = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.36, 0.5), accentMaterial);
+  vest.position.set(0, 1.16, 0.02);
+  vest.castShadow = true;
+  group.add(vest);
+
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), skinMaterial);
+  head.position.y = 1.92;
+  head.castShadow = true;
+  group.add(head);
+
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.16, 0.54), detailMaterial);
+  cap.position.set(0, 2.18, 0);
+  group.add(cap);
+
+  const leftArmPivot = new THREE.Group();
+  leftArmPivot.position.set(-0.54, 1.48, 0);
+  group.add(leftArmPivot);
+
+  const rightArmPivot = new THREE.Group();
+  rightArmPivot.position.set(0.54, 1.48, 0);
+  group.add(rightArmPivot);
+
+  const leftLegPivot = new THREE.Group();
+  leftLegPivot.position.set(-0.2, 0.72, 0);
+  group.add(leftLegPivot);
+
+  const rightLegPivot = new THREE.Group();
+  rightLegPivot.position.set(0.2, 0.72, 0);
+  group.add(rightLegPivot);
+
+  const leftArm = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.82, 0.22), coatMaterial);
+  leftArm.position.y = -0.42;
+  leftArm.castShadow = true;
+  leftArmPivot.add(leftArm);
+
+  const rightArm = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.82, 0.22), coatMaterial);
+  rightArm.position.y = -0.42;
+  rightArm.castShadow = true;
+  rightArmPivot.add(rightArm);
+
+  const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.92, 0.26), detailMaterial);
+  leftLeg.position.y = -0.46;
+  leftLeg.castShadow = true;
+  leftLegPivot.add(leftLeg);
+
+  const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.92, 0.26), detailMaterial);
+  rightLeg.position.y = -0.46;
+  rightLeg.castShadow = true;
+  rightLegPivot.add(rightLeg);
+
+  return {
+    group,
+    update(elapsed, moveBlend, escorted) {
+      const swing = Math.sin(elapsed * 6.4) * 0.55 * moveBlend;
+      const shoulderSet = escorted ? 0.12 : -0.08;
+
+      leftArmPivot.rotation.x = swing * 0.7 + shoulderSet;
+      rightArmPivot.rotation.x = -swing * 0.7 + shoulderSet;
+      leftLegPivot.rotation.x = -swing;
+      rightLegPivot.rotation.x = swing;
+      torso.rotation.z = Math.sin(elapsed * 2.6) * 0.03 * moveBlend;
+      group.rotation.z = 0;
+      group.position.y = 0;
     },
     setVisible(visible) {
       group.visible = visible;

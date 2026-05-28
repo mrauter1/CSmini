@@ -4,7 +4,7 @@ Date: 2026-05-28
 
 ## Scope
 
-Targeted verification for shared-room behavior inside `round-core-and-movement-foundation` and `bomb-mission-mode`:
+Targeted verification for shared-room behavior inside `round-core-and-movement-foundation`, `bomb-mission-mode`, and `hostage-mission-mode`:
 
 - same-map roster membership
 - explicit team assignment sync
@@ -12,6 +12,7 @@ Targeted verification for shared-room behavior inside `round-core-and-movement-f
 - different-map isolation
 - missing `BroadcastChannel` fallback
 - bomb carrier sync, planted-state sync, and defender-side defuse resolution
+- hostage rescuer assignment sync, escort-route progress sync, and extraction resolution
 
 ## Commands
 
@@ -53,6 +54,26 @@ The same two pages then stayed on `Sandline Foundry` for a live relay-charge exc
 
 Result: the retained shared-room path now propagates bomb carrier ownership, planted-site pressure, and defuse resolution without stale mission state between peers.
 
+### Shared hostage round
+
+The same two pages then advanced into round `2`, which rotated `Sandline Foundry` onto the hostage mission `Evac Escort`.
+
+- page 1 stayed on `Amber Vanguard`
+- page 2 stayed on `Cobalt Reach`, the rescue-side team for the hostage round
+- page 2 secured the live `Loading Crew` cluster, and page 1 observed the same rescuer id (`operator-9bdbb2b0`) through shared state
+- both pages exposed the same named escort route:
+  - `Loading Crew`
+  - `Drain Underpass`
+  - `Central Yard`
+  - `Generator Hall`
+  - `Water Tower Gate`
+- page 1 observed both hostage slots advance their route progress to `2`
+- page 1 observed `extractedCountObserved: 2`
+- both pages resolved with matching `extracted Loading Crew` result text
+- page 1 rendered the live extraction HUD line `1.6s to clear Water Tower Gate`
+
+Result: the retained shared-room path now synchronizes rescuer ownership, hostage escort progression, extraction pressure, and final rescue resolution between peers without leaving the hostage state stale or orphaned on the observing page.
+
 ### Map isolation
 
 A third page opened `Transit Crates` in shared mode while the first two stayed on `Sandline Foundry`.
@@ -84,5 +105,5 @@ Result: missing shared-room support fell back to the local path without crashing
 
 ## Notes
 
-- The shared-room QA here is intentionally scoped to the active subgoal: team rounds, roster membership, round phase, map isolation, relay-charge carrier sync, planted pressure, and defender-side defuse. Full hostage-mode and tactical-AI multiplayer verification remains for later subgoals.
-- The forced next-round advance used in the harness is a QA-only control path and not the shipped gameplay default.
+- The forced next-round advance used in the harness is a QA-only control path used to deterministically rotate from the round-one relay-charge mission into the round-two hostage mission; the shipped gameplay still advances rounds through live resolution and reset.
+- Tactical-AI multiplayer behavior remains outside this QA note and will be covered in the later AI-focused subgoal.

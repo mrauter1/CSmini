@@ -474,7 +474,9 @@ async function main() {
       movement: {},
       respawn: {},
       bombLocal: {},
+      hostageLocal: {},
       bombShared: {},
+      hostageShared: {},
       shared: {},
       fallback: {},
     };
@@ -700,6 +702,122 @@ async function main() {
       hudProgress: localBombHud.progress,
     };
 
+    await setTeamPreference(localPage, "cobalt");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await setInvulnerable(localPage, true);
+    await localPage.evaluate("window.__dustlineQa__.forceNextRound()");
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.roundNumber === 2 && state?.round?.missionType === 'hostage';
+        })()
+      `,
+      5_000,
+    );
+    await forceRoundActive(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
+      5_000,
+    );
+
+    const localHostageStart = await getState(localPage);
+    const localHostageCount = localHostageStart.hostage.hostages.length;
+    assert(localHostageStart.round.missionType === "hostage", "Expected round two local play to rotate into hostage mode");
+    assert(
+      localHostageStart.hostage.route.length >= 3,
+      "Expected hostage mode to expose a named escort route",
+    );
+
+    const localCluster = localHostageStart.hostage.clusterPosition;
+    const localExtraction = localHostageStart.hostage.extractionPosition;
+    await localPage.evaluate(
+      `window.__dustlineQa__.setCameraPose(${localCluster.x}, ${localHostageStart.localPlayer.position.y}, ${localCluster.z}, 0)`,
+    );
+    await delay(220);
+    const localHostageSecurePose = await getState(localPage);
+    assert(
+      localHostageSecurePose.hostage.localCanSecure === true,
+      "Expected the local rescuer to stand inside the live hostage cluster",
+    );
+
+    await startObjectiveAction(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'securing'",
+      5_000,
+    );
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'escorting'",
+      5_000,
+    );
+
+    const localHostageEscort = await getState(localPage);
+    const localRouteLabels = localHostageEscort.hostage.route.map((point) => point.label);
+    await localPage.evaluate(
+      `window.__dustlineQa__.setCameraPose(${localExtraction.x}, ${localHostageStart.localPlayer.position.y}, ${localExtraction.z}, 0)`,
+    );
+    await localPage.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.hostage?.hostages?.[0]?.pathIndex ?? 0) >= ${Math.min(2, localRouteLabels.length - 1)}`,
+      18_000,
+    );
+    const localHostageRouteState = await getState(localPage);
+    await localPage.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.hostage?.extractedCount ?? 0) === ${localHostageCount}`,
+      28_000,
+    );
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
+      5_000,
+    );
+
+    const localHostageHud = await localPage.evaluate(`
+      ({
+        status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
+        progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
+      })
+    `);
+    assert(
+      /clear/i.test(localHostageHud.progress),
+      "Expected the local hostage HUD to expose extraction progress",
+    );
+
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /extracted/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      12_000,
+    );
+    const localHostageResolved = await getState(localPage);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.roundNumber === 3 && state?.round?.phase === 'briefing';
+        })()
+      `,
+      10_000,
+    );
+    const localHostageReset = await getState(localPage);
+    summary.hostageLocal = {
+      missionType: localHostageStart.round.missionType,
+      clusterLabel: localHostageStart.hostage.clusterLabel,
+      extractionLabel: localHostageStart.hostage.extractionLabel,
+      routeLabels: localRouteLabels,
+      localCanSecure: localHostageSecurePose.hostage.localCanSecure,
+      escortPhase: localHostageEscort.hostage.phase,
+      routeProgress: localHostageRouteState.hostage.hostages.map((hostage) => hostage.pathIndex),
+      extractedCount: localHostageResolved.hostage.extractedCount,
+      resolution: localHostageResolved.round.result,
+      hudStatus: localHostageHud.status,
+      hudProgress: localHostageHud.progress,
+      roundAfterReset: localHostageReset.round.roundNumber,
+      phaseAfterReset: localHostageReset.round.phase,
+    };
+
     await setInvulnerable(localPage, false);
 
     const sharedPageOne = await createPage(`${ROOT_URL}?qa=1`);
@@ -888,6 +1006,103 @@ async function main() {
       roundBeforeAdvance: sharedRoundBefore,
       roundAfterAdvance: sharedAfterTwo.round.roundNumber,
       phaseAfterAdvance: sharedAfterTwo.round.phase,
+    };
+
+    assert(sharedAfterTwo.round.missionType === "hostage", "Expected shared round two to rotate into hostage mode");
+    await forceRoundActive(sharedPageTwo);
+    await sharedPageOne.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
+      5_000,
+    );
+
+    const sharedHostageStartOne = await getState(sharedPageOne);
+    const sharedHostageStartTwo = await getState(sharedPageTwo);
+    const sharedHostageCount = sharedHostageStartTwo.hostage.hostages.length;
+    const sharedCluster = sharedHostageStartTwo.hostage.clusterPosition;
+    const sharedExtraction = sharedHostageStartTwo.hostage.extractionPosition;
+
+    await sharedPageTwo.evaluate(
+      `window.__dustlineQa__.setCameraPose(${sharedCluster.x}, ${sharedHostageStartTwo.localPlayer.position.y}, ${sharedCluster.z}, 0)`,
+    );
+    await delay(220);
+    await engageControls(sharedPageTwo);
+    const sharedHostageSecurePose = await getState(sharedPageTwo);
+    assert(
+      sharedHostageSecurePose.hostage.localCanSecure === true,
+      "Expected the shared rescuer to stand inside the live hostage cluster",
+    );
+
+    await sharedPageTwo.bringToFront();
+    await startObjectiveAction(sharedPageTwo);
+    await sharedPageTwo.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'escorting'",
+      5_000,
+    );
+    await sharedPageOne.waitForExpression(
+      `window.__dustlineQa__?.getState()?.hostage?.rescuerId === ${JSON.stringify(sharedHostageStartTwo.localPlayer.id)}`,
+      5_000,
+    );
+    const sharedHostageEscortOne = await getState(sharedPageOne);
+    const sharedRouteLabels = sharedHostageEscortOne.hostage.route.map((point) => point.label);
+
+    await sharedPageTwo.evaluate(
+      `window.__dustlineQa__.setCameraPose(${sharedExtraction.x}, ${sharedHostageStartTwo.localPlayer.position.y}, ${sharedExtraction.z}, 0)`,
+    );
+    await sharedPageOne.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.hostage?.hostages?.[0]?.pathIndex ?? 0) >= ${Math.min(2, sharedRouteLabels.length - 1)}`,
+      18_000,
+    );
+    const sharedHostageRouteState = await getState(sharedPageOne);
+    await sharedPageOne.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.hostage?.extractedCount ?? 0) === ${sharedHostageCount}`,
+      28_000,
+    );
+    await sharedPageTwo.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
+      5_000,
+    );
+
+    const sharedHostageHudOne = await sharedPageOne.evaluate(`
+      ({
+        status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
+        progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
+      })
+    `);
+    await sharedPageOne.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /extracted/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      12_000,
+    );
+    await sharedPageTwo.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /extracted/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      12_000,
+    );
+
+    const sharedHostageResolvedOne = await getState(sharedPageOne);
+    const sharedHostageResolvedTwo = await getState(sharedPageTwo);
+    summary.hostageShared = {
+      clusterLabel: sharedHostageStartTwo.hostage.clusterLabel,
+      extractionLabel: sharedHostageStartTwo.hostage.extractionLabel,
+      routeLabels: sharedRouteLabels,
+      rescuerId: sharedHostageStartTwo.localPlayer.id,
+      localCanSecure: sharedHostageSecurePose.hostage.localCanSecure,
+      observerRescuerId: sharedHostageEscortOne.hostage.rescuerId,
+      routeProgressObserved: sharedHostageRouteState.hostage.hostages.map((hostage) => hostage.pathIndex),
+      extractedCountObserved: sharedHostageResolvedOne.hostage.extractedCount,
+      resolutionPageOne: sharedHostageResolvedOne.round.result,
+      resolutionPageTwo: sharedHostageResolvedTwo.round.result,
+      observerHudStatus: sharedHostageHudOne.status,
+      observerHudProgress: sharedHostageHudOne.progress,
+      observerMissionType: sharedHostageStartOne.round.missionType,
     };
 
     const fallbackPage = await createPage(`${ROOT_URL}?qa=1`, `

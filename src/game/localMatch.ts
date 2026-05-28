@@ -17,8 +17,10 @@ import {
 } from "./multiplayerRoom";
 import {
   createCombatantAvatar,
+  createHostageAvatar,
   createWeaponRig,
   type CombatantAvatar,
+  type HostageAvatar,
   type WeaponRig,
 } from "./avatar";
 import { RetroAudio } from "./audio";
@@ -48,6 +50,17 @@ import {
   type BombCombatantSnapshot,
   type BombRuntimeState,
 } from "./bombState";
+import {
+  allHostagesExtracted,
+  createHostageRuntimeState,
+  currentHostageProgress,
+  extractedHostageCount,
+  hydrateHostageRuntimeState,
+  serializeHostageRuntimeState,
+  shouldAdoptHostageRuntimeState,
+  type HostageRuntimeState,
+  type HostageUnitRuntime,
+} from "./hostageState";
 import {
   createBriefingRoundState,
   createInitialRoundState,
@@ -182,6 +195,13 @@ interface RemoteActor {
   lastSeenAt: number;
 }
 
+interface HostageActor {
+  id: string;
+  avatar: HostageAvatar;
+  moveBlend: number;
+  lastPosition: THREE.Vector3;
+}
+
 interface FeedMessage {
   text: string;
   expiresAt: number;
@@ -226,6 +246,7 @@ export class LocalMatch {
   private animationHandle = 0;
   private roundState: RoundState;
   private bombState: BombRuntimeState | null = null;
+  private hostageState: HostageRuntimeState | null = null;
   private playerHealth = 100;
   private ammoInClip = CLIP_SIZE;
   private reserveAmmo = RESERVE_AMMO;
@@ -248,6 +269,7 @@ export class LocalMatch {
   private playerCrouching = false;
   private playerEyeHeight = currentEyeHeight(createPlayerMovementState());
   private qaInvulnerable = false;
+  private readonly hostageActors = new Map<string, HostageActor>();
 
   constructor(
     private readonly host: HTMLElement,
@@ -380,6 +402,7 @@ export class LocalMatch {
         result: this.roundState.resolutionLabel,
       },
       bomb: this.debugBombStateSnapshot(),
+      hostage: this.debugHostageStateSnapshot(),
       teamSpawns: {
         amber: this.toPoint(this.teamSpawnPositions.amber),
         cobalt: this.toPoint(this.teamSpawnPositions.cobalt),
@@ -483,32 +506,44 @@ export class LocalMatch {
   }
 
   debugStartObjectiveAction(): boolean {
-    if (!this.bombState || this.roundState.phase !== "active" || this.playerDead) {
+    if (this.roundState.phase !== "active" || this.playerDead) {
       return false;
     }
 
-    const siteDistance = this.distanceToBombSite(this.camera.position);
-    if (siteDistance > this.bombState.site.radius) {
-      return false;
+    if (this.bombState) {
+      const siteDistance = this.distanceToBombSite(this.camera.position);
+      if (siteDistance <= this.bombState.site.radius) {
+        if (
+          this.bombState.phase === "carried" &&
+          this.localTeamId === this.bombState.attackingTeam &&
+          this.bombState.carrierId === this.playerIdentity.id
+        ) {
+          this.interactHeld = true;
+          this.startBombPlant(this.roundNow());
+          this.emitSnapshot();
+          return true;
+        }
+
+        if (
+          this.bombState.phase === "planted" &&
+          this.localTeamId === this.bombState.defendingTeam
+        ) {
+          this.interactHeld = true;
+          this.startBombDefuse(this.roundNow());
+          this.emitSnapshot();
+          return true;
+        }
+      }
     }
 
     if (
-      this.bombState.phase === "carried" &&
-      this.localTeamId === this.bombState.attackingTeam &&
-      this.bombState.carrierId === this.playerIdentity.id
+      this.hostageState &&
+      this.hostageState.phase === "awaiting-rescue" &&
+      this.localTeamId === this.hostageState.attackingTeam &&
+      this.distanceToHostageCluster(this.camera.position) <= this.hostageState.cluster.radius
     ) {
       this.interactHeld = true;
-      this.startBombPlant(this.roundNow());
-      this.emitSnapshot();
-      return true;
-    }
-
-    if (
-      this.bombState.phase === "planted" &&
-      this.localTeamId === this.bombState.defendingTeam
-    ) {
-      this.interactHeld = true;
-      this.startBombDefuse(this.roundNow());
+      this.startHostageSecure(this.roundNow());
       this.emitSnapshot();
       return true;
     }
@@ -698,6 +733,16 @@ export class LocalMatch {
           this.bombState = remoteBomb;
         }
 
+        const remoteHostage = hydrateHostageRuntimeState(
+          this.map,
+          this.roundState.activeMission,
+          presence.hostageState,
+        );
+        if (shouldAdoptHostageRuntimeState(this.hostageState, remoteHostage)) {
+          this.hostageState = remoteHostage;
+          this.syncHostageActors();
+        }
+
         this.emitSnapshot();
       },
       onLeave: (peerId) => {
@@ -825,6 +870,13 @@ export class LocalMatch {
       this.bombCombatants(),
       this.roundNow(),
     );
+    this.hostageState = createHostageRuntimeState(
+      this.map,
+      this.roundState.activeMission,
+      this.roundState.roundNumber,
+      this.roundNow(),
+    );
+    this.syncHostageActors();
 
     this.weaponRig.setVisible(true);
 
@@ -972,6 +1024,86 @@ export class LocalMatch {
       actor.displayPosition.copy(spawn);
       actor.avatar.group.position.copy(spawn);
       actor.hitFlashUntil = 0;
+    }
+  }
+
+  private syncHostageActors(): void {
+    const activeIds = new Set(this.hostageState?.hostages.map((hostage) => hostage.id) ?? []);
+
+    for (const [hostageId, actor] of this.hostageActors) {
+      if (activeIds.has(hostageId)) {
+        continue;
+      }
+
+      this.scene.remove(actor.avatar.group);
+      disposeObject(actor.avatar.group);
+      this.hostageActors.delete(hostageId);
+    }
+
+    if (!this.hostageState) {
+      return;
+    }
+
+    for (const hostage of this.hostageState.hostages) {
+      const existing = this.hostageActors.get(hostage.id);
+      const point = new THREE.Vector3(hostage.position[0], hostage.position[1], hostage.position[2]);
+
+      if (existing) {
+        existing.avatar.group.position.copy(point);
+        existing.lastPosition.copy(point);
+        continue;
+      }
+
+      const avatar = createHostageAvatar();
+      avatar.group.position.copy(point);
+      this.scene.add(avatar.group);
+      this.hostageActors.set(hostage.id, {
+        id: hostage.id,
+        avatar,
+        moveBlend: 0,
+        lastPosition: point.clone(),
+      });
+    }
+  }
+
+  private updateHostageActors(delta: number, now: number): void {
+    if (!this.hostageState) {
+      return;
+    }
+
+    for (const hostage of this.hostageState.hostages) {
+      const actor = this.hostageActors.get(hostage.id);
+      if (!actor) {
+        continue;
+      }
+
+      const nextPosition = new THREE.Vector3(
+        hostage.position[0],
+        hostage.position[1],
+        hostage.position[2],
+      );
+      const movement = nextPosition.clone().sub(actor.lastPosition);
+      const moveAmount = movement.length();
+
+      actor.avatar.group.position.copy(nextPosition);
+      actor.moveBlend = THREE.MathUtils.damp(
+        actor.moveBlend,
+        moveAmount > 0.03 ? 1 : 0,
+        8,
+        delta,
+      );
+
+      if (moveAmount > 0.01) {
+        actor.avatar.group.lookAt(
+          nextPosition.x + movement.x,
+          1.2,
+          nextPosition.z + movement.z,
+        );
+      }
+
+      actor.avatar.update(now, actor.moveBlend, this.hostageState.phase !== "awaiting-rescue");
+      actor.avatar.setVisible(!hostage.extracted);
+      actor.lastPosition.copy(nextPosition);
     }
   }
 
@@ -1199,6 +1331,7 @@ export class LocalMatch {
     }
 
     this.updateBombObjectiveState(roundNow);
+    this.updateHostageObjectiveState(delta, roundNow);
 
     const previousRound = this.roundState;
     const nextRound = tickRoundState(
@@ -1224,6 +1357,7 @@ export class LocalMatch {
     );
     this.weaponRig.setVisible(!this.playerDead);
     this.recoil = THREE.MathUtils.damp(this.recoil, 0, 14, delta);
+    this.updateHostageActors(delta, now);
 
     this.renderer.render(this.scene, this.camera);
     this.emitSnapshot();
@@ -1494,6 +1628,372 @@ export class LocalMatch {
     if (canPlant) {
       this.startBombPlant(now);
     }
+  }
+
+  private distanceToHostageCluster(position: THREE.Vector3): number {
+    if (!this.hostageState) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return Math.hypot(
+      position.x - this.hostageState.cluster.position[0],
+      position.z - this.hostageState.cluster.position[2],
+    );
+  }
+
+  private distanceToExtractionZone(position: THREE.Vector3): number {
+    if (!this.hostageState) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return Math.hypot(
+      position.x - this.hostageState.extraction.position[0],
+      position.z - this.hostageState.extraction.position[2],
+    );
+  }
+
+  private hostageObjectiveAuthority(): boolean {
+    if (!this.hostageState) {
+      return false;
+    }
+
+    if (this.activeMode === "local") {
+      return true;
+    }
+
+    if (this.hostageState.phase === "awaiting-rescue") {
+      return this.localTeamId === this.hostageState.attackingTeam;
+    }
+
+    return (
+      this.hostageState.actingCombatantId === this.playerIdentity.id ||
+      this.hostageState.rescuerId === this.playerIdentity.id
+    );
+  }
+
+  private hostageFormationOffset(slotIndex: number): THREE.Vector3 {
+    const offsets = [
+      new THREE.Vector3(-0.75, 0, -0.2),
+      new THREE.Vector3(0.75, 0, -0.2),
+      new THREE.Vector3(-0.75, 0, 0.65),
+      new THREE.Vector3(0.75, 0, 0.65),
+    ];
+
+    return offsets[slotIndex % offsets.length] ?? new THREE.Vector3();
+  }
+
+  private hostageTargetPoint(hostage: HostageUnitRuntime): THREE.Vector3 {
+    if (!this.hostageState) {
+      return new THREE.Vector3();
+    }
+
+    const finalIndex = Math.max(0, this.hostageState.route.length - 1);
+    const targetIndex = Math.min(hostage.pathIndex, finalIndex);
+    const target = this.hostageState.route[targetIndex] ?? this.hostageState.route[finalIndex];
+
+    if (!target) {
+      return new THREE.Vector3();
+    }
+
+    const point = new THREE.Vector3(target.position[0], target.position[1], target.position[2]);
+    if (targetIndex === finalIndex) {
+      point.add(this.hostageFormationOffset(hostage.slotIndex));
+    }
+
+    return point;
+  }
+
+  private allHostagesAtExtraction(): boolean {
+    return allHostagesExtracted(this.hostageState);
+  }
+
+  private updateHostageEscortMovement(delta: number, now: number): void {
+    if (
+      !this.hostageState ||
+      (this.hostageState.phase !== "escorting" && this.hostageState.phase !== "extracting")
+    ) {
+      return;
+    }
+
+    const rescuer = this.bombCombatantById(this.hostageState.rescuerId);
+    if (!rescuer?.alive) {
+      return;
+    }
+
+    const hostageState = this.hostageState;
+    const routeEnd = Math.max(0, hostageState.route.length - 1);
+    const movementDelta = THREE.MathUtils.clamp(now - hostageState.updatedAt, 0.016, 1);
+    let changed = false;
+    const nextHostages = hostageState.hostages.map((hostage) => {
+      if (hostage.extracted) {
+        return hostage;
+      }
+
+      let pathIndex = hostage.pathIndex;
+      let position = new THREE.Vector3(hostage.position[0], hostage.position[1], hostage.position[2]);
+      let targetPoint = this.hostageTargetPoint({ ...hostage, pathIndex });
+      let distance = position.distanceTo(targetPoint);
+
+      if (distance < 0.7 && pathIndex < routeEnd) {
+        pathIndex += 1;
+        changed = true;
+        targetPoint = this.hostageTargetPoint({ ...hostage, pathIndex });
+        distance = position.distanceTo(targetPoint);
+      }
+
+      if (distance > 0.01) {
+        const direction = targetPoint.clone().sub(position).normalize();
+        const step = Math.min(distance, 2.05 * movementDelta);
+        const nextPosition = position.clone().add(direction.multiplyScalar(step));
+
+        if (nextPosition.distanceTo(position) > 0.001) {
+          changed = true;
+          position = nextPosition;
+        }
+      }
+
+      const extracted =
+        pathIndex >= routeEnd &&
+        this.distanceToExtractionZone(position) <= hostageState.extraction.radius * 0.72;
+      if (extracted !== hostage.extracted) {
+        changed = true;
+      }
+
+      return {
+        ...hostage,
+        extracted,
+        pathIndex,
+        position: [
+          Number(position.x.toFixed(4)),
+          Number(position.y.toFixed(4)),
+          Number(position.z.toFixed(4)),
+        ] as [number, number, number],
+      };
+    });
+
+    if (nextHostages.some((hostage) => hostage.extracted)) {
+      for (const hostage of nextHostages) {
+        if (hostage.extracted) {
+          continue;
+        }
+
+        const offset = this.hostageFormationOffset(hostage.slotIndex);
+        hostage.extracted = true;
+        hostage.pathIndex = routeEnd;
+        hostage.position = [
+          hostageState.extraction.position[0] + offset.x,
+          hostageState.extraction.position[1] + offset.y,
+          hostageState.extraction.position[2] + offset.z,
+        ];
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    this.hostageState = {
+      ...hostageState,
+      hostages: nextHostages,
+      updatedAt: now,
+    };
+  }
+
+  private updateHostageObjectiveState(delta: number, now: number): void {
+    if (!this.hostageState || this.roundState.phase !== "active") {
+      return;
+    }
+
+    const authority = this.hostageObjectiveAuthority();
+    if (!authority) {
+      return;
+    }
+
+    if (this.hostageState.phase === "securing") {
+      const rescuer = this.bombCombatantById(this.hostageState.actingCombatantId);
+      const rescuerPosition = this.bombCombatantPosition(this.hostageState.actingCombatantId);
+      const rescuerDistance = rescuerPosition
+        ? this.distanceToHostageCluster(rescuerPosition)
+        : Number.POSITIVE_INFINITY;
+
+      if (
+        this.hostageState.secureEndsAt !== null &&
+        now >= this.hostageState.secureEndsAt
+      ) {
+        this.completeHostageSecure(now);
+        return;
+      }
+
+      const localSecuring = this.hostageState.actingCombatantId === this.playerIdentity.id;
+      const securingBroken =
+        !rescuer ||
+        !rescuer.alive ||
+        rescuerDistance > this.hostageState.cluster.radius + 0.2 ||
+        (localSecuring &&
+          (!this.interactHeld || this.playerDead || !this.inputCaptured()));
+
+      if (securingBroken) {
+        this.cancelHostageSecure(now);
+      }
+
+      return;
+    }
+
+    if (this.hostageState.phase === "awaiting-rescue") {
+      const canSecure =
+        this.localTeamId === this.hostageState.attackingTeam &&
+        !this.playerDead &&
+        this.inputCaptured() &&
+        this.interactHeld &&
+        this.distanceToHostageCluster(this.camera.position) <= this.hostageState.cluster.radius;
+
+      if (canSecure) {
+        this.startHostageSecure(now);
+      }
+
+      return;
+    }
+
+    this.updateHostageEscortMovement(delta, now);
+
+    if (this.hostageState.phase === "extracting") {
+      const rescuerPosition = this.bombCombatantPosition(this.hostageState.rescuerId);
+      const extractionBroken =
+        !rescuerPosition ||
+        this.playerDead ||
+        this.distanceToExtractionZone(rescuerPosition) > this.hostageState.extraction.radius + 0.25;
+
+      if (
+        this.hostageState.extractEndsAt !== null &&
+        now >= this.hostageState.extractEndsAt
+      ) {
+        const rescuerName = this.hostageState.rescuerName ?? "Cobalt Reach";
+        this.applyRoundState(
+          resolveRoundState(
+            this.roundState,
+            this.hostageState.attackingTeam,
+            `${rescuerName} extracted ${this.hostageState.cluster.label}.`,
+            now,
+          ),
+        );
+        return;
+      }
+
+      if (extractionBroken || !this.allHostagesAtExtraction()) {
+        this.cancelHostageExtraction(now);
+      }
+
+      return;
+    }
+
+    const readyToExtract =
+      this.hostageState.rescuerId === this.playerIdentity.id &&
+      !this.playerDead &&
+      this.allHostagesAtExtraction() &&
+      this.distanceToExtractionZone(this.camera.position) <= this.hostageState.extraction.radius;
+
+    if (readyToExtract) {
+      this.startHostageExtraction(now);
+    }
+  }
+
+  private startHostageSecure(now: number): void {
+    if (!this.hostageState || this.hostageState.phase !== "awaiting-rescue") {
+      return;
+    }
+
+    this.hostageState = {
+      ...this.hostageState,
+      phase: "securing",
+      actingCombatantId: this.playerIdentity.id,
+      actingCombatantName: this.playerIdentity.name,
+      secureStartedAt: now,
+      secureEndsAt: now + this.hostageState.secureSeconds,
+      updatedAt: now,
+    };
+    this.pushFeed(`Securing ${this.hostageState.cluster.label}...`, 1);
+    this.publishRoomState(true);
+  }
+
+  private cancelHostageSecure(now: number): void {
+    if (!this.hostageState || this.hostageState.phase !== "securing") {
+      return;
+    }
+
+    this.hostageState = {
+      ...this.hostageState,
+      phase: "awaiting-rescue",
+      actingCombatantId: null,
+      actingCombatantName: null,
+      secureStartedAt: null,
+      secureEndsAt: null,
+      updatedAt: now,
+    };
+    this.pushFeed("Escort link interrupted.", 0.9);
+    this.publishRoomState(true);
+  }
+
+  private completeHostageSecure(now: number): void {
+    if (!this.hostageState || this.hostageState.phase !== "securing") {
+      return;
+    }
+
+    const rescuerId = this.hostageState.actingCombatantId ?? this.playerIdentity.id;
+    const rescuerName = this.hostageState.actingCombatantName ?? this.playerIdentity.name;
+    this.hostageState = {
+      ...this.hostageState,
+      phase: "escorting",
+      rescuerId,
+      rescuerName,
+      actingCombatantId: null,
+      actingCombatantName: null,
+      secureStartedAt: null,
+      secureEndsAt: null,
+      updatedAt: now,
+    };
+    this.pushFeed(`${rescuerName} secured ${this.hostageState.cluster.label}.`, 2.1);
+    this.publishRoomState(true);
+  }
+
+  private startHostageExtraction(now: number): void {
+    if (!this.hostageState || this.hostageState.phase !== "escorting") {
+      return;
+    }
+
+    this.hostageState = {
+      ...this.hostageState,
+      phase: "extracting",
+      actingCombatantId: this.playerIdentity.id,
+      actingCombatantName: this.playerIdentity.name,
+      extractStartedAt: now,
+      extractEndsAt: now + this.hostageState.extractSeconds,
+      updatedAt: now,
+    };
+    this.roundState = {
+      ...this.roundState,
+      phaseEndsAt: Math.max(this.roundState.phaseEndsAt, now + this.hostageState.extractSeconds),
+    };
+    this.pushFeed(`Opening ${this.hostageState.extraction.label}...`, 1.2);
+    this.publishRoomState(true);
+  }
+
+  private cancelHostageExtraction(now: number): void {
+    if (!this.hostageState || this.hostageState.phase !== "extracting") {
+      return;
+    }
+
+    this.hostageState = {
+      ...this.hostageState,
+      phase: "escorting",
+      actingCombatantId: null,
+      actingCombatantName: null,
+      extractStartedAt: null,
+      extractEndsAt: null,
+      updatedAt: now,
+    };
+    this.pushFeed("Extraction window broken.", 0.9);
+    this.publishRoomState(true);
   }
 
   private startBombPlant(now: number): void {
@@ -1992,6 +2492,23 @@ export class LocalMatch {
   }
 
   private objectiveRoleForCombatant(combatantId: string): string {
+    if (this.hostageState) {
+      if (
+        this.hostageState.phase === "securing" &&
+        this.hostageState.actingCombatantId === combatantId
+      ) {
+        return "Securing";
+      }
+
+      if (
+        (this.hostageState.phase === "escorting" ||
+          this.hostageState.phase === "extracting") &&
+        this.hostageState.rescuerId === combatantId
+      ) {
+        return "Escort";
+      }
+    }
+
     if (!this.bombState) {
       return "";
     }
@@ -2099,7 +2616,7 @@ export class LocalMatch {
     const team = getTeamDefinition(this.localTeamId);
     const teamCounts = this.teamCountsSnapshot();
     const roster = this.rosterSnapshot();
-    const bombHud = this.bombHudSnapshot(roundNow);
+    const objectiveHud = this.objectiveHudSnapshot(roundNow);
     const deathLine = this.playerDead
       ? "Down for the rest of the round. Wait for the next reset or press M to reopen map select."
       : "";
@@ -2151,12 +2668,24 @@ export class LocalMatch {
         this.roundState.phase === "resolution"
           ? this.roundState.resolutionLabel
           : this.roundState.activeMission.summary,
-      objectiveStatus: bombHud.status,
-      objectiveProgress: bombHud.progress,
-      objectiveProgressLabel: bombHud.progressLabel,
+      objectiveStatus: objectiveHud.status,
+      objectiveProgress: objectiveHud.progress,
+      objectiveProgressLabel: objectiveHud.progressLabel,
       aliveState: this.playerDead ? "Down" : "Alive",
       teamCounts: this.hudTeamCounts(teamCounts),
     });
+  }
+
+  private objectiveHudSnapshot(now: number): {
+    status: string;
+    progress: number;
+    progressLabel: string;
+  } {
+    if (this.roundState.activeMission.missionType === "hostage") {
+      return this.hostageHudSnapshot(now);
+    }
+
+    return this.bombHudSnapshot(now);
   }
 
   private bombHudSnapshot(now: number): {
@@ -2228,6 +2757,64 @@ export class LocalMatch {
     };
   }
 
+  private hostageHudSnapshot(now: number): {
+    status: string;
+    progress: number;
+    progressLabel: string;
+  } {
+    if (!this.hostageState || this.roundState.phase === "resolution") {
+      return {
+        status: "",
+        progress: 0,
+        progressLabel: "",
+      };
+    }
+
+    const { progress, secondsRemaining } = currentHostageProgress(this.hostageState, now);
+    const rescuedCount = extractedHostageCount(this.hostageState);
+    const totalCount = this.hostageState.hostages.length;
+
+    if (this.hostageState.phase === "awaiting-rescue") {
+      const canSecure =
+        this.localTeamId === this.hostageState.attackingTeam &&
+        !this.playerDead &&
+        this.distanceToHostageCluster(this.camera.position) <= this.hostageState.cluster.radius;
+      return {
+        status: `${this.hostageState.cluster.label} pinned near ${this.hostageState.extraction.label}.`,
+        progress: 0,
+        progressLabel: canSecure ? `Hold E to secure ${this.hostageState.cluster.label}` : "",
+      };
+    }
+
+    if (this.hostageState.phase === "securing") {
+      return {
+        status: `${this.hostageState.actingCombatantName ?? "Operator"} securing ${this.hostageState.cluster.label}.`,
+        progress,
+        progressLabel: `${secondsRemaining.toFixed(1)}s to link escort`,
+      };
+    }
+
+    if (this.hostageState.phase === "escorting") {
+      const readyToExtract =
+        this.hostageState.rescuerId === this.playerIdentity.id &&
+        this.allHostagesAtExtraction() &&
+        this.distanceToExtractionZone(this.camera.position) <= this.hostageState.extraction.radius;
+      return {
+        status: `${this.hostageState.rescuerName ?? "Cobalt Reach"} escorting ${this.hostageState.cluster.label}.`,
+        progress,
+        progressLabel: readyToExtract
+          ? `Extraction lane clear at ${this.hostageState.extraction.label}`
+          : `${rescuedCount}/${totalCount} through ${this.hostageState.extraction.label}`,
+      };
+    }
+
+    return {
+      status: `${this.hostageState.actingCombatantName ?? "Operator"} extracting ${this.hostageState.cluster.label}.`,
+      progress,
+      progressLabel: `${secondsRemaining.toFixed(1)}s to clear ${this.hostageState.extraction.label}`,
+    };
+  }
+
   private debugBombStateSnapshot(): Record<string, unknown> | null {
     if (!this.bombState) {
       return null;
@@ -2270,6 +2857,76 @@ export class LocalMatch {
     };
   }
 
+  private debugHostageStateSnapshot(): Record<string, unknown> | null {
+    if (!this.hostageState) {
+      return null;
+    }
+
+    const now = this.roundNow();
+    const { progress, secondsRemaining } = currentHostageProgress(this.hostageState, now);
+    const clusterDistance = this.distanceToHostageCluster(this.camera.position);
+    const extractionDistance = this.distanceToExtractionZone(this.camera.position);
+
+    return {
+      phase: this.hostageState.phase,
+      clusterId: this.hostageState.cluster.id,
+      clusterLabel: this.hostageState.cluster.label,
+      clusterRadius: this.hostageState.cluster.radius,
+      clusterPosition: {
+        x: Number(this.hostageState.cluster.position[0].toFixed(2)),
+        y: Number(this.hostageState.cluster.position[1].toFixed(2)),
+        z: Number(this.hostageState.cluster.position[2].toFixed(2)),
+      },
+      extractionLabel: this.hostageState.extraction.label,
+      extractionRadius: this.hostageState.extraction.radius,
+      extractionPosition: {
+        x: Number(this.hostageState.extraction.position[0].toFixed(2)),
+        y: Number(this.hostageState.extraction.position[1].toFixed(2)),
+        z: Number(this.hostageState.extraction.position[2].toFixed(2)),
+      },
+      route: this.hostageState.route.map((point) => ({
+        focusId: point.focusId,
+        label: point.label,
+        position: {
+          x: Number(point.position[0].toFixed(2)),
+          y: Number(point.position[1].toFixed(2)),
+          z: Number(point.position[2].toFixed(2)),
+        },
+      })),
+      rescuerId: this.hostageState.rescuerId,
+      rescuerName: this.hostageState.rescuerName,
+      actingCombatantId: this.hostageState.actingCombatantId,
+      actingCombatantName: this.hostageState.actingCombatantName,
+      progress: Number(progress.toFixed(3)),
+      secondsRemaining: Number(secondsRemaining.toFixed(2)),
+      extractedCount: extractedHostageCount(this.hostageState),
+      localDistanceToCluster: Number(clusterDistance.toFixed(2)),
+      localDistanceToExtraction: Number(extractionDistance.toFixed(2)),
+      localCanSecure:
+        this.hostageState.phase === "awaiting-rescue" &&
+        this.localTeamId === this.hostageState.attackingTeam &&
+        !this.playerDead &&
+        clusterDistance <= this.hostageState.cluster.radius,
+      localCanExtract:
+        this.hostageState.phase === "escorting" &&
+        this.hostageState.rescuerId === this.playerIdentity.id &&
+        !this.playerDead &&
+        this.allHostagesAtExtraction() &&
+        extractionDistance <= this.hostageState.extraction.radius,
+      hostages: this.hostageState.hostages.map((hostage) => ({
+        id: hostage.id,
+        slotIndex: hostage.slotIndex,
+        extracted: hostage.extracted,
+        pathIndex: hostage.pathIndex,
+        position: {
+          x: Number(hostage.position[0].toFixed(2)),
+          y: Number(hostage.position[1].toFixed(2)),
+          z: Number(hostage.position[2].toFixed(2)),
+        },
+      })),
+    };
+  }
+
   private defaultStatusLine(): string {
     if (this.roundState.phase === "briefing") {
       return `Round ${this.roundState.roundNumber} briefing. ${this.roundState.activeMission.briefing}`;
@@ -2279,11 +2936,9 @@ export class LocalMatch {
       return this.roundState.resolutionLabel || "Round resetting.";
     }
 
-    if (this.bombState) {
-      const bombStatus = this.bombHudSnapshot(this.roundNow()).status;
-      if (bombStatus) {
-        return bombStatus;
-      }
+    const objectiveStatus = this.objectiveHudSnapshot(this.roundNow()).status;
+    if (objectiveStatus) {
+      return objectiveStatus;
     }
 
     return this.roundState.activeMission.summary;
@@ -2336,6 +2991,7 @@ export class LocalMatch {
       status: this.playerDead ? "down" : "alive",
       roundState: serializeRoundState(this.roundState),
       bombState: serializeBombRuntimeState(this.bombState),
+      hostageState: serializeHostageRuntimeState(this.hostageState),
       position: [this.camera.position.x, this.camera.position.y, this.camera.position.z] as [
         number,
         number,
