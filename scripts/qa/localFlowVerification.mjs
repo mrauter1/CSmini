@@ -56,6 +56,7 @@ async function requestJsonNew(url) {
 function startProcess(command, args, options = {}) {
   const child = spawn(command, args, {
     cwd: ROOT,
+    detached: true,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
@@ -81,20 +82,39 @@ function startProcess(command, args, options = {}) {
 }
 
 async function stopProcess(record) {
-  if (!record?.child || record.child.killed) {
+  const child = record?.child;
+  if (!child) {
     return;
   }
 
-  record.child.kill("SIGTERM");
+  if (child.exitCode !== null || child.signalCode !== null) {
+    await Promise.race([
+      new Promise((resolve) => child.once("close", resolve)),
+      delay(250),
+    ]);
+    return;
+  }
 
-  await Promise.race([
-    new Promise((resolve) => record.child.once("exit", resolve)),
-    delay(2_000).then(() => {
-      if (!record.child.killed) {
-        record.child.kill("SIGKILL");
+  const waitForClose = new Promise((resolve) => child.once("close", resolve));
+  const killTree = (signal) => {
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if (error?.code !== "ESRCH") {
+        throw error;
       }
-    }),
-  ]);
+    }
+  };
+
+  killTree("SIGTERM");
+
+  const closedAfterTerm = await Promise.race([waitForClose.then(() => true), delay(2_000).then(() => false)]);
+  if (closedAfterTerm) {
+    return;
+  }
+
+  killTree("SIGKILL");
+  await Promise.race([waitForClose, delay(2_000)]);
 }
 
 class CdpPage {

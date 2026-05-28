@@ -55,6 +55,7 @@ async function requestJsonNew(url) {
 function startProcess(command, args) {
   const child = spawn(command, args, {
     cwd: ROOT,
+    detached: true,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -79,20 +80,39 @@ function startProcess(command, args) {
 }
 
 async function stopProcess(record) {
-  if (!record?.child || record.child.killed) {
+  const child = record?.child;
+  if (!child) {
     return;
   }
 
-  record.child.kill("SIGTERM");
+  if (child.exitCode !== null || child.signalCode !== null) {
+    await Promise.race([
+      new Promise((resolve) => child.once("close", resolve)),
+      delay(250),
+    ]);
+    return;
+  }
 
-  await Promise.race([
-    new Promise((resolve) => record.child.once("exit", resolve)),
-    delay(2_000).then(() => {
-      if (!record.child.killed) {
-        record.child.kill("SIGKILL");
+  const waitForClose = new Promise((resolve) => child.once("close", resolve));
+  const killTree = (signal) => {
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if (error?.code !== "ESRCH") {
+        throw error;
       }
-    }),
-  ]);
+    }
+  };
+
+  killTree("SIGTERM");
+
+  const closedAfterTerm = await Promise.race([waitForClose.then(() => true), delay(2_000).then(() => false)]);
+  if (closedAfterTerm) {
+    return;
+  }
+
+  killTree("SIGKILL");
+  await Promise.race([waitForClose, delay(2_000)]);
 }
 
 class CdpPage {
@@ -290,13 +310,6 @@ async function waitForRemoteMovement(page, initial, minimumDistance = 0.25, time
   );
 }
 
-async function waitForRemoteInputSequence(page, minimumSequence = 1, timeoutMs = 10_000) {
-  await page.waitForExpression(
-    `(window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0]?.lastInputSequence ?? 0) >= ${minimumSequence}`,
-    timeoutMs,
-  );
-}
-
 async function setInputState(page, movementX, movementZ, sprint = false) {
   await page.evaluate(
     `window.__dustlineQa__.setInputState(${movementX}, ${movementZ}, ${JSON.stringify(sprint)})`,
@@ -307,6 +320,55 @@ async function sendInputTick(page, movementX, movementZ, sprint = false) {
   return page.evaluate(
     `window.__dustlineQa__.sendInputTick(${movementX}, ${movementZ}, ${JSON.stringify(sprint)})`,
   );
+}
+
+async function hasRemoteInputReceipt(
+  page,
+  movementX,
+  movementZ,
+  sprint = false,
+) {
+  return page.evaluate(
+    `(() => {
+      const remote = window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0];
+      if (!remote) {
+        return false;
+      }
+
+      return Math.abs((remote.inputMovement?.x ?? 0) - ${movementX}) < 0.01 &&
+        Math.abs((remote.inputMovement?.z ?? 0) - ${movementZ}) < 0.01 &&
+        Boolean(remote.inputSprint) === ${JSON.stringify(sprint)};
+    })()`,
+  );
+}
+
+async function driveGuestInputUntilObserved(
+  hostPage,
+  joinPage,
+  movementX,
+  movementZ,
+  sprint = false,
+  timeoutMs = 10_000,
+) {
+  const startedAt = Date.now();
+
+  await joinPage.bringToFront();
+  await clearInputState(joinPage);
+  await setInputState(joinPage, movementX, movementZ, sprint);
+
+  while (Date.now() - startedAt < timeoutMs) {
+    await sendInputTick(joinPage, movementX, movementZ, sprint);
+    await hostPage.bringToFront();
+
+    if (await hasRemoteInputReceipt(hostPage, movementX, movementZ, sprint)) {
+      return true;
+    }
+
+    await delay(120);
+    await joinPage.bringToFront();
+  }
+
+  return false;
 }
 
 async function clearInputState(page) {
@@ -368,15 +430,15 @@ async function main() {
     );
 
     const initialGuestOnHost = await readRemotePosition(hostPage);
-    await joinPage.bringToFront();
-    assert((await sendInputTick(joinPage, 0, 1, true)) === true, "Guest input tick was not sent.");
-    await hostPage.bringToFront();
-    await delay(250);
-    await waitForRemoteInputSequence(hostPage, 1);
+    assert(
+      (await driveGuestInputUntilObserved(hostPage, joinPage, 0, 1, true)) === true,
+      "Guest input tick was not observed by the host.",
+    );
     const hostRemoteAfterGuestInput = await readRemotePosition(hostPage);
     const hostRemoteInputState = await hostPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0] ?? null",
     );
+    await clearInputState(joinPage);
 
     const guestSnapshotBeforeHostMove = await joinPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
