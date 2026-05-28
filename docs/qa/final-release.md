@@ -13,11 +13,12 @@ Final verification for `verification-docs-and-final-reporting` covered:
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
+Fresh current-tree verifier reruns were completed on `2026-05-28T15:48:18-03:00`.
+
 ## Commands Run
 
 ```bash
 npm run typecheck
-npm run build
 npm test
 npm run qa:final
 ```
@@ -25,13 +26,12 @@ npm run qa:final
 Results on the current tree:
 
 - `npm run typecheck`: passed
-- `npm run build`: passed and produced `dist/`
 - `npm test`: passed and returned successfully after rebuilding the app and running the full browser QA harness
 - `npm run qa:final`: passed and returned successfully while refreshing `assets/screenshots/`
 
 Non-blocking note:
 
-- `vite build` still emits the existing chunk-size warning for `dist/assets/localMatch-*.js` after minification. This did not block verification.
+- The `npm test` build step repeated the existing Vite chunk-size warning for `dist/assets/localMatch-*.js` after minification. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -44,15 +44,16 @@ Non-blocking note:
   - `src/game/` for movement, rounds, objectives, AI, collision, audio, teams, and shared-room sync
   - `src/ui/` for briefing, roster, HUD, and browser-shell flow
   - `src/world/` for Three.js scene lifecycle and primitive construction
-- `npm run build` produced `dist/index.html` plus hashed CSS and JS bundles suitable for static deployment.
+- `npm test` rebuilt successfully and produced `dist/index.html` plus hashed CSS and JS bundles suitable for static deployment.
 
 ## QA Coverage Summary
 
-The passing browser summary from both `npm test` and `npm run qa:final` explicitly covered the required gameplay contract:
+The passing browser summaries from the fresh `npm test` and `npm run qa:final` reruns explicitly covered the required gameplay contract:
 
 - Movement:
   - crouch lowered the camera from `1.62` to `1.18`
-  - crouch reduced same-window travel from `1.72` to `0.98`
+  - crouch reduced same-window travel from `1.72` to `0.98` in `npm test`
+  - the standalone `qa:final` rerun also kept crouch slower than standing at `1.03` vs `0.6`
   - jump peaked at `2.59`, landed at `1.62`, and stayed airborne for `0.767s`
 - Teams and spawns:
   - all five shipped maps loaded round-one bomb metadata live
@@ -75,8 +76,8 @@ The passing browser summary from both `npm test` and `npm run qa:final` explicit
 
 ## Originality And Screenshot Evidence
 
-- `docs/assets.md` now records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-28`, including:
+- `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-28`, with the latest current-tree timestamps between `15:44` and `15:47 -03:00`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`
