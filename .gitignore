@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.botpipe/
+.agents/
+.codex/
+
+.DS_Store
+*.log
+
+coverage/
+.vite/
+*.local
