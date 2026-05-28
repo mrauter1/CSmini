@@ -49,6 +49,13 @@ import {
   type PlayerMovementState,
 } from "./playerMovement";
 import {
+  CLASSIC_CROUCH_KEY_CODES,
+  CROUCH_KEY_CODES,
+  SPRINT_KEY_CODES,
+  crouchControlLabel,
+  hasAnyKey,
+} from "./controls";
+import {
   createBombRuntimeState,
   currentBombProgress,
   hydrateBombRuntimeState,
@@ -127,6 +134,7 @@ const PLAYER_NOISE_INTERVAL = 0.28;
 const PLAYER_NOISE_HEARING_RADIUS = 19;
 const ENEMY_CROUCH_EYE_HEIGHT = 1.08;
 const ENEMY_STANDING_EYE_HEIGHT = 1.45;
+const CAPTURED_KEY_EVENT_OPTIONS = { capture: true };
 
 const ENEMY_NAMES = ["Copper-2", "Vale-3", "Rook-4"];
 
@@ -185,6 +193,7 @@ export interface LocalMatchSnapshot {
 interface LocalMatchOptions {
   mode: MatchMode;
   teamPreference: TeamPreference;
+  classicCrouchAlias: boolean;
   onActionRequest?: (action: "catalog" | "menu") => void;
   onSnapshot: (snapshot: LocalMatchSnapshot) => void;
 }
@@ -323,6 +332,7 @@ export class LocalMatch {
   private fallbackLookEnabled = false;
   private jumpRequested = false;
   private interactHeld = false;
+  private classicCrouchAlias: boolean;
   private playerMoveBlend = 0;
   private playerSpeed = 0;
   private playerGrounded = true;
@@ -367,6 +377,7 @@ export class LocalMatch {
     this.controls.pointerSpeed = 0.88;
     this.controls.addEventListener("lock", this.handlePointerLock);
     this.controls.addEventListener("unlock", this.handlePointerLock);
+    this.classicCrouchAlias = options.classicCrouchAlias;
 
     this.weaponRig = createWeaponRig();
     this.camera.add(this.weaponRig.group);
@@ -737,6 +748,17 @@ export class LocalMatch {
     if (!this.playerDead) {
       this.fallbackLookEnabled = true;
       this.jumpRequested = true;
+    }
+
+    this.emitSnapshot();
+  }
+
+  setClassicCrouchAlias(enabled: boolean): void {
+    this.classicCrouchAlias = enabled;
+
+    if (!enabled) {
+      this.movementKeys.delete("ControlLeft");
+      this.movementKeys.delete("ControlRight");
     }
 
     this.emitSnapshot();
@@ -1482,22 +1504,24 @@ export class LocalMatch {
 
   private attachEvents(): void {
     window.addEventListener("resize", this.handleResize);
-    window.addEventListener("keydown", this.handleKeyDown);
-    window.addEventListener("keyup", this.handleKeyUp);
+    window.addEventListener("keydown", this.handleKeyDown, CAPTURED_KEY_EVENT_OPTIONS);
+    window.addEventListener("keyup", this.handleKeyUp, CAPTURED_KEY_EVENT_OPTIONS);
     window.addEventListener("mousedown", this.handleMouseDown);
     window.addEventListener("mouseup", this.handleMouseUp);
     window.addEventListener("mousemove", this.handleMouseMove);
     window.addEventListener("blur", this.handleBlur);
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
   }
 
   private detachEvents(): void {
     window.removeEventListener("resize", this.handleResize);
-    window.removeEventListener("keydown", this.handleKeyDown);
-    window.removeEventListener("keyup", this.handleKeyUp);
+    window.removeEventListener("keydown", this.handleKeyDown, CAPTURED_KEY_EVENT_OPTIONS);
+    window.removeEventListener("keyup", this.handleKeyUp, CAPTURED_KEY_EVENT_OPTIONS);
     window.removeEventListener("mousedown", this.handleMouseDown);
     window.removeEventListener("mouseup", this.handleMouseUp);
     window.removeEventListener("mousemove", this.handleMouseMove);
     window.removeEventListener("blur", this.handleBlur);
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     this.controls.removeEventListener("lock", this.handlePointerLock);
     this.controls.removeEventListener("unlock", this.handlePointerLock);
   }
@@ -1514,19 +1538,21 @@ export class LocalMatch {
     if (this.controls.isLocked) {
       this.audio.prime();
     } else {
-      this.primaryFireHeld = false;
+      this.clearActiveInput(true);
     }
 
     this.emitSnapshot();
   };
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    this.preventDefaultWhenInputCaptured(event);
+
     if (event.repeat) {
       return;
     }
 
     if (event.code === "Escape") {
-      this.fallbackLookEnabled = false;
+      this.clearActiveInput(true);
       if (this.controls.isLocked) {
         this.controls.unlock();
       }
@@ -1565,6 +1591,8 @@ export class LocalMatch {
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
+    this.preventDefaultWhenInputCaptured(event);
+
     if (event.code === "KeyE") {
       this.interactHeld = false;
     }
@@ -1617,13 +1645,45 @@ export class LocalMatch {
   };
 
   private readonly handleBlur = (): void => {
+    this.clearActiveInput(true);
+    this.emitSnapshot();
+  };
+
+  private readonly handleVisibilityChange = (): void => {
+    if (!document.hidden) {
+      return;
+    }
+
+    this.clearActiveInput(true);
+    this.emitSnapshot();
+  };
+
+  private clearActiveInput(releaseFallbackLook: boolean): void {
     this.primaryFireHeld = false;
     this.jumpRequested = false;
     this.interactHeld = false;
     this.movementKeys.clear();
-    this.fallbackLookEnabled = false;
-    this.emitSnapshot();
-  };
+    if (releaseFallbackLook) {
+      this.fallbackLookEnabled = false;
+    }
+  }
+
+  private preventDefaultWhenInputCaptured(event: KeyboardEvent): void {
+    if (!this.inputCaptured() || this.isEditableEventTarget(event.target)) {
+      return;
+    }
+
+    event.preventDefault();
+  }
+
+  private isEditableEventTarget(target: EventTarget | null): boolean {
+    return (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    );
+  }
 
   private readonly animate = (): void => {
     this.animationHandle = requestAnimationFrame(this.animate);
@@ -1731,10 +1791,8 @@ export class LocalMatch {
         enabled: this.inputCaptured() && !this.playerDead,
         moveX,
         moveZ,
-        sprinting:
-          this.movementKeys.has("ShiftLeft") || this.movementKeys.has("ShiftRight"),
-        crouching:
-          this.movementKeys.has("ControlLeft") || this.movementKeys.has("ControlRight"),
+        sprinting: hasAnyKey(this.movementKeys, SPRINT_KEY_CODES),
+        crouching: this.crouchHeld(),
         jumpRequested: this.jumpRequested,
       },
       this.tempForward,
@@ -3443,15 +3501,17 @@ export class LocalMatch {
   }
 
   private promptText(): string {
+    const crouchLabel = crouchControlLabel(this.classicCrouchAlias);
+
     if (this.activeMode === "shared") {
-      return "Click the viewport to engage controls. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.";
+      return `Click the viewport to engage controls. WASD moves, Shift sprints, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
     }
 
     if (this.options.mode === "shared" && this.sharedRoomFallbackReason) {
-      return "Click the viewport to engage controls. Shared-room sync could not start here, so the app stayed in the solo round without crashing. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.";
+      return `Click the viewport to engage controls. Shared-room sync could not start here, so the app stayed in the solo round without crashing. WASD moves, Shift sprints, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
     }
 
-    return "Click the viewport to engage controls. Pointer lock is used when available; fallback mouse-look stays browser-safe. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.";
+    return `Click the viewport to engage controls. Pointer lock is used when available; fallback mouse-look stays browser-safe. WASD moves, Shift sprints, ${crouchLabel} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.`;
   }
 
   private publishRoomState(force = false): void {
@@ -3487,6 +3547,13 @@ export class LocalMatch {
 
   private inputCaptured(): boolean {
     return this.controls.isLocked || this.fallbackLookEnabled;
+  }
+
+  private crouchHeld(): boolean {
+    return (
+      hasAnyKey(this.movementKeys, CROUCH_KEY_CODES) ||
+      (this.classicCrouchAlias && hasAnyKey(this.movementKeys, CLASSIC_CROUCH_KEY_CODES))
+    );
   }
 
   private enemyEyeHeight(enemy: EnemyActor, stance = enemy.ai.stance): number {

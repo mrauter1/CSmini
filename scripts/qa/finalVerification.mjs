@@ -268,9 +268,15 @@ async function createPage(url, initScript) {
   const page = new CdpPage(target.webSocketDebuggerUrl);
   await page.enablePage();
 
-  if (initScript) {
-    await page.send("Page.addScriptToEvaluateOnNewDocument", { source: initScript });
-  }
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `
+      try {
+        localStorage.removeItem("dustline.classicCrouchAlias");
+      } catch {}
+
+      ${initScript ?? ""}
+    `,
+  });
 
   await page.send("Page.navigate", { url });
   await page.waitForExpression("document.readyState === 'complete'");
@@ -396,6 +402,22 @@ async function dispatchWindowKey(page, type, code, key) {
   await page.evaluate(
     `window.__dustlineQa__.setKey(${JSON.stringify(code)}, ${type === "keydown" ? "true" : "false"})`,
   );
+}
+
+async function keyboardDefaultPrevented(page, type, code, key, repeat = false) {
+  return page.evaluate(`
+    (() => {
+      const event = new KeyboardEvent(${JSON.stringify(type)}, {
+        code: ${JSON.stringify(code)},
+        key: ${JSON.stringify(key)},
+        repeat: ${repeat ? "true" : "false"},
+        bubbles: true,
+        cancelable: true
+      });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    })()
+  `);
 }
 
 async function tapKey(page, code, key, holdMs = 60) {
@@ -623,13 +645,26 @@ async function main() {
 
     await setTeamPreference(localPage, "amber");
     await openMap(localPage, "sandline-foundry", "local");
+    const unarmedSpacePrevented = await keyboardDefaultPrevented(localPage, "keydown", "Space", " ", true);
+    assert(!unarmedSpacePrevented, "Expected Space to keep browser defaults before controls are armed");
     await engageControls(localPage);
+    const armedSpacePrevented = await keyboardDefaultPrevented(localPage, "keydown", "Space", " ", true);
+    assert(armedSpacePrevented, "Expected Space to prevent browser defaults while controls are armed");
     await delay(180);
 
     const standingState = await getState(localPage);
     const standingY = standingState.localPlayer.position.y;
 
     await dispatchWindowKey(localPage, "keydown", "ControlLeft", "Control");
+    await delay(220);
+    const defaultCtrlState = await getState(localPage);
+    assert(
+      defaultCtrlState.localPlayer.position.y > standingY - 0.1,
+      "Expected Ctrl not to crouch unless the classic crouch alias is enabled",
+    );
+    await dispatchWindowKey(localPage, "keyup", "ControlLeft", "Control");
+
+    await dispatchWindowKey(localPage, "keydown", "KeyZ", "z");
     await localPage.waitForExpression(
       `(() => (window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? ${standingY}) < ${standingY - 0.25})()`,
       2_000,
@@ -639,7 +674,7 @@ async function main() {
       crouchState.localPlayer.position.y < standingY - 0.25,
       `Expected crouch to lower the camera. Standing ${standingY}, crouched ${crouchState.localPlayer.position.y}`,
     );
-    await dispatchWindowKey(localPage, "keyup", "ControlLeft", "Control");
+    await dispatchWindowKey(localPage, "keyup", "KeyZ", "z");
     await localPage.waitForExpression(
       `Math.abs((window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? 0) - ${standingY}) < 0.08`,
       2_000,
@@ -654,7 +689,7 @@ async function main() {
 
     await localPage.evaluate("window.__dustlineQa__.setPose(0, 14, 0)");
     await delay(120);
-    await dispatchWindowKey(localPage, "keydown", "ControlLeft", "Control");
+    await dispatchWindowKey(localPage, "keydown", "KeyZ", "z");
     await localPage.waitForExpression(
       `(() => (window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? ${standingY}) < ${standingY - 0.25})()`,
       2_000,
@@ -662,7 +697,7 @@ async function main() {
     const startCrouchMove = await getState(localPage);
     await holdKey(localPage, "KeyW", "w", 900);
     const endCrouchMove = await getState(localPage);
-    await dispatchWindowKey(localPage, "keyup", "ControlLeft", "Control");
+    await dispatchWindowKey(localPage, "keyup", "KeyZ", "z");
     await localPage.waitForExpression(
       `Math.abs((window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? 0) - ${standingY}) < 0.08`,
       3_000,

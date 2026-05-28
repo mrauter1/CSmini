@@ -1,6 +1,7 @@
 import { missionBadges } from "../game/missions";
 import type { MatchMode } from "../game/multiplayerRoom";
 import { TEAM_ORDER, getTeamDefinition, teamPreferenceLabel } from "../game/teams";
+import { crouchControlLabel } from "../game/controls";
 import type { MapDefinition, TeamPreference } from "../types";
 import { renderPreviewSvg } from "./previewSvg";
 
@@ -109,9 +110,9 @@ function mapRibbonButton(map: MapDefinition, activeMapId: string, mode: MatchMod
   `;
 }
 
-function controlHint(label: string, text: string): string {
+function controlHint(label: string, text: string, dataUi?: string): string {
   return `
-    <div class="control-hint">
+    <div class="control-hint" ${dataUi ? `data-ui="${dataUi}"` : ""}>
       <p>${escapeHtml(label)}</p>
       <span>${escapeHtml(text)}</span>
     </div>
@@ -195,11 +196,13 @@ export function renderMapStage(
   maps: MapDefinition[],
   mode: MatchMode,
   teamPreference: TeamPreference,
+  classicCrouchAlias: boolean,
 ): string {
   const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Round";
   const switchModeLabel = mode === "shared" ? "Switch to Solo Round" : "Switch to Shared Room";
   const switchMode = mode === "shared" ? "local" : "shared";
   const missionLabels = missionBadges(map);
+  const crouchLabel = crouchControlLabel(classicCrouchAlias);
 
   return `
     <section class="screen screen--match">
@@ -291,7 +294,7 @@ export function renderMapStage(
                 <p class="hud-label">Deploy Controls</p>
                 <h2>Pointer Lock Ready</h2>
                 <p data-ui="prompt">
-                  Click the viewport to lock the mouse. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.
+                  Click the viewport to lock the mouse. WASD moves, Shift sprints, ${escapeHtml(crouchLabel)} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.
                 </p>
                 <div class="hud-overlay__actions">
                   <button class="button button--primary" data-action="lock-match">Lock Controls</button>
@@ -321,11 +324,12 @@ export function renderMapStage(
           <div class="match-console__actions">
             <button class="button" data-action="show-catalog">Change Map</button>
             <button class="button" data-action="open-map" data-mode="${switchMode}" data-map-id="${map.id}">${switchModeLabel}</button>
+            <button class="button" data-action="toggle-classic-crouch" data-ui="classic-crouch-toggle" aria-pressed="${classicCrouchAlias}">Ctrl Crouch ${classicCrouchAlias ? "On" : "Off"}</button>
             <button class="button button--primary" data-action="show-menu">Return to Briefing</button>
           </div>
           <div class="control-grid">
             ${controlHint("Move", "WASD + Shift")}
-            ${controlHint("Crouch", "Ctrl")}
+            ${controlHint("Crouch", crouchLabel, "crouch-control")}
             ${controlHint("Jump", "Space")}
             ${controlHint("Interact", "E")}
             ${controlHint("Shoot", "Left Click")}

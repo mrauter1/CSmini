@@ -1,4 +1,8 @@
 import { featuredMap, getMapById, mapCatalog } from "../data/maps";
+import {
+  CLASSIC_CROUCH_STORAGE_KEY,
+  crouchControlLabel,
+} from "../game/controls";
 import type { LocalMatch, LocalMatchSnapshot } from "../game/localMatch";
 import type { MatchMode } from "../game/multiplayerRoom";
 import { getTeamDefinition, isTeamId } from "../game/teams";
@@ -7,11 +11,28 @@ import { renderCatalog, renderMapStage, renderMenu } from "./templates";
 
 type Screen = "menu" | "catalog" | "stage";
 
+function readClassicCrouchAlias(): boolean {
+  try {
+    return localStorage.getItem(CLASSIC_CROUCH_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeClassicCrouchAlias(enabled: boolean): void {
+  try {
+    localStorage.setItem(CLASSIC_CROUCH_STORAGE_KEY, String(enabled));
+  } catch {
+    // Storage can be unavailable in hardened browser contexts.
+  }
+}
+
 export class TacticalShellApp {
   private screen: Screen = "menu";
   private activeMapId = featuredMap.id;
   private activeMode: MatchMode = "shared";
   private teamPreference: TeamPreference = "auto";
+  private classicCrouchAlias = readClassicCrouchAlias();
   private match?: LocalMatch;
   private renderToken = 0;
 
@@ -60,6 +81,12 @@ export class TacticalShellApp {
       case "lock-match":
         this.match?.requestPointerLock();
         return;
+      case "toggle-classic-crouch":
+        this.classicCrouchAlias = !this.classicCrouchAlias;
+        writeClassicCrouchAlias(this.classicCrouchAlias);
+        this.match?.setClassicCrouchAlias(this.classicCrouchAlias);
+        this.syncClassicCrouchUi();
+        return;
       case "set-team":
         if (!team) {
           return;
@@ -100,6 +127,7 @@ export class TacticalShellApp {
       mapCatalog,
       this.activeMode,
       this.teamPreference,
+      this.classicCrouchAlias,
     );
 
     const host = this.root.querySelector<HTMLElement>("[data-world-host]");
@@ -133,6 +161,7 @@ export class TacticalShellApp {
       match = new LocalMatch(host, map, {
         mode: this.activeMode,
         teamPreference: this.teamPreference,
+        classicCrouchAlias: this.classicCrouchAlias,
         onActionRequest: (action) => {
           if (token !== this.renderToken) {
             return;
@@ -309,6 +338,22 @@ export class TacticalShellApp {
     }
     if (objectiveProgressFill) {
       objectiveProgressFill.style.width = `${Math.max(0, Math.min(1, snapshot.objectiveProgress)) * 100}%`;
+    }
+
+    this.syncClassicCrouchUi();
+  }
+
+  private syncClassicCrouchUi(): void {
+    const label = crouchControlLabel(this.classicCrouchAlias);
+    const crouchHint = this.root.querySelector<HTMLElement>('[data-ui="crouch-control"] span');
+    if (crouchHint) {
+      crouchHint.textContent = label;
+    }
+
+    const toggle = this.root.querySelector<HTMLButtonElement>('[data-ui="classic-crouch-toggle"]');
+    if (toggle) {
+      toggle.textContent = `Ctrl Crouch ${this.classicCrouchAlias ? "On" : "Off"}`;
+      toggle.setAttribute("aria-pressed", String(this.classicCrouchAlias));
     }
   }
 
