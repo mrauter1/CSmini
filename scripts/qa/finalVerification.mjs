@@ -5,9 +5,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const ROOT_URL = "http://127.0.0.1:4173/";
-const PREVIEW_PORT = "4173";
-const DEBUG_PORT = "9223";
+const RUN_SEED = Date.now() % 1000;
+const PREVIEW_PORT = String(4173 + (RUN_SEED % 200));
+const DEBUG_PORT = String(9223 + (RUN_SEED % 200));
+const ROOT_URL = `http://127.0.0.1:${PREVIEW_PORT}/`;
 const DEBUG_ORIGIN = `http://127.0.0.1:${DEBUG_PORT}`;
 const SCREENSHOT_DIR = path.join(ROOT, "assets", "screenshots");
 
@@ -264,7 +265,14 @@ async function createPage(url, initScript) {
 
   await page.send("Page.navigate", { url });
   await page.waitForExpression("document.readyState === 'complete'");
-  await page.waitForExpression("Boolean(window.__dustlineQa__)", 15_000);
+  await page.waitForExpression(
+    `
+      typeof window.__dustlineQa__?.getState === 'function'
+        && typeof window.__dustlineQa__?.setTeamPreference === 'function'
+        && typeof window.__dustlineQa__?.openMap === 'function'
+    `,
+    15_000,
+  );
   return page;
 }
 
@@ -390,6 +398,19 @@ async function forceDeath(page, attackerName) {
   await page.evaluate(`window.__dustlineQa__.forcePlayerDeath(${JSON.stringify(attackerName)})`);
 }
 
+async function forceRoundActive(page) {
+  await page.evaluate("window.__dustlineQa__.forceRoundActive()");
+}
+
+async function setInvulnerable(page, enabled) {
+  await page.evaluate(`window.__dustlineQa__.setInvulnerable(${enabled ? "true" : "false"})`);
+}
+
+async function startObjectiveAction(page) {
+  const started = await page.evaluate("window.__dustlineQa__.startObjectiveAction()");
+  assert(started, "Expected objective action to start from the current QA pose");
+}
+
 async function fire(page) {
   await page.evaluate("window.__dustlineQa__.fire()");
 }
@@ -452,6 +473,8 @@ async function main() {
       mapChecks: [],
       movement: {},
       respawn: {},
+      bombLocal: {},
+      bombShared: {},
       shared: {},
       fallback: {},
     };
@@ -485,8 +508,10 @@ async function main() {
         const state = await getState(localPage);
         lastState = state;
         assert(state?.localPlayer?.teamId === teamPreference, `Expected ${mapId} to honor ${teamPreference} team selection`);
+        assert(state?.round?.missionType === "bomb", `Expected ${mapId} round one to be bomb mode`);
         assert(state?.round?.missionLabel, `Expected ${mapId} to expose a live mission label`);
         assert(state?.round?.objectiveLabel, `Expected ${mapId} to expose a live objective label`);
+        assert(state?.bomb?.siteLabel, `Expected ${mapId} to expose live bomb-site data`);
         assert(state?.teamCounts?.[teamPreference]?.alive >= 1, `Expected ${mapId} to spawn a live ${teamPreference} operator`);
 
         positions[teamPreference] = state.localPlayer.position;
@@ -505,8 +530,10 @@ async function main() {
       summary.mapChecks.push({
         mapId,
         spawnDistance: Number(spawnDistance.toFixed(2)),
+        missionType: lastState?.round?.missionType ?? "",
         missionLabel: lastState?.round?.missionLabel ?? "",
         objectiveLabel: lastState?.round?.objectiveLabel ?? "",
+        bombSite: lastState?.bomb?.siteLabel ?? "",
       });
     }
 
@@ -600,6 +627,81 @@ async function main() {
       revived: revivedState.localPlayer.dead === false,
     };
 
+    await setTeamPreference(localPage, "amber");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await setInvulnerable(localPage, true);
+    await forceRoundActive(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
+      5_000,
+    );
+
+    const localBombStart = await getState(localPage);
+    assert(
+      localBombStart.bomb?.carrierId === localBombStart.localPlayer.id,
+      "Expected the attacking local operator to carry the relay charge",
+    );
+
+    const site = localBombStart.bomb.sitePosition;
+    await localPage.evaluate(
+      `window.__dustlineQa__.setCameraPose(${site.x}, ${localBombStart.localPlayer.position.y}, ${site.z}, 0)`,
+    );
+    await delay(220);
+    const localBombArmingPose = await getState(localPage);
+    assert(localBombArmingPose.bomb.localCanPlant === true, "Expected the charge site to be usable in local play");
+
+    await startObjectiveAction(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'planting'",
+      5_000,
+    );
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'planted'",
+      7_000,
+    );
+
+    const localBombPlanted = await getState(localPage);
+    const localBombHud = await localPage.evaluate(`
+      ({
+        status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
+        progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
+      })
+    `);
+    assert(
+      localBombHud.progress.includes("breach"),
+      "Expected planted local HUD pressure to expose a breach countdown",
+    );
+
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /breached/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      16_000,
+    );
+
+    const localBombResolved = await getState(localPage);
+    assert(
+      /breached/i.test(localBombResolved.round.result ?? ""),
+      "Expected the local planted charge to resolve by explosion",
+    );
+
+    summary.bombLocal = {
+      carrierId: localBombStart.bomb.carrierId,
+      siteLabel: localBombStart.bomb.siteLabel,
+      localCanPlant: localBombArmingPose.bomb.localCanPlant,
+      plantedPhase: localBombPlanted.bomb.phase,
+      plantedCountdown: localBombPlanted.bomb.secondsRemaining,
+      resolution: localBombResolved.round.result,
+      hudStatus: localBombHud.status,
+      hudProgress: localBombHud.progress,
+    };
+
+    await setInvulnerable(localPage, false);
+
     const sharedPageOne = await createPage(`${ROOT_URL}?qa=1`);
     const sharedPageTwo = await createPage(`${ROOT_URL}?qa=1`);
     const isolationPage = await createPage(`${ROOT_URL}?qa=1`);
@@ -651,7 +753,116 @@ async function main() {
       "Expected a different map to remain isolated from the shared room",
     );
 
-    const sharedRoundBefore = sharedStateOne.round.roundNumber;
+    await engageControls(sharedPageOne);
+    await engageControls(sharedPageTwo);
+    await forceRoundActive(sharedPageOne);
+    await sharedPageTwo.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
+      5_000,
+    );
+
+    const sharedBombStartOne = await getState(sharedPageOne);
+    const sharedBombStartTwo = await getState(sharedPageTwo);
+    assert(
+      sharedBombStartOne.bomb?.carrierId === sharedBombStartOne.localPlayer.id,
+      "Expected the attacking shared operator to carry the relay charge",
+    );
+    assert(
+      sharedBombStartTwo.bomb?.carrierId === sharedBombStartOne.localPlayer.id,
+      "Expected the defending shared page to see the remote bomb carrier",
+    );
+
+    const sharedSite = sharedBombStartOne.bomb.sitePosition;
+    await sharedPageOne.evaluate(
+      `window.__dustlineQa__.setCameraPose(${sharedSite.x}, ${sharedBombStartOne.localPlayer.position.y}, ${sharedSite.z}, 0)`,
+    );
+    await delay(220);
+    await engageControls(sharedPageOne);
+    const sharedBombPlantPose = await getState(sharedPageOne);
+    assert(
+      sharedBombPlantPose.bomb.localCanPlant === true,
+      "Expected the shared attacker to stand inside a valid bomb site",
+    );
+
+    await sharedPageOne.bringToFront();
+    await startObjectiveAction(sharedPageOne);
+    await sharedPageOne.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'planting'",
+      5_000,
+    );
+    await sharedPageOne.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'planted'",
+      7_000,
+    );
+    await sharedPageTwo.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'planted'",
+      7_000,
+    );
+
+    const sharedBombPlantedOne = await getState(sharedPageOne);
+    const sharedBombPlantedTwo = await getState(sharedPageTwo);
+    const sharedBombHudTwo = await sharedPageTwo.evaluate(`
+      ({
+        status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
+        progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
+      })
+    `);
+    assert(
+      sharedBombHudTwo.progress.includes("breach"),
+      "Expected the defending shared HUD to show planted pressure",
+    );
+
+    await sharedPageTwo.evaluate(
+      `window.__dustlineQa__.setCameraPose(${sharedSite.x}, ${sharedBombStartTwo.localPlayer.position.y}, ${sharedSite.z}, 0)`,
+    );
+    await delay(220);
+    await engageControls(sharedPageTwo);
+    const sharedBombDefusePose = await getState(sharedPageTwo);
+    assert(
+      sharedBombDefusePose.bomb.localCanDefuse === true,
+      "Expected the shared defender to stand inside the planted relay site",
+    );
+
+    await sharedPageTwo.bringToFront();
+    await startObjectiveAction(sharedPageTwo);
+    await sharedPageTwo.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'defusing'",
+      5_000,
+    );
+    await sharedPageOne.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /disarmed/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      10_000,
+    );
+    await sharedPageTwo.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /disarmed/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      10_000,
+    );
+
+    const sharedBombResolvedOne = await getState(sharedPageOne);
+    const sharedBombResolvedTwo = await getState(sharedPageTwo);
+    summary.bombShared = {
+      carrierId: sharedBombStartOne.bomb.carrierId,
+      siteLabel: sharedBombStartOne.bomb.siteLabel,
+      plantedPhasePageOne: sharedBombPlantedOne.bomb.phase,
+      plantedPhasePageTwo: sharedBombPlantedTwo.bomb.phase,
+      defenderCanDefuse: sharedBombDefusePose.bomb.localCanDefuse,
+      resolutionPageOne: sharedBombResolvedOne.round.result,
+      resolutionPageTwo: sharedBombResolvedTwo.round.result,
+      defenderHudStatus: sharedBombHudTwo.status,
+      defenderHudProgress: sharedBombHudTwo.progress,
+    };
+
+    const sharedRoundBefore = sharedBombResolvedOne.round.roundNumber;
     await sharedPageOne.evaluate("window.__dustlineQa__.forceNextRound()");
     await sharedPageTwo.waitForExpression(
       `

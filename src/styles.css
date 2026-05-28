@@ -755,6 +755,40 @@ p {
   font-size: 0.95rem;
 }
 
+.hud-note--accent {
+  color: #f1d4a1;
+}
+
+.hud-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.hud-progress__bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hud-progress__bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(214, 160, 103, 0.92), rgba(255, 214, 133, 0.92));
+  transition: width 110ms linear;
+}
+
+.hud-progress small {
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
 .hud-stat {
   display: grid;
   min-width: 92px;
@@ -779,6 +813,21 @@ p {
 .roster-row strong {
   color: var(--text);
   font-size: 1rem;
+}
+
+.roster-row__badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255, 211, 143, 0.14);
+  border: 1px solid rgba(255, 211, 143, 0.2);
+  color: #f3dab3;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  vertical-align: middle;
 }
 
 .hud-roster {

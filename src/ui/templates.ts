@@ -226,6 +226,13 @@ export function renderMapStage(
                 <h2 class="hud-round__clock" data-ui="round-timer">00:00</h2>
                 <p class="hud-round__mission"><span data-ui="mission-label">Relay Charge</span> · <span data-ui="objective-label">Objective</span></p>
                 <p class="hud-note" data-ui="mission-summary">Mission briefing pending.</p>
+                <p class="hud-note hud-note--accent" data-ui="objective-status"></p>
+                <div class="hud-progress" data-ui="objective-progress" hidden>
+                  <div class="hud-progress__bar">
+                    <span data-ui="objective-progress-fill"></span>
+                  </div>
+                  <small data-ui="objective-progress-label"></small>
+                </div>
               </div>
 
               <div class="hud-card hud-card--stats">
@@ -284,7 +291,7 @@ export function renderMapStage(
                 <p class="hud-label">Deploy Controls</p>
                 <h2>Pointer Lock Ready</h2>
                 <p data-ui="prompt">
-                  Click the viewport to lock the mouse. WASD moves, Shift sprints, Ctrl crouches, Space jumps, left click fires, R reloads, and M reopens map select.
+                  Click the viewport to lock the mouse. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.
                 </p>
                 <div class="hud-overlay__actions">
                   <button class="button button--primary" data-action="lock-match">Lock Controls</button>
@@ -320,6 +327,7 @@ export function renderMapStage(
             ${controlHint("Move", "WASD + Shift")}
             ${controlHint("Crouch", "Ctrl")}
             ${controlHint("Jump", "Space")}
+            ${controlHint("Interact", "E")}
             ${controlHint("Shoot", "Left Click")}
             ${controlHint("Reload", "R")}
             ${controlHint("Map Select", "M")}

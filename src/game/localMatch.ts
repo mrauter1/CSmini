@@ -39,12 +39,24 @@ import {
   type PlayerMovementState,
 } from "./playerMovement";
 import {
+  createBombRuntimeState,
+  currentBombProgress,
+  hydrateBombRuntimeState,
+  serializeBombRuntimeState,
+  shouldAdoptBombRuntimeState,
+  synchronizeBombCarrier,
+  type BombCombatantSnapshot,
+  type BombRuntimeState,
+} from "./bombState";
+import {
   createBriefingRoundState,
   createInitialRoundState,
   emptyTeamCounts,
+  forceRoundActive,
   hydrateRoundState,
   roundPhaseLabel,
   roundTimeRemaining,
+  resolveRoundState,
   serializeRoundState,
   shouldAdoptRoundState,
   tickRoundState,
@@ -84,6 +96,7 @@ export interface MatchRosterEntry {
   status: CombatantStatus;
   teamId: TeamId;
   teamLabel: string;
+  objectiveRole: string;
 }
 
 export interface TeamHudCount {
@@ -118,6 +131,9 @@ export interface LocalMatchSnapshot {
   missionLabel: string;
   objectiveLabel: string;
   missionSummary: string;
+  objectiveStatus: string;
+  objectiveProgress: number;
+  objectiveProgressLabel: string;
   aliveState: string;
   teamCounts: TeamHudCount[];
 }
@@ -209,6 +225,7 @@ export class LocalMatch {
   private sharedRoomFallbackReason = "";
   private animationHandle = 0;
   private roundState: RoundState;
+  private bombState: BombRuntimeState | null = null;
   private playerHealth = 100;
   private ammoInClip = CLIP_SIZE;
   private reserveAmmo = RESERVE_AMMO;
@@ -225,10 +242,12 @@ export class LocalMatch {
   private feedMessage?: FeedMessage;
   private fallbackLookEnabled = false;
   private jumpRequested = false;
+  private interactHeld = false;
   private playerMoveBlend = 0;
   private playerGrounded = true;
   private playerCrouching = false;
   private playerEyeHeight = currentEyeHeight(createPlayerMovementState());
+  private qaInvulnerable = false;
 
   constructor(
     private readonly host: HTMLElement,
@@ -354,11 +373,13 @@ export class LocalMatch {
       round: {
         roundNumber: this.roundState.roundNumber,
         phase: this.roundState.phase,
+        missionType: this.roundState.activeMission.missionType,
         timeRemaining: Number(roundTimeRemaining(this.roundState, this.roundNow()).toFixed(2)),
         missionLabel: this.roundState.activeMission.missionLabel,
         objectiveLabel: this.roundState.activeMission.objectiveLabel,
         result: this.roundState.resolutionLabel,
       },
+      bomb: this.debugBombStateSnapshot(),
       teamSpawns: {
         amber: this.toPoint(this.teamSpawnPositions.amber),
         cobalt: this.toPoint(this.teamSpawnPositions.cobalt),
@@ -447,16 +468,69 @@ export class LocalMatch {
     this.emitSnapshot();
   }
 
+  debugForceRoundActive(): void {
+    if (this.roundState.phase !== "briefing") {
+      return;
+    }
+
+    this.applyRoundState(forceRoundActive(this.roundState, this.roundNow()));
+    this.emitSnapshot();
+  }
+
+  debugSetInvulnerable(enabled: boolean): void {
+    this.qaInvulnerable = enabled;
+    this.emitSnapshot();
+  }
+
+  debugStartObjectiveAction(): boolean {
+    if (!this.bombState || this.roundState.phase !== "active" || this.playerDead) {
+      return false;
+    }
+
+    const siteDistance = this.distanceToBombSite(this.camera.position);
+    if (siteDistance > this.bombState.site.radius) {
+      return false;
+    }
+
+    if (
+      this.bombState.phase === "carried" &&
+      this.localTeamId === this.bombState.attackingTeam &&
+      this.bombState.carrierId === this.playerIdentity.id
+    ) {
+      this.interactHeld = true;
+      this.startBombPlant(this.roundNow());
+      this.emitSnapshot();
+      return true;
+    }
+
+    if (
+      this.bombState.phase === "planted" &&
+      this.localTeamId === this.bombState.defendingTeam
+    ) {
+      this.interactHeld = true;
+      this.startBombDefuse(this.roundNow());
+      this.emitSnapshot();
+      return true;
+    }
+
+    return false;
+  }
+
   debugSetKey(code: string, active: boolean): void {
     if (active) {
       if (code === "Space") {
         if (this.inputCaptured() && !this.playerDead) {
           this.jumpRequested = true;
         }
+      } else if (code === "KeyE") {
+        this.interactHeld = true;
       } else {
         this.movementKeys.add(code);
       }
     } else {
+      if (code === "KeyE") {
+        this.interactHeld = false;
+      }
       this.movementKeys.delete(code);
     }
 
@@ -615,6 +689,15 @@ export class LocalMatch {
           this.applyRoundState(remoteRound);
         }
 
+        const remoteBomb = hydrateBombRuntimeState(
+          this.map,
+          this.roundState.activeMission,
+          presence.bombState,
+        );
+        if (shouldAdoptBombRuntimeState(this.bombState, remoteBomb)) {
+          this.bombState = remoteBomb;
+        }
+
         this.emitSnapshot();
       },
       onLeave: (peerId) => {
@@ -719,6 +802,7 @@ export class LocalMatch {
     this.recoil = 0;
     this.primaryFireHeld = false;
     this.jumpRequested = false;
+    this.interactHeld = false;
     this.movementState.verticalVelocity = 0;
     this.movementState.heightOffset = 0;
     this.movementState.grounded = true;
@@ -733,6 +817,14 @@ export class LocalMatch {
     } else {
       this.resetRemoteActorsForRound();
     }
+
+    this.bombState = createBombRuntimeState(
+      this.map,
+      this.roundState.activeMission,
+      this.roundState.roundNumber,
+      this.bombCombatants(),
+      this.roundNow(),
+    );
 
     this.weaponRig.setVisible(true);
 
@@ -1013,6 +1105,11 @@ export class LocalMatch {
       return;
     }
 
+    if (event.code === "KeyE") {
+      this.interactHeld = true;
+      return;
+    }
+
     if (event.code === "KeyM") {
       this.options.onActionRequest?.("catalog");
       return;
@@ -1027,6 +1124,9 @@ export class LocalMatch {
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
+    if (event.code === "KeyE") {
+      this.interactHeld = false;
+    }
     this.movementKeys.delete(event.code);
   };
 
@@ -1078,6 +1178,7 @@ export class LocalMatch {
   private readonly handleBlur = (): void => {
     this.primaryFireHeld = false;
     this.jumpRequested = false;
+    this.interactHeld = false;
     this.movementKeys.clear();
     this.fallbackLookEnabled = false;
     this.emitSnapshot();
@@ -1088,17 +1189,7 @@ export class LocalMatch {
 
     const delta = Math.min(0.04, this.clock.getDelta());
     const now = this.gameNow();
-    const previousRound = this.roundState;
-    const nextRound = tickRoundState(
-      this.map,
-      previousRound,
-      this.roundNow(),
-      this.teamCountsSnapshot(),
-    );
-
-    if (nextRound !== previousRound) {
-      this.applyRoundState(nextRound);
-    }
+    const roundNow = this.roundNow();
 
     this.updatePlayer(delta, now);
     if (this.activeMode === "shared") {
@@ -1106,6 +1197,21 @@ export class LocalMatch {
     } else {
       this.updateEnemies(delta, now);
     }
+
+    this.updateBombObjectiveState(roundNow);
+
+    const previousRound = this.roundState;
+    const nextRound = tickRoundState(
+      this.map,
+      previousRound,
+      roundNow,
+      this.teamCountsForRoundTick(),
+    );
+
+    if (nextRound !== previousRound) {
+      this.applyRoundState(nextRound);
+    }
+
     this.publishRoomState();
 
     this.weaponRig.update(
@@ -1203,6 +1309,310 @@ export class LocalMatch {
     if (this.primaryFireHeld && now >= this.nextShotAt) {
       this.fire(now);
     }
+  }
+
+  private bombCombatants(): BombCombatantSnapshot[] {
+    const combatants: BombCombatantSnapshot[] = [
+      {
+        id: this.playerIdentity.id,
+        name: this.playerIdentity.name,
+        teamId: this.localTeamId,
+        alive: !this.playerDead,
+        local: true,
+      },
+    ];
+
+    if (this.activeMode === "shared") {
+      for (const actor of this.remoteActors.values()) {
+        combatants.push({
+          id: actor.id,
+          name: actor.name,
+          teamId: actor.teamId,
+          alive: actor.status === "alive",
+          local: false,
+        });
+      }
+
+      return combatants;
+    }
+
+    for (const enemy of this.enemies) {
+      combatants.push({
+        id: enemy.id,
+        name: enemy.name,
+        teamId: enemy.teamId,
+        alive: enemy.alive,
+        local: false,
+      });
+    }
+
+    return combatants;
+  }
+
+  private bombCombatantById(combatantId: string | null): BombCombatantSnapshot | null {
+    if (!combatantId) {
+      return null;
+    }
+
+    return this.bombCombatants().find((combatant) => combatant.id === combatantId) ?? null;
+  }
+
+  private bombCombatantPosition(combatantId: string | null): THREE.Vector3 | null {
+    if (!combatantId) {
+      return null;
+    }
+
+    if (combatantId === this.playerIdentity.id) {
+      return this.camera.position.clone();
+    }
+
+    const remoteActor = this.remoteActors.get(combatantId);
+    if (remoteActor) {
+      return remoteActor.displayPosition.clone().setY(this.playerEyeHeight);
+    }
+
+    const enemy = this.enemies.find((entry) => entry.id === combatantId);
+    if (enemy) {
+      return enemy.avatar.group.position.clone().setY(1.45);
+    }
+
+    return null;
+  }
+
+  private distanceToBombSite(position: THREE.Vector3): number {
+    if (!this.bombState) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return Math.hypot(
+      position.x - this.bombState.site.position[0],
+      position.z - this.bombState.site.position[2],
+    );
+  }
+
+  private updateBombObjectiveState(now: number): void {
+    this.bombState = synchronizeBombCarrier(this.bombState, this.bombCombatants(), now);
+
+    if (!this.bombState || this.roundState.phase !== "active") {
+      return;
+    }
+
+    if (this.bombState.phase === "planting") {
+      const planter = this.bombCombatantById(this.bombState.actingCombatantId);
+      const planterPosition = this.bombCombatantPosition(this.bombState.actingCombatantId);
+      const planterDistance = planterPosition
+        ? this.distanceToBombSite(planterPosition)
+        : Number.POSITIVE_INFINITY;
+      if (this.bombState.plantEndsAt !== null && now >= this.bombState.plantEndsAt) {
+        this.armBomb(now);
+        return;
+      }
+      const localPlanter = this.bombState.actingCombatantId === this.playerIdentity.id;
+      const plantingBroken =
+        !planter ||
+        !planter.alive ||
+        planterDistance > this.bombState.site.radius + 0.2 ||
+        (localPlanter &&
+          (!this.interactHeld || this.playerDead || !this.inputCaptured()));
+
+      if (plantingBroken) {
+        this.cancelBombPlant(now);
+        return;
+      }
+      return;
+    }
+
+    if (this.bombState.phase === "defusing") {
+      const defuser = this.bombCombatantById(this.bombState.actingCombatantId);
+      const defuserPosition = this.bombCombatantPosition(this.bombState.actingCombatantId);
+      const defuserDistance = defuserPosition
+        ? this.distanceToBombSite(defuserPosition)
+        : Number.POSITIVE_INFINITY;
+      if (this.bombState.defuseEndsAt !== null && now >= this.bombState.defuseEndsAt) {
+        const defuserName = this.bombState.actingCombatantName ?? "Operator";
+        this.applyRoundState(
+          resolveRoundState(
+            this.roundState,
+            this.bombState.defendingTeam,
+            `${defuserName} disarmed ${this.bombState.site.label}.`,
+            now,
+          ),
+        );
+        return;
+      }
+      const localDefuser = this.bombState.actingCombatantId === this.playerIdentity.id;
+      const defuseBroken =
+        !defuser ||
+        !defuser.alive ||
+        defuserDistance > this.bombState.site.radius + 0.2 ||
+        (localDefuser &&
+          (!this.interactHeld || this.playerDead || !this.inputCaptured()));
+
+      if (defuseBroken) {
+        this.cancelBombDefuse(now);
+        return;
+      }
+      return;
+    }
+
+    if (this.bombState.phase === "planted") {
+      if (this.bombState.detonatesAt !== null && now >= this.bombState.detonatesAt) {
+        const planterName = this.bombState.plantedByName ?? "Amber Vanguard";
+        this.applyRoundState(
+          resolveRoundState(
+            this.roundState,
+            this.bombState.attackingTeam,
+            `${planterName} breached ${this.bombState.site.label}.`,
+            now,
+          ),
+        );
+        return;
+      }
+
+      const canDefuse =
+        this.localTeamId === this.bombState.defendingTeam &&
+        !this.playerDead &&
+        this.inputCaptured() &&
+        this.interactHeld &&
+        this.distanceToBombSite(this.camera.position) <= this.bombState.site.radius;
+
+      if (canDefuse) {
+        this.startBombDefuse(now);
+      }
+
+      return;
+    }
+
+    const canPlant =
+      this.localTeamId === this.bombState.attackingTeam &&
+      this.bombState.carrierId === this.playerIdentity.id &&
+      !this.playerDead &&
+      this.inputCaptured() &&
+      this.interactHeld &&
+      this.distanceToBombSite(this.camera.position) <= this.bombState.site.radius;
+
+    if (canPlant) {
+      this.startBombPlant(now);
+    }
+  }
+
+  private startBombPlant(now: number): void {
+    if (!this.bombState || this.bombState.phase !== "carried") {
+      return;
+    }
+
+    this.bombState = {
+      ...this.bombState,
+      phase: "planting",
+      actingCombatantId: this.playerIdentity.id,
+      actingCombatantName: this.playerIdentity.name,
+      plantStartedAt: now,
+      plantEndsAt: now + this.bombState.plantSeconds,
+      updatedAt: now,
+    };
+    this.pushFeed(`Arming ${this.bombState.site.label}...`, 0.9);
+    this.publishRoomState(true);
+  }
+
+  private cancelBombPlant(now: number): void {
+    if (!this.bombState || this.bombState.phase !== "planting") {
+      return;
+    }
+
+    const carrierName = this.bombState.actingCombatantName ?? this.bombState.carrierName;
+    this.bombState = synchronizeBombCarrier(
+      {
+        ...this.bombState,
+        phase: "carried",
+        carrierId: this.bombState.actingCombatantId ?? this.bombState.carrierId,
+        carrierName,
+        actingCombatantId: null,
+        actingCombatantName: null,
+        plantStartedAt: null,
+        plantEndsAt: null,
+        updatedAt: now,
+      },
+      this.bombCombatants(),
+      now,
+    );
+
+    if (this.bombState?.carrierId === this.playerIdentity.id) {
+      this.pushFeed("Charge arm interrupted.", 0.9);
+    }
+
+    this.publishRoomState(true);
+  }
+
+  private armBomb(now: number): void {
+    if (!this.bombState || this.bombState.phase !== "planting") {
+      return;
+    }
+
+    const planterId = this.bombState.actingCombatantId ?? this.bombState.carrierId;
+    const planterName =
+      this.bombState.actingCombatantName ?? this.bombState.carrierName ?? "Amber Vanguard";
+    this.bombState = {
+      ...this.bombState,
+      phase: "planted",
+      carrierId: null,
+      carrierName: null,
+      plantedById: planterId,
+      plantedByName: planterName,
+      actingCombatantId: null,
+      actingCombatantName: null,
+      plantStartedAt: null,
+      plantEndsAt: null,
+      defuseStartedAt: null,
+      defuseEndsAt: null,
+      detonatesAt: now + this.bombState.fuseSeconds,
+      updatedAt: now,
+    };
+    this.roundState = {
+      ...this.roundState,
+      phaseEndsAt: now + this.bombState.fuseSeconds,
+    };
+    this.pushFeed(`${planterName} armed ${this.bombState.site.label}.`, 2.2);
+    this.publishRoomState(true);
+  }
+
+  private startBombDefuse(now: number): void {
+    if (!this.bombState || this.bombState.phase !== "planted") {
+      return;
+    }
+
+    this.bombState = {
+      ...this.bombState,
+      phase: "defusing",
+      actingCombatantId: this.playerIdentity.id,
+      actingCombatantName: this.playerIdentity.name,
+      defuseStartedAt: now,
+      defuseEndsAt: now + this.bombState.defuseSeconds,
+      updatedAt: now,
+    };
+    this.pushFeed(`Disarming ${this.bombState.site.label}...`, 0.9);
+    this.publishRoomState(true);
+  }
+
+  private cancelBombDefuse(now: number): void {
+    if (!this.bombState || this.bombState.phase !== "defusing") {
+      return;
+    }
+
+    this.bombState = {
+      ...this.bombState,
+      phase: "planted",
+      actingCombatantId: null,
+      actingCombatantName: null,
+      defuseStartedAt: null,
+      defuseEndsAt: null,
+      updatedAt: now,
+    };
+
+    if (this.localTeamId === this.bombState.defendingTeam) {
+      this.pushFeed("Defuse broken.", 0.9);
+    }
+
+    this.publishRoomState(true);
   }
 
   private fire(now: number): void {
@@ -1493,7 +1903,7 @@ export class LocalMatch {
     now: number,
     attackerId?: string,
   ): void {
-    if (this.playerDead) {
+    if (this.playerDead || this.qaInvulnerable) {
       return;
     }
 
@@ -1562,6 +1972,49 @@ export class LocalMatch {
     return counts;
   }
 
+  private teamCountsForRoundTick(): TeamRoundCounts {
+    const counts = this.teamCountsSnapshot();
+
+    if (
+      !this.bombState ||
+      (this.bombState.phase !== "planted" && this.bombState.phase !== "defusing")
+    ) {
+      return counts;
+    }
+
+    return {
+      ...counts,
+      [this.bombState.attackingTeam]: {
+        ...counts[this.bombState.attackingTeam],
+        alive: Math.max(1, counts[this.bombState.attackingTeam].alive),
+      },
+    };
+  }
+
+  private objectiveRoleForCombatant(combatantId: string): string {
+    if (!this.bombState) {
+      return "";
+    }
+
+    if (this.bombState.phase === "carried" && this.bombState.carrierId === combatantId) {
+      return "Charge";
+    }
+
+    if (this.bombState.phase === "planting" && this.bombState.actingCombatantId === combatantId) {
+      return "Arming";
+    }
+
+    if (this.bombState.phase === "planted" && this.bombState.plantedById === combatantId) {
+      return "Armed";
+    }
+
+    if (this.bombState.phase === "defusing" && this.bombState.actingCombatantId === combatantId) {
+      return "Defusing";
+    }
+
+    return "";
+  }
+
   private rosterSnapshot(): MatchRosterEntry[] {
     const localEntry: MatchRosterEntry = {
       id: this.playerIdentity.id,
@@ -1573,6 +2026,7 @@ export class LocalMatch {
       status: this.playerDead ? "down" : "alive",
       teamId: this.localTeamId,
       teamLabel: getTeamDefinition(this.localTeamId).shortName,
+      objectiveRole: this.objectiveRoleForCombatant(this.playerIdentity.id),
     };
 
     const entries: MatchRosterEntry[] =
@@ -1589,6 +2043,7 @@ export class LocalMatch {
               status: actor.status,
               teamId: actor.teamId,
               teamLabel: getTeamDefinition(actor.teamId).shortName,
+              objectiveRole: this.objectiveRoleForCombatant(actor.id),
             })),
           ]
         : [
@@ -1603,6 +2058,7 @@ export class LocalMatch {
               status: enemy.alive ? "alive" : "down",
               teamId: enemy.teamId,
               teamLabel: getTeamDefinition(enemy.teamId).shortName,
+              objectiveRole: this.objectiveRoleForCombatant(enemy.id),
             })),
           ];
 
@@ -1635,12 +2091,15 @@ export class LocalMatch {
 
   private emitSnapshot(): void {
     const now = this.gameNow();
+    const roundNow = this.roundNow();
     if (this.feedMessage && this.feedMessage.expiresAt <= now) {
       this.feedMessage = undefined;
     }
 
     const team = getTeamDefinition(this.localTeamId);
     const teamCounts = this.teamCountsSnapshot();
+    const roster = this.rosterSnapshot();
+    const bombHud = this.bombHudSnapshot(roundNow);
     const deathLine = this.playerDead
       ? "Down for the rest of the round. Wait for the next reset or press M to reopen map select."
       : "";
@@ -1681,20 +2140,134 @@ export class LocalMatch {
       deathLine,
       hitActive: this.hitIndicatorUntil > now,
       damageActive: this.damageFlashUntil > now,
-      playerCount: this.rosterSnapshot().length,
-      roster: this.rosterSnapshot(),
+      playerCount: roster.length,
+      roster,
       roundNumber: this.roundState.roundNumber,
       roundPhaseLabel: roundPhaseLabel(this.roundState.phase),
-      roundTimer: this.formatRoundClock(roundTimeRemaining(this.roundState, this.roundNow())),
+      roundTimer: this.formatRoundClock(roundTimeRemaining(this.roundState, roundNow)),
       missionLabel: this.roundState.activeMission.missionLabel,
       objectiveLabel: this.roundState.activeMission.objectiveLabel,
       missionSummary:
         this.roundState.phase === "resolution"
           ? this.roundState.resolutionLabel
           : this.roundState.activeMission.summary,
+      objectiveStatus: bombHud.status,
+      objectiveProgress: bombHud.progress,
+      objectiveProgressLabel: bombHud.progressLabel,
       aliveState: this.playerDead ? "Down" : "Alive",
       teamCounts: this.hudTeamCounts(teamCounts),
     });
+  }
+
+  private bombHudSnapshot(now: number): {
+    status: string;
+    progress: number;
+    progressLabel: string;
+  } {
+    if (!this.bombState) {
+      return {
+        status: "",
+        progress: 0,
+        progressLabel: "",
+      };
+    }
+
+    if (this.roundState.phase === "resolution") {
+      return {
+        status: "",
+        progress: 0,
+        progressLabel: "",
+      };
+    }
+
+    const { progress, secondsRemaining } = currentBombProgress(this.bombState, now);
+
+    if (this.bombState.phase === "carried") {
+      const localCarrier = this.bombState.carrierId === this.playerIdentity.id;
+      const atSite = this.distanceToBombSite(this.camera.position) <= this.bombState.site.radius;
+      return {
+        status: this.bombState.carrierName
+          ? `Charge with ${this.bombState.carrierName}.`
+          : "Charge carrier pending.",
+        progress: 0,
+        progressLabel:
+          localCarrier && atSite && this.roundState.phase === "active"
+            ? `Hold E to arm ${this.bombState.site.label}`
+            : "",
+      };
+    }
+
+    if (this.bombState.phase === "planting") {
+      return {
+        status: `${this.bombState.actingCombatantName ?? "Operator"} arming ${this.bombState.site.label}.`,
+        progress,
+        progressLabel: `${secondsRemaining.toFixed(1)}s to arm`,
+      };
+    }
+
+    if (this.bombState.phase === "planted") {
+      const atSite = this.distanceToBombSite(this.camera.position) <= this.bombState.site.radius;
+      const canDefuse =
+        this.localTeamId === this.bombState.defendingTeam &&
+        !this.playerDead &&
+        this.roundState.phase === "active";
+      return {
+        status: `${this.bombState.site.label} is armed.`,
+        progress,
+        progressLabel:
+          canDefuse && atSite
+            ? `Hold E to disarm · ${secondsRemaining.toFixed(1)}s to breach`
+            : `${secondsRemaining.toFixed(1)}s to breach`,
+      };
+    }
+
+    return {
+      status: `${this.bombState.actingCombatantName ?? "Operator"} disarming ${this.bombState.site.label}.`,
+      progress,
+      progressLabel: `${secondsRemaining.toFixed(1)}s to disarm`,
+    };
+  }
+
+  private debugBombStateSnapshot(): Record<string, unknown> | null {
+    if (!this.bombState) {
+      return null;
+    }
+
+    const now = this.roundNow();
+    const { progress, secondsRemaining } = currentBombProgress(this.bombState, now);
+    const siteDistance = this.distanceToBombSite(this.camera.position);
+
+    return {
+      phase: this.bombState.phase,
+      siteId: this.bombState.site.id,
+      siteLabel: this.bombState.site.label,
+      siteRadius: this.bombState.site.radius,
+      sitePosition: {
+        x: Number(this.bombState.site.position[0].toFixed(2)),
+        y: Number(this.bombState.site.position[1].toFixed(2)),
+        z: Number(this.bombState.site.position[2].toFixed(2)),
+      },
+      carrierId: this.bombState.carrierId,
+      carrierName: this.bombState.carrierName,
+      plantedById: this.bombState.plantedById,
+      plantedByName: this.bombState.plantedByName,
+      actingCombatantId: this.bombState.actingCombatantId,
+      actingCombatantName: this.bombState.actingCombatantName,
+      progress: Number(progress.toFixed(3)),
+      secondsRemaining: Number(secondsRemaining.toFixed(2)),
+      localDistanceToSite: Number(siteDistance.toFixed(2)),
+      localCanPlant:
+        this.bombState.phase === "carried" &&
+        this.bombState.carrierId === this.playerIdentity.id &&
+        this.localTeamId === this.bombState.attackingTeam &&
+        !this.playerDead &&
+        siteDistance <= this.bombState.site.radius,
+      localCanDefuse:
+        this.bombState.phase === "planted" &&
+        this.localTeamId === this.bombState.defendingTeam &&
+        !this.playerDead &&
+        siteDistance <= this.bombState.site.radius,
+    };
   }
 
   private defaultStatusLine(): string {
@@ -1704,6 +2277,13 @@ export class LocalMatch {
 
     if (this.roundState.phase === "resolution") {
       return this.roundState.resolutionLabel || "Round resetting.";
+    }
+
+    if (this.bombState) {
+      const bombStatus = this.bombHudSnapshot(this.roundNow()).status;
+      if (bombStatus) {
+        return bombStatus;
+      }
     }
 
     return this.roundState.activeMission.summary;
@@ -1725,14 +2305,14 @@ export class LocalMatch {
 
   private promptText(): string {
     if (this.activeMode === "shared") {
-      return "Click the viewport to engage controls. WASD moves, Shift sprints, Ctrl crouches, Space jumps, left click fires, R reloads, and M reopens map select.";
+      return "Click the viewport to engage controls. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.";
     }
 
     if (this.options.mode === "shared" && this.sharedRoomFallbackReason) {
-      return "Click the viewport to engage controls. Shared-room sync could not start here, so the app stayed in the solo round without crashing. WASD moves, Shift sprints, Ctrl crouches, Space jumps, left click fires, R reloads, and M reopens map select.";
+      return "Click the viewport to engage controls. Shared-room sync could not start here, so the app stayed in the solo round without crashing. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.";
     }
 
-    return "Click the viewport to engage controls. Pointer lock is used when available; fallback mouse-look stays browser-safe. WASD moves, Shift sprints, Ctrl crouches, Space jumps, left click fires, R reloads, and M reopens map select.";
+    return "Click the viewport to engage controls. Pointer lock is used when available; fallback mouse-look stays browser-safe. WASD moves, Shift sprints, Ctrl crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.";
   }
 
   private publishRoomState(force = false): void {
@@ -1755,6 +2335,7 @@ export class LocalMatch {
       deaths: this.playerDeaths,
       status: this.playerDead ? "down" : "alive",
       roundState: serializeRoundState(this.roundState),
+      bombState: serializeBombRuntimeState(this.bombState),
       position: [this.camera.position.x, this.camera.position.y, this.camera.position.z] as [
         number,
         number,

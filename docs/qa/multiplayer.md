@@ -4,13 +4,14 @@ Date: 2026-05-28
 
 ## Scope
 
-Targeted verification for shared-room behavior inside `round-core-and-movement-foundation`:
+Targeted verification for shared-room behavior inside `round-core-and-movement-foundation` and `bomb-mission-mode`:
 
 - same-map roster membership
 - explicit team assignment sync
 - round phase sync
 - different-map isolation
 - missing `BroadcastChannel` fallback
+- bomb carrier sync, planted-state sync, and defender-side defuse resolution
 
 ## Commands
 
@@ -39,6 +40,18 @@ Observed results:
 - both pages reported the same round number and round phase
 
 Result: shared-room mode synchronized team assignment, roster membership, and round phase on the same map.
+
+### Shared bomb round
+
+The same two pages then stayed on `Sandline Foundry` for a live relay-charge exchange:
+
+- page 1 forced the shared round into `active`, stood in the declared `Kiln Yard` site, and began the relay-charge arm action as the attacking `Amber Vanguard` operator
+- page 2 saw the same attacking operator listed as the bomb carrier before the plant
+- both pages advanced to `planted`
+- page 2 rendered the same planted-pressure HUD line (`12.0s to breach`) and then moved onto the live site as the `Cobalt Reach` defender
+- page 2 completed the disarm, and both pages resolved with matching `disarmed Kiln Yard` result text
+
+Result: the retained shared-room path now propagates bomb carrier ownership, planted-site pressure, and defuse resolution without stale mission state between peers.
 
 ### Map isolation
 
@@ -71,5 +84,5 @@ Result: missing shared-room support fell back to the local path without crashing
 
 ## Notes
 
-- The shared-room QA here is intentionally scoped to the active subgoal: team rounds, roster membership, round phase, and isolation. Full mission-objective and tactical-AI multiplayer verification remains for later subgoals.
+- The shared-room QA here is intentionally scoped to the active subgoal: team rounds, roster membership, round phase, map isolation, relay-charge carrier sync, planted pressure, and defender-side defuse. Full hostage-mode and tactical-AI multiplayer verification remains for later subgoals.
 - The forced next-round advance used in the harness is a QA-only control path and not the shipped gameplay default.

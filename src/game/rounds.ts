@@ -11,6 +11,12 @@ export interface TeamRoundCount {
 
 export type TeamRoundCounts = Record<TeamId, TeamRoundCount>;
 
+const ROUND_PHASE_ORDER: Record<RoundPhase, number> = {
+  briefing: 0,
+  active: 1,
+  resolution: 2,
+};
+
 export interface RoundState {
   roundNumber: number;
   phase: RoundPhase;
@@ -74,6 +80,15 @@ function resolveRound(
     winnerTeamId,
     resolutionLabel,
   };
+}
+
+export function resolveRoundState(
+  current: RoundState,
+  winnerTeamId: TeamId | null,
+  resolutionLabel: string,
+  now: number,
+): RoundState {
+  return resolveRound(current, winnerTeamId, resolutionLabel, now);
 }
 
 function contestedRound(counts: TeamRoundCounts): boolean {
@@ -166,10 +181,21 @@ export function shouldAdoptRoundState(
   }
 
   if (remoteState.phase !== localState.phase) {
-    return remoteState.phaseStartedAt < localState.phaseStartedAt;
+    return ROUND_PHASE_ORDER[remoteState.phase] > ROUND_PHASE_ORDER[localState.phase];
   }
 
-  return remoteState.phaseEndsAt > localState.phaseEndsAt + 0.2;
+  return Math.abs(remoteState.phaseEndsAt - localState.phaseEndsAt) > 0.2;
+}
+
+export function forceRoundActive(roundState: RoundState, now: number): RoundState {
+  return {
+    ...roundState,
+    phase: "active",
+    phaseStartedAt: now,
+    phaseEndsAt: now + ROUND_DURATIONS.active,
+    winnerTeamId: null,
+    resolutionLabel: "",
+  };
 }
 
 export function tickRoundState(

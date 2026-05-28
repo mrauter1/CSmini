@@ -44,6 +44,9 @@ declare global {
       fire: () => void;
       forcePlayerDeath: (attackerName?: string) => void;
       forceNextRound: () => void;
+      forceRoundActive: () => void;
+      setInvulnerable: (enabled: boolean) => void;
+      startObjectiveAction: () => boolean;
       setKey: (code: string, active: boolean) => void;
       jump: () => void;
       jumpSample: () => { peakY: number; landedY: number; landed: boolean } | null;
@@ -78,6 +81,9 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     fire: () => app.debugFire(),
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),
     forceNextRound: () => app.debugForceNextRound(),
+    forceRoundActive: () => app.debugForceRoundActive(),
+    setInvulnerable: (enabled) => app.debugSetInvulnerable(enabled),
+    startObjectiveAction: () => app.debugStartObjectiveAction(),
     setKey: (code, active) => app.debugSetKey(code, active),
     jump: () => app.debugJump(),
     jumpSample: () => app.debugJumpSample(),

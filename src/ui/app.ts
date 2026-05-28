@@ -232,6 +232,8 @@ export class TacticalShellApp {
     setText("mission-label", snapshot.missionLabel);
     setText("objective-label", snapshot.objectiveLabel);
     setText("mission-summary", snapshot.missionSummary);
+    setText("objective-status", snapshot.objectiveStatus);
+    setText("objective-progress-label", snapshot.objectiveProgressLabel);
     setText("alive-state", snapshot.aliveState);
 
     const promptPanel = this.root.querySelector<HTMLElement>('[data-ui="prompt-panel"]');
@@ -276,11 +278,14 @@ export class TacticalShellApp {
       roster.innerHTML = snapshot.roster
         .map((entry) => {
           const statusLabel = entry.status === "alive" ? "Alive" : "Down";
+          const objectiveRole = entry.objectiveRole
+            ? `<small class="roster-row__badge">${this.escapeHtml(entry.objectiveRole)}</small>`
+            : "";
 
           return `
             <div class="roster-row ${entry.local ? "roster-row--local" : ""}" data-team="${entry.teamId}">
               <div>
-                <strong>${this.escapeHtml(entry.name)}</strong>
+                <strong>${this.escapeHtml(entry.name)}${objectiveRole}</strong>
                 <span>${this.escapeHtml(entry.teamLabel)} · ${statusLabel}</span>
               </div>
               <div>
@@ -291,6 +296,19 @@ export class TacticalShellApp {
           `;
         })
         .join("");
+    }
+
+    const objectiveProgress = this.root.querySelector<HTMLElement>('[data-ui="objective-progress"]');
+    const objectiveProgressFill = this.root.querySelector<HTMLElement>(
+      '[data-ui="objective-progress-fill"]',
+    );
+    const showObjectiveProgress =
+      snapshot.objectiveProgressLabel.length > 0 || snapshot.objectiveProgress > 0;
+    if (objectiveProgress) {
+      objectiveProgress.hidden = !showObjectiveProgress;
+    }
+    if (objectiveProgressFill) {
+      objectiveProgressFill.style.width = `${Math.max(0, Math.min(1, snapshot.objectiveProgress)) * 100}%`;
     }
   }
 
@@ -366,6 +384,18 @@ export class TacticalShellApp {
 
   debugForceNextRound(): void {
     this.match?.debugForceNextRound();
+  }
+
+  debugForceRoundActive(): void {
+    this.match?.debugForceRoundActive();
+  }
+
+  debugSetInvulnerable(enabled: boolean): void {
+    this.match?.debugSetInvulnerable(enabled);
+  }
+
+  debugStartObjectiveAction(): boolean {
+    return this.match?.debugStartObjectiveAction() ?? false;
   }
 
   debugSetKey(code: string, active: boolean): void {

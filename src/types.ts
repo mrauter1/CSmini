@@ -146,6 +146,7 @@ export interface BombMissionDefinition {
   sites: BombSiteDefinition[];
   plantSeconds: number;
   defuseSeconds: number;
+  fuseSeconds: number;
 }
 
 export interface HostageClusterDefinition {

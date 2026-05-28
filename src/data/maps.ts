@@ -774,6 +774,7 @@ export const mapCatalog: MapDefinition[] = [
           holdTeam: "cobalt",
           plantSeconds: 3.4,
           defuseSeconds: 4.2,
+          fuseSeconds: 12.4,
           sites: [
             bombSite(
               "kiln-yard",
@@ -925,6 +926,7 @@ export const mapCatalog: MapDefinition[] = [
           holdTeam: "cobalt",
           plantSeconds: 3.5,
           defuseSeconds: 4.3,
+          fuseSeconds: 12.1,
           sites: [
             bombSite(
               "gantry-console",
@@ -1078,6 +1080,7 @@ export const mapCatalog: MapDefinition[] = [
           holdTeam: "cobalt",
           plantSeconds: 3.5,
           defuseSeconds: 4.4,
+          fuseSeconds: 12.6,
           sites: [
             bombSite(
               "turbine-rim",
@@ -1229,6 +1232,7 @@ export const mapCatalog: MapDefinition[] = [
           holdTeam: "cobalt",
           plantSeconds: 3.4,
           defuseSeconds: 4.1,
+          fuseSeconds: 11.9,
           sites: [
             bombSite(
               "slip-cradle",
@@ -1382,6 +1386,7 @@ export const mapCatalog: MapDefinition[] = [
           holdTeam: "cobalt",
           plantSeconds: 3.5,
           defuseSeconds: 4.2,
+          fuseSeconds: 12.2,
           sites: [
             bombSite(
               "archive-court-relay",
