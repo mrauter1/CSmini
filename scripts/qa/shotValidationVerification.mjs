@@ -414,8 +414,17 @@ async function main() {
     await delay(350);
     const acceptedBeforeId = await currentResultId(joinPage);
     const acceptedBeforeCount = await currentResultCount(joinPage);
-    await joinPage.evaluate("window.__dustlineQa__.fire()");
-    await delay(20);
+    const acceptedSent = await joinPage.evaluate(
+      `window.__dustlineQa__.submitShotClaim({
+        origin: ${JSON.stringify(clearLayout.guest)},
+        direction: {
+          x: ${clearLayout.host.x - clearLayout.guest.x},
+          y: 0,
+          z: ${clearLayout.host.z - clearLayout.guest.z}
+        }
+      })`,
+    );
+    assert(acceptedSent === true, "Guest could not submit the clear shot claim.");
     const acceptedClaimTick = await joinPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.sharedCombat?.lastShotClaim?.tick ?? 0",
     );
