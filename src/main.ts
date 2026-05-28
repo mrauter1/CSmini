@@ -1,11 +1,17 @@
 import "./styles.css";
 
 import { TacticalShellApp } from "./ui/app";
+import type { RoomConnectionKind } from "./net/matchRoomConnection";
 
 declare global {
   interface Window {
     __dustlineQa__?: {
       openMap: (mapId: string, mode: "shared" | "local") => void;
+      openRoomSetup: (mapId: string, kind?: RoomConnectionKind) => void;
+      createRoomOffer: () => Promise<string | null>;
+      applyRoomAnswer: (answer: string) => Promise<boolean>;
+      generateRoomAnswer: (offer: string) => Promise<string | null>;
+      enterArena: () => boolean;
       returnToCatalog: () => void;
       getState: () => Record<string, unknown> | null;
       engageControls: () => void;
@@ -57,6 +63,11 @@ app.mount();
 if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")) {
   window.__dustlineQa__ = {
     openMap: (mapId, mode) => app.debugOpenMap(mapId, mode),
+    openRoomSetup: (mapId, kind) => app.debugOpenRoomSetup(mapId, kind),
+    createRoomOffer: () => app.debugCreateRoomOffer(),
+    applyRoomAnswer: (answer) => app.debugApplyRoomAnswer(answer),
+    generateRoomAnswer: (offer) => app.debugGenerateRoomAnswer(offer),
+    enterArena: () => app.debugEnterArena(),
     returnToCatalog: () => app.debugReturnToCatalog(),
     getState: () => app.debugGetState(),
     engageControls: () => app.debugEngageControls(),

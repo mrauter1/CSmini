@@ -1,6 +1,19 @@
 import { renderPreviewSvg } from "./previewSvg";
 import type { MapDefinition } from "../types";
-import type { MatchMode } from "../game/multiplayerRoom";
+import type {
+  MatchMode,
+  RoomConnectionKind,
+  RoomConnectionUiSnapshot,
+} from "../net/matchRoomConnection";
+
+export interface RoomSetupRenderState {
+  map: MapDefinition;
+  selectedKind: RoomConnectionKind;
+  supportError: string;
+  copyStatus: string;
+  connection?: RoomConnectionUiSnapshot;
+  canEnterArena: boolean;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -17,7 +30,7 @@ function mapCard(map: MapDefinition, index: number): string {
         <p class="map-card__index">0${index + 1}</p>
         <div class="map-card__actions">
           ${map.mainMap ? '<span class="chip chip--primary">Primary Arena</span>' : ""}
-          <button class="button button--tiny button--primary" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Join Room</button>
+          <button class="button button--tiny button--primary" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Multiplayer</button>
           <button class="button button--tiny" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo Drill</button>
         </div>
       </div>
@@ -66,6 +79,146 @@ function mapRibbonButton(map: MapDefinition, activeMapId: string, mode: MatchMod
   `;
 }
 
+function controlHint(label: string, text: string): string {
+  return `
+    <div class="control-hint">
+      <p>${escapeHtml(label)}</p>
+      <span>${escapeHtml(text)}</span>
+    </div>
+  `;
+}
+
+function roomKindButton(
+  selectedKind: RoomConnectionKind,
+  kind: RoomConnectionKind,
+  label: string,
+  note: string,
+): string {
+  return `
+    <button
+      class="room-setup__tab ${selectedKind === kind ? "room-setup__tab--active" : ""}"
+      data-action="select-room-kind"
+      data-room-kind="${kind}"
+    >
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(note)}</span>
+    </button>
+  `;
+}
+
+function renderRoomStatus(state: RoomSetupRenderState): string {
+  const detail = state.connection?.detail ?? "Choose a transport to prepare the room.";
+  const supportError = state.supportError
+    ? `<p class="room-setup__status room-setup__status--error">${escapeHtml(state.supportError)}</p>`
+    : "";
+  const copyStatus = state.copyStatus
+    ? `<p class="room-setup__status room-setup__status--success">${escapeHtml(state.copyStatus)}</p>`
+    : "";
+
+  return `
+    <div class="room-setup__status-card panel">
+      <div class="panel__header panel__header--compact">
+        <p>Connection Status</p>
+        <span class="chip">${escapeHtml(state.connection?.phase ?? "idle")}</span>
+      </div>
+      <p class="panel__text">${escapeHtml(detail)}</p>
+      ${supportError}
+      ${copyStatus}
+    </div>
+  `;
+}
+
+function renderBroadcastPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Same-Browser Dev Room</p>
+        <span class="chip">Local Transport</span>
+      </div>
+      <p class="panel__text">
+        This path keeps the old same-browser local transport available for development and quick smoke tests.
+        Open the same map in another tab or window after entering the arena.
+      </p>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="enter-room-stage">Enter Arena</button>
+        <button class="button" data-action="show-catalog">Back to Roster</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderHostPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Host Flow</p>
+        <span class="chip chip--primary">Offer / Answer</span>
+      </div>
+      <p class="panel__text">
+        Generate the offer, send it to the joining player, paste their answer back here, then wait for the data channel to reach
+        <strong>connected</strong>.
+      </p>
+      <label class="room-setup__field">
+        <span>Host Offer</span>
+        <textarea readonly data-room-field="offer-output">${escapeHtml(state.connection?.offerCode ?? "")}</textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-generate-offer">Generate Offer</button>
+        <button class="button" data-action="room-copy" data-field="offer-output">Copy Offer</button>
+      </div>
+      <label class="room-setup__field">
+        <span>Paste Guest Answer</span>
+        <textarea data-room-field="answer-input" placeholder="Paste the answer blob from the joining browser."></textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-apply-answer">Apply Answer</button>
+        <button class="button ${state.canEnterArena ? "button--primary" : ""}" data-action="enter-room-stage" ${state.canEnterArena ? "" : "disabled"}>Enter Arena</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderJoinPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Join Flow</p>
+        <span class="chip chip--primary">Paste Offer</span>
+      </div>
+      <p class="panel__text">
+        Paste the host offer, generate an answer, copy it back to the host, then wait here until the connection status turns
+        <strong>connected</strong>.
+      </p>
+      <label class="room-setup__field">
+        <span>Paste Host Offer</span>
+        <textarea data-room-field="offer-input" placeholder="Paste the host offer blob here."></textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-generate-answer">Generate Answer</button>
+      </div>
+      <label class="room-setup__field">
+        <span>Guest Answer</span>
+        <textarea readonly data-room-field="answer-output">${escapeHtml(state.connection?.answerCode ?? "")}</textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button" data-action="room-copy" data-field="answer-output">Copy Answer</button>
+        <button class="button ${state.canEnterArena ? "button--primary" : ""}" data-action="enter-room-stage" ${state.canEnterArena ? "" : "disabled"}>Enter Arena</button>
+      </div>
+    </section>
+  `;
+}
+
+function roomWorkflow(state: RoomSetupRenderState): string {
+  switch (state.selectedKind) {
+    case "broadcast":
+      return renderBroadcastPanel(state);
+    case "webrtc-host":
+      return renderHostPanel(state);
+    case "webrtc-join":
+      return renderJoinPanel(state);
+  }
+}
+
 export function renderMenu(map: MapDefinition): string {
   return `
     <section class="screen screen--menu">
@@ -73,11 +226,11 @@ export function renderMenu(map: MapDefinition): string {
         <p class="hero-panel__kicker">Browser Tactical Prototype</p>
         <h1>Dustline Protocol</h1>
         <p class="hero-panel__lede">
-          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with a five-map roster, same-map shared-room firefights, and a solo-drill fallback that stays playable without any backend.
+          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with a five-map roster, a static-site-compatible multiplayer room flow, and a solo-drill fallback that stays playable without any backend.
         </p>
         <div class="hero-panel__actions">
           <button class="button button--primary" data-action="show-catalog">Open Map Roster</button>
-          <button class="button" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Join ${escapeHtml(map.name)} Room</button>
+          <button class="button" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Open Multiplayer Setup</button>
           <button class="button" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo ${escapeHtml(map.name)}</button>
         </div>
       </header>
@@ -86,7 +239,7 @@ export function renderMenu(map: MapDefinition): string {
         <section class="hero-grid__brief">
           <div class="brief-panel">
             <p class="brief-panel__label">Flow</p>
-            <p>Menu → map select → choose shared room or solo drill → move, shoot, take damage, respawn, or bounce back to map select without leaving the browser.</p>
+            <p>Menu → map select → host or join through manual signaling → exchange offer and answer blobs → enter the arena once the connection is live.</p>
           </div>
           <div class="brief-panel">
             <p class="brief-panel__label">Featured Arena</p>
@@ -116,12 +269,12 @@ export function renderCatalog(maps: MapDefinition[]): string {
           <p class="masthead__eyebrow">Map Select</p>
           <h1>Original Tactical Arenas</h1>
           <p>
-            Every entry includes a theme, spawn setup, cover language, choke-point summary, a distinctive landmark, and a top-down preview. Shared-room deploy syncs same-map tabs through the browser, while solo drill keeps the local fallback combat loop available at all times.
+            Every entry includes a theme, spawn setup, cover language, choke-point summary, a distinctive landmark, and a top-down preview. Multiplayer now runs through a dedicated room setup step so the same static site can host local dev rooms or manual WebRTC browser links.
           </p>
         </div>
         <div class="masthead__actions">
           <button class="button" data-action="show-menu">Back to Briefing</button>
-          <button class="button button--primary" data-action="open-map" data-mode="shared" data-map-id="${maps[0]?.id ?? ""}">Join Featured Room</button>
+          <button class="button button--primary" data-action="open-map" data-mode="shared" data-map-id="${maps[0]?.id ?? ""}">Open Multiplayer Setup</button>
           <button class="button" data-action="open-map" data-mode="local" data-map-id="${maps[0]?.id ?? ""}">Open Solo Drill</button>
         </div>
       </header>
@@ -133,22 +286,57 @@ export function renderCatalog(maps: MapDefinition[]): string {
   `;
 }
 
-function controlHint(label: string, text: string): string {
+export function renderRoomSetup(map: MapDefinition, state: RoomSetupRenderState): string {
   return `
-    <div class="control-hint">
-      <p>${escapeHtml(label)}</p>
-      <span>${escapeHtml(text)}</span>
-    </div>
+    <section class="screen screen--room-setup">
+      <div class="room-setup">
+        <header class="masthead panel">
+          <div>
+            <p class="masthead__eyebrow">Room Setup</p>
+            <h1>${escapeHtml(map.name)}</h1>
+            <p>
+              Manual signaling keeps the project static-site-compatible: one browser can host, another browser can join, and the offer and answer blobs are exchanged directly without an account or always-on server.
+            </p>
+          </div>
+          <div class="masthead__actions">
+            <button class="button" data-action="show-catalog">Back to Roster</button>
+            <button class="button" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo Drill Instead</button>
+          </div>
+        </header>
+
+        <div class="room-setup__grid">
+          <section class="room-setup__brief panel">
+            <div class="panel__header">
+              <p>Transport Options</p>
+              <span class="chip">${escapeHtml(state.selectedKind)}</span>
+            </div>
+            <div class="room-setup__tabs">
+              ${roomKindButton(state.selectedKind, "webrtc-host", "Host via WebRTC", "Generate the offer and accept one guest answer.")}
+              ${roomKindButton(state.selectedKind, "webrtc-join", "Join via WebRTC", "Paste an offer and produce the answer blob.")}
+              ${roomKindButton(state.selectedKind, "broadcast", "Same-Browser Dev Room", "Keep the old local room transport for tab-to-tab testing.")}
+            </div>
+            <div class="room-setup__preview">
+              ${renderPreviewSvg(map.preview)}
+            </div>
+          </section>
+
+          <div class="room-setup__workflow-stack">
+            ${renderRoomStatus(state)}
+            ${roomWorkflow(state)}
+          </div>
+        </div>
+      </div>
+    </section>
   `;
 }
 
 export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: MatchMode): string {
-  const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Drill";
+  const modeEyebrow = mode === "shared" ? "Multiplayer Arena" : "Solo Drill";
   const modeNotice =
     mode === "shared"
-      ? `Shared room armed for ${escapeHtml(map.name)}. Open the same map in another tab or window to link operators.`
+      ? `Multiplayer room armed for ${escapeHtml(map.name)}. The host or join flow must already be connected before the arena begins.`
       : "Local fallback mode: solo skirmish with procedural audio and lightweight hostile operators.";
-  const switchModeLabel = mode === "shared" ? "Switch to Solo Drill" : "Switch to Shared Room";
+  const switchModeLabel = mode === "shared" ? "Switch to Solo Drill" : "Open Multiplayer Setup";
   const switchMode = mode === "shared" ? "local" : "shared";
 
   return `
@@ -242,7 +430,7 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
             ${controlHint("Shoot", "Left click or Space")}
             ${controlHint("Reload", "R")}
             ${controlHint("Map Select", "M or button")}
-            ${controlHint("Mode", mode === "shared" ? "Same-map tab sync" : "Local fallback")}
+            ${controlHint("Mode", mode === "shared" ? "Connected room" : "Local fallback")}
             ${controlHint("HUD", "HP, ammo, roster, hit cue")}
           </div>
         </div>
@@ -250,7 +438,7 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
         <div class="map-ribbon panel">
           <div class="panel__header">
             <p>Quick Deploy</p>
-            <span class="chip">${mode === "shared" ? "Shared Room" : "Solo Drill"}</span>
+            <span class="chip">${mode === "shared" ? "Multiplayer" : "Solo Drill"}</span>
           </div>
           <div class="map-ribbon__list">
             ${maps.map((entry) => mapRibbonButton(entry, map.id, mode)).join("")}

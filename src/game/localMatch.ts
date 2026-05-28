@@ -6,15 +6,14 @@ import { createPrimitiveMesh, disposeObject } from "../world/primitives";
 import {
   buildRoomId,
   createRoomIdentity,
-  detectSharedRoomSupport,
   type CombatantStatus,
+  type MatchRoomConnection,
   type MatchMode,
   type OutboundRoomPresence,
   type RoomHitEvent,
   type RoomIdentity,
   type RoomPresenceSnapshot,
-  SharedRoomSession,
-} from "./multiplayerRoom";
+} from "../net/matchRoomConnection";
 import {
   createCombatantAvatar,
   createWeaponRig,
@@ -83,6 +82,8 @@ export interface LocalMatchSnapshot {
 
 interface LocalMatchOptions {
   mode: MatchMode;
+  sharedRoom?: MatchRoomConnection;
+  sharedRoomFallbackReason?: string;
   onActionRequest?: (action: "catalog" | "menu") => void;
   onSnapshot: (snapshot: LocalMatchSnapshot) => void;
 }
@@ -156,7 +157,7 @@ export class LocalMatch {
   private readonly playerIdentity: RoomIdentity;
   private readonly roomId: string;
 
-  private sharedRoom?: SharedRoomSession;
+  private sharedRoom?: MatchRoomConnection;
   private activeMode: MatchMode = "local";
   private sharedRoomFallbackReason = "";
   private animationHandle = 0;
@@ -183,8 +184,8 @@ export class LocalMatch {
     private readonly map: MapDefinition,
     private readonly options: LocalMatchOptions,
   ) {
-    this.playerIdentity = createRoomIdentity();
-    this.roomId = buildRoomId(map.id);
+    this.playerIdentity = options.sharedRoom?.identity ?? createRoomIdentity();
+    this.roomId = options.sharedRoom?.roomId ?? buildRoomId(map.id);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
@@ -237,8 +238,6 @@ export class LocalMatch {
       this.controls.unlock();
     }
 
-    this.sharedRoom?.dispose();
-    this.sharedRoom = undefined;
     this.controls.dispose();
     this.audio.dispose();
     disposeObject(this.scene);
@@ -290,6 +289,7 @@ export class LocalMatch {
         },
       },
       roster: this.rosterSnapshot(),
+      roomConnection: this.sharedRoom?.debugSnapshot() ?? null,
       remotePlayers: [...this.remoteActors.values()].map((actor) => ({
         id: actor.id,
         name: actor.name,
@@ -431,55 +431,47 @@ export class LocalMatch {
     return this.findRemoteShotTarget(environmentDistance)?.id ?? null;
   }
 
-  private initializeSharedRoom(): SharedRoomSession | undefined {
+  private initializeSharedRoom(): MatchRoomConnection | undefined {
     if (this.options.mode !== "shared") {
       this.activeMode = "local";
       return undefined;
     }
 
-    const support = detectSharedRoomSupport();
-    if (!support.supported) {
+    if (!this.options.sharedRoom) {
       this.activeMode = "local";
-      this.sharedRoomFallbackReason = support.reason;
+      this.sharedRoomFallbackReason =
+        this.options.sharedRoomFallbackReason ?? "no multiplayer room connection was configured.";
       return undefined;
     }
 
-    try {
-      this.activeMode = "shared";
-      return new SharedRoomSession(this.roomId, this.playerIdentity, {
-        onPresence: (presence, event) => {
-          this.upsertRemoteActor(presence);
-          if (event === "joined") {
-            this.pushFeed(`${presence.name} linked into ${this.map.name}.`, 1.6);
-          }
-        },
-        onLeave: (peerId, reason) => {
-          const actor = this.remoteActors.get(peerId);
-          this.removeRemoteActor(peerId);
-          if (actor) {
-            this.pushFeed(
-              reason === "stale"
-                ? `${actor.name} connection timed out.`
-                : `${actor.name} left the room.`,
-              1.4,
-            );
-          }
-        },
-        onHit: (event) => {
-          this.handleRoomHit(event);
-        },
-        onElimination: (event) => {
-          this.handleRoomElimination(event);
-        },
-      });
-    } catch (error) {
-      this.activeMode = "local";
-      this.sharedRoomFallbackReason =
-        error instanceof Error
-          ? `shared-room sync failed to start (${error.message}).`
-          : "shared-room sync failed to start.";
-      return undefined;
-    }
+    this.options.sharedRoom.setHandlers({
+      onPresence: (presence, event) => {
+        this.upsertRemoteActor(presence);
+        if (event === "joined") {
+          this.pushFeed(`${presence.name} linked into ${this.map.name}.`, 1.6);
+        }
+      },
+      onLeave: (peerId, reason) => {
+        const actor = this.remoteActors.get(peerId);
+        this.removeRemoteActor(peerId);
+        if (actor) {
+          this.pushFeed(
+            reason === "stale"
+              ? `${actor.name} connection timed out.`
+              : `${actor.name} left the room.`,
+            1.4,
+          );
+        }
+      },
+      onHit: (event) => {
+        this.handleRoomHit(event);
+      },
+      onElimination: (event) => {
+        this.handleRoomElimination(event);
+      },
+    });
+    this.activeMode = "shared";
+    return this.options.sharedRoom;
   }
 
   private initialSpawnIndex(): number {
@@ -881,6 +873,7 @@ export class LocalMatch {
     }
     this.updateRespawns(now);
     this.publishRoomState();
+    this.sharedRoom?.tick();
 
     this.weaponRig.update(
       now,
@@ -1379,9 +1372,12 @@ export class LocalMatch {
 
   private defaultStatusLine(): string {
     if (this.activeMode === "shared") {
-      return this.remoteActors.size > 0
-        ? `${this.remoteActors.size + 1} operators live in the shared room.`
-        : "Shared room armed. Awaiting another operator on this map.";
+      if (this.remoteActors.size > 0) {
+        return `${this.remoteActors.size + 1} operators live in the room.`;
+      }
+
+      const detail = this.sharedRoom?.uiSnapshot.detail;
+      return detail ?? "Shared room armed. Awaiting another operator.";
     }
 
     return "Solo skirmish active.";
@@ -1389,9 +1385,12 @@ export class LocalMatch {
 
   private modeNotice(): string {
     if (this.activeMode === "shared") {
-      return this.remoteActors.size > 0
-        ? `Shared room live on ${this.map.name}: ${this.remoteActors.size + 1} operators synced in this map session.`
-        : `Shared room live on ${this.map.name}. Open the same map in a second tab or window to link another operator.`;
+      const connection = this.sharedRoom?.uiSnapshot;
+      if (connection) {
+        return `${connection.title}: ${connection.detail}`;
+      }
+
+      return `Shared room live on ${this.map.name}.`;
     }
 
     if (this.options.mode === "shared" && this.sharedRoomFallbackReason) {
@@ -1403,7 +1402,8 @@ export class LocalMatch {
 
   private promptText(): string {
     if (this.activeMode === "shared") {
-      return "Click the viewport to engage controls. This map is broadcasting on a shared browser room; open the same map in a second tab or window to establish contact. WASD moves, Shift sprints, left click or Space fires, R reloads, and M reopens map select.";
+      const detail = this.sharedRoom?.uiSnapshot.detail ?? "Shared room connected.";
+      return `Click the viewport to engage controls. ${detail} WASD moves, Shift sprints, left click or Space fires, R reloads, and M reopens map select.`;
     }
 
     if (this.options.mode === "shared" && this.sharedRoomFallbackReason) {
@@ -1419,7 +1419,6 @@ export class LocalMatch {
     }
 
     this.sharedRoom.publish(this.roomPresence(), force);
-    this.sharedRoom.pruneStalePeers();
   }
 
   private roomPresence(): OutboundRoomPresence {
