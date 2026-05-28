@@ -3,6 +3,7 @@ import {
   detectBroadcastTransportSupport,
 } from "./broadcastTransport";
 import { detectWebRtcSupport } from "./manualSignaling";
+import { detectSignaledWebRtcSupport, SignaledWebRtcRoomTransport } from "./signaledWebRtcTransport";
 import {
   type CombatantStatus,
   decodeRoomMessage,
@@ -27,12 +28,18 @@ const HEARTBEAT_PULSE_MS = 900;
 const SNAPSHOT_PULSE_MS = 85;
 const STALE_PEER_MS = 2_400;
 const BROADCAST_HOST_KEY_PREFIX = "dustline.broadcast-host:";
+const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const OPERATOR_CALLSIGNS = ["Atlas", "Bishop", "Cinder", "Lancer", "Nova", "Pike", "Rivet", "Sable"];
 const OPERATOR_ACCENTS = ["#CFA66F", "#6F8FAA", "#819B58", "#B86E4E", "#7A8E96", "#A88E5E"];
 const SESSION_KEY = "dustline.operator-seed";
 
 export type MatchMode = "local" | "shared";
-export type RoomConnectionKind = "broadcast" | "webrtc-host" | "webrtc-join";
+export type RoomConnectionKind =
+  | "signal-host"
+  | "signal-join"
+  | "broadcast"
+  | "webrtc-host"
+  | "webrtc-join";
 export type MatchRoomRole = "host" | "guest";
 
 export interface RoomIdentity extends ParticipantIdentity {}
@@ -69,6 +76,8 @@ export interface RoomConnectionUiSnapshot {
   detail: string;
   offerCode?: string;
   answerCode?: string;
+  roomCode?: string;
+  signalingUrl?: string;
   remoteName?: string;
 }
 
@@ -133,6 +142,10 @@ export function detectSharedRoomSupport(kind: RoomConnectionKind): {
     return detectBroadcastTransportSupport();
   }
 
+  if (kind === "signal-host" || kind === "signal-join") {
+    return detectSignaledWebRtcSupport();
+  }
+
   return detectWebRtcSupport();
 }
 
@@ -152,6 +165,29 @@ export function createRoomIdentity(): RoomIdentity {
 
 export function buildRoomId(mapId: string): string {
   return `dustline-room:${mapId}`;
+}
+
+export function buildSignaledRoomId(mapId: string, roomCode: string): string {
+  return `dustline-room:${mapId}:${normalizeRoomCode(roomCode)}`;
+}
+
+export function createRoomCode(length = 6): string {
+  const values = new Uint32Array(length);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(values);
+  } else {
+    for (let index = 0; index < values.length; index += 1) {
+      values[index] = Math.floor(Math.random() * ROOM_CODE_ALPHABET.length);
+    }
+  }
+
+  return [...values]
+    .map((value) => ROOM_CODE_ALPHABET[value % ROOM_CODE_ALPHABET.length])
+    .join("");
+}
+
+export function normalizeRoomCode(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
 }
 
 export function createBroadcastMatchRoomConnection(
@@ -208,6 +244,82 @@ export function createHostMatchRoomConnection(
     handlers,
     transport,
   });
+}
+
+export function createSignaledHostMatchRoomConnection(
+  roomId: string,
+  mapId: string,
+  identity: RoomIdentity,
+  handlers: SharedRoomHandlers,
+  sessionLabel: string,
+  signalingUrl: string,
+  roomCode: string,
+): MatchRoomConnection {
+  const transport = new SignaledWebRtcRoomTransport(
+    {
+      role: "host",
+      roomId,
+      mapId,
+      localParticipant: identity,
+      sessionLabel,
+      signalingUrl,
+    },
+    {
+      onMessage: () => undefined,
+    },
+  );
+
+  return new SignaledWebRtcMatchRoomConnection(
+    "signal-host",
+    {
+      roomId,
+      mapId,
+      identity,
+      role: "host",
+      hostPeerId: identity.id,
+      handlers,
+      transport,
+    },
+    roomCode,
+    signalingUrl,
+  );
+}
+
+export function createSignaledJoinMatchRoomConnection(
+  roomId: string,
+  mapId: string,
+  identity: RoomIdentity,
+  handlers: SharedRoomHandlers,
+  signalingUrl: string,
+  roomCode: string,
+): MatchRoomConnection {
+  const transport = new SignaledWebRtcRoomTransport(
+    {
+      role: "guest",
+      roomId,
+      mapId,
+      localParticipant: identity,
+      sessionLabel: "",
+      signalingUrl,
+    },
+    {
+      onMessage: () => undefined,
+    },
+  );
+
+  return new SignaledWebRtcMatchRoomConnection(
+    "signal-join",
+    {
+      roomId,
+      mapId,
+      identity,
+      role: "guest",
+      handlers,
+      transport,
+    },
+    roomCode,
+    signalingUrl,
+  );
 }
 
 export function createJoinMatchRoomConnection(
@@ -496,14 +608,18 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     this.roomClosed = false;
     this.rememberParticipant(this.buildParticipantRecord());
 
-    if (this.kind === "webrtc-join" && !this.joined) {
+    if (this.role === "guest" && !this.joined) {
       this.joined = true;
       this.sendMessage("join-request", {
         participant: this.identity,
         requestedRole: "guest",
         requestedTeam: "bravo",
         mapId: this.mapId,
-        capabilities: ["input-tick", "host-snapshot", "manual-signaling"],
+        capabilities: [
+          "input-tick",
+          "host-snapshot",
+          this.kind === "signal-join" ? "cloudflare-signaling" : "manual-signaling",
+        ],
       });
       return;
     }
@@ -550,7 +666,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   protected onJoinRequest(message: Extract<RoomMessage, { type: "join-request" }>): void {
-    if (this.kind !== "webrtc-host") {
+    if (this.role !== "host") {
       return;
     }
 
@@ -604,7 +720,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   protected onJoinAccepted(message: Extract<RoomMessage, { type: "join-accepted" }>): void {
-    if (this.kind !== "webrtc-join") {
+    if (this.role !== "guest") {
       return;
     }
 
@@ -770,10 +886,14 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     switch (this.kind) {
       case "broadcast":
         return "Same-Browser Dev Room";
+      case "signal-host":
+        return "Cloud Room Host";
+      case "signal-join":
+        return "Cloud Room Join";
       case "webrtc-host":
-        return "WebRTC Host Room";
+        return "Manual WebRTC Host";
       case "webrtc-join":
-        return "WebRTC Join Room";
+        return "Manual WebRTC Join";
     }
   }
 }
@@ -846,6 +966,21 @@ class HostWebRtcMatchRoomConnection
     await this.webRtcTransport.applyAnswerCode(raw);
     this.updateUiState({
       detail: this.transport.getStatus().detail,
+    });
+  }
+}
+
+class SignaledWebRtcMatchRoomConnection extends BaseMatchRoomConnection {
+  constructor(
+    kind: Extract<RoomConnectionKind, "signal-host" | "signal-join">,
+    options: BaseConnectionOptions,
+    roomCode: string,
+    signalingUrl: string,
+  ) {
+    super(kind, options);
+    this.updateUiState({
+      roomCode,
+      signalingUrl,
     });
   }
 }

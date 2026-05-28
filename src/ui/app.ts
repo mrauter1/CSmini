@@ -2,11 +2,16 @@ import { featuredMap, getMapById, mapCatalog } from "../data/maps";
 import type { LocalMatch, LocalMatchSnapshot } from "../game/localMatch";
 import {
   buildRoomId,
+  buildSignaledRoomId,
   createBroadcastMatchRoomConnection,
   createHostMatchRoomConnection,
   createJoinMatchRoomConnection,
+  createRoomCode,
   createRoomIdentity,
+  createSignaledHostMatchRoomConnection,
+  createSignaledJoinMatchRoomConnection,
   detectSharedRoomSupport,
+  normalizeRoomCode,
   type HostMatchRoomConnection,
   type JoinMatchRoomConnection,
   type MatchMode,
@@ -14,6 +19,7 @@ import {
   type RoomConnectionKind,
   type SharedRoomHandlers,
 } from "../net/matchRoomConnection";
+import { getSignalingServiceUrl } from "../net/signalingConfig";
 import type { MapDefinition } from "../types";
 import {
   renderCatalog,
@@ -27,6 +33,8 @@ type Screen = "menu" | "catalog" | "room" | "stage";
 
 interface RoomSetupState {
   kind: RoomConnectionKind;
+  roomCode: string;
+  signalingUrl: string;
   connection?: MatchRoomConnection;
   supportError: string;
   copyStatus: string;
@@ -109,6 +117,9 @@ export class TacticalShellApp {
         return;
       case "room-copy":
         void this.copyRoomField(actionButton.dataset.field);
+        return;
+      case "room-connect-signaling":
+        this.connectSignalingRoom();
         return;
       case "enter-room-stage":
         if (this.canEnterStage()) {
@@ -342,7 +353,7 @@ export class TacticalShellApp {
 
     this.activeMode = "shared";
     this.screen = "room";
-    this.selectRoomKind(this.roomSetup?.kind ?? "webrtc-host");
+    this.selectRoomKind(this.roomSetup?.kind ?? "signal-host");
   }
 
   private selectRoomKind(kind: RoomConnectionKind): void {
@@ -357,19 +368,18 @@ export class TacticalShellApp {
     this.disposeRoomSetup();
 
     const support = detectSharedRoomSupport(kind);
+    const roomCode = kind === "signal-host" ? createRoomCode() : "";
+    const signalingUrl = getSignalingServiceUrl();
     const state: RoomSetupState = {
       kind,
+      roomCode,
+      signalingUrl,
       supportError: support.supported ? "" : support.reason,
       copyStatus: "",
     };
 
-    if (support.supported) {
-      state.connection = this.createRoomConnection(kind, map);
-      state.unsubscribe = state.connection?.subscribe(() => {
-        if (this.screen === "room") {
-          this.render();
-        }
-      });
+    if (support.supported && kind !== "signal-join") {
+      this.attachRoomConnection(state, this.createRoomConnection(kind, map, roomCode));
     }
 
     this.roomSetup = state;
@@ -384,25 +394,74 @@ export class TacticalShellApp {
   private createRoomConnection(
     kind: RoomConnectionKind,
     map: MapDefinition,
+    roomCode = "",
   ): MatchRoomConnection | undefined {
-    const roomId = buildRoomId(map.id);
-
     switch (kind) {
+      case "signal-host": {
+        const normalizedCode = normalizeRoomCode(roomCode || createRoomCode());
+        return createSignaledHostMatchRoomConnection(
+          buildSignaledRoomId(map.id, normalizedCode),
+          map.id,
+          this.roomIdentity(),
+          NOOP_ROOM_HANDLERS,
+          `${map.name} Host Room`,
+          getSignalingServiceUrl(),
+          normalizedCode,
+        );
+      }
+      case "signal-join": {
+        const normalizedCode = normalizeRoomCode(roomCode);
+        if (!normalizedCode) {
+          return undefined;
+        }
+
+        return createSignaledJoinMatchRoomConnection(
+          buildSignaledRoomId(map.id, normalizedCode),
+          map.id,
+          this.roomIdentity(),
+          NOOP_ROOM_HANDLERS,
+          getSignalingServiceUrl(),
+          normalizedCode,
+        );
+      }
       case "broadcast":
-        return createBroadcastMatchRoomConnection(roomId, map.id, this.roomIdentity(), NOOP_ROOM_HANDLERS);
+        return createBroadcastMatchRoomConnection(
+          buildRoomId(map.id),
+          map.id,
+          this.roomIdentity(),
+          NOOP_ROOM_HANDLERS,
+        );
       case "webrtc-host":
         return createHostMatchRoomConnection(
-          roomId,
+          buildRoomId(map.id),
           map.id,
           this.roomIdentity(),
           NOOP_ROOM_HANDLERS,
           `${map.name} Host Room`,
         );
       case "webrtc-join":
-        return createJoinMatchRoomConnection(roomId, map.id, this.roomIdentity(), NOOP_ROOM_HANDLERS);
+        return createJoinMatchRoomConnection(
+          buildRoomId(map.id),
+          map.id,
+          this.roomIdentity(),
+          NOOP_ROOM_HANDLERS,
+        );
       default:
         return undefined;
     }
+  }
+
+  private attachRoomConnection(
+    state: RoomSetupState,
+    connection: MatchRoomConnection | undefined,
+  ): void {
+    state.unsubscribe?.();
+    state.connection = connection;
+    state.unsubscribe = state.connection?.subscribe(() => {
+      if (this.screen === "room") {
+        this.render();
+      }
+    });
   }
 
   private roomIdentity() {
@@ -412,9 +471,11 @@ export class TacticalShellApp {
   private currentRoomSetupRenderState(): RoomSetupRenderState {
     return {
       map: getMapById(this.activeMapId),
-      selectedKind: this.roomSetup?.kind ?? "webrtc-host",
+      selectedKind: this.roomSetup?.kind ?? "signal-host",
       supportError: this.roomSetup?.supportError ?? "",
       copyStatus: this.roomSetup?.copyStatus ?? "",
+      roomCode: this.roomSetup?.roomCode ?? "",
+      signalingUrl: this.roomSetup?.signalingUrl ?? getSignalingServiceUrl(),
       connection: this.roomSetup?.connection?.uiSnapshot,
       canEnterArena: this.canEnterStage(),
     };
@@ -447,6 +508,32 @@ export class TacticalShellApp {
       this.setRoomCopyStatus("Offer ready.");
     } catch (error) {
       this.setRoomSupportError(error);
+    }
+  }
+
+  private connectSignalingRoom(roomCode?: string): void {
+    if (!this.roomSetup || this.roomSetup.kind !== "signal-join") {
+      return;
+    }
+
+    const field = this.root.querySelector<HTMLInputElement>('[data-room-field="room-code-input"]');
+    const normalizedCode = normalizeRoomCode(roomCode ?? field?.value ?? "");
+    if (!normalizedCode) {
+      this.setRoomSupportError("Enter the host room code before joining.");
+      return;
+    }
+
+    this.roomSetup.roomCode = normalizedCode;
+    this.roomSetup.copyStatus = "";
+    this.roomSetup.supportError = "";
+    this.roomSetup.connection?.dispose();
+    this.attachRoomConnection(
+      this.roomSetup,
+      this.createRoomConnection("signal-join", getMapById(this.activeMapId), normalizedCode),
+    );
+
+    if (this.screen === "room") {
+      this.render();
     }
   }
 
@@ -497,7 +584,9 @@ export class TacticalShellApp {
       return;
     }
 
-    const node = this.root.querySelector<HTMLTextAreaElement>(`[data-room-field="${field}"]`);
+    const node = this.root.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      `[data-room-field="${field}"]`,
+    );
     const value = node?.value.trim() ?? "";
     if (!value) {
       this.setRoomSupportError("Nothing is available to copy yet.");
@@ -545,7 +634,7 @@ export class TacticalShellApp {
   }
 
   private handleRoomEnded(reason: string): void {
-    const kind = this.roomSetup?.kind ?? "webrtc-join";
+    const kind = this.roomSetup?.kind ?? "signal-join";
     this.teardownMatch();
     this.disposeRoomSetup();
     this.activeMode = "shared";
@@ -580,6 +669,8 @@ export class TacticalShellApp {
         this.disposeRoomSetup();
         this.roomSetup = {
           kind: "broadcast",
+          roomCode: "",
+          signalingUrl: getSignalingServiceUrl(),
           supportError: support.reason,
           copyStatus: "",
         };
@@ -594,11 +685,24 @@ export class TacticalShellApp {
     this.openMapRoute(map, mode);
   }
 
-  debugOpenRoomSetup(mapId: string, kind: RoomConnectionKind = "webrtc-host"): void {
+  debugOpenRoomSetup(mapId: string, kind: RoomConnectionKind = "signal-host"): void {
     this.activeMapId = getMapById(mapId).id;
     this.activeMode = "shared";
     this.screen = "room";
     this.selectRoomKind(kind);
+  }
+
+  debugGetRoomCode(): string | null {
+    return this.roomSetup?.roomCode || this.roomSetup?.connection?.uiSnapshot.roomCode || null;
+  }
+
+  debugJoinSignalingRoom(roomCode: string): boolean {
+    if (this.roomSetup?.kind !== "signal-join") {
+      return false;
+    }
+
+    this.connectSignalingRoom(roomCode);
+    return Boolean(this.roomSetup.connection);
   }
 
   async debugCreateRoomOffer(): Promise<string | null> {
@@ -785,10 +889,16 @@ export class TacticalShellApp {
   }
 
   private readRoomKind(value: string | undefined): RoomConnectionKind {
-    if (value === "broadcast" || value === "webrtc-host" || value === "webrtc-join") {
+    if (
+      value === "signal-host" ||
+      value === "signal-join" ||
+      value === "broadcast" ||
+      value === "webrtc-host" ||
+      value === "webrtc-join"
+    ) {
       return value;
     }
 
-    return "webrtc-host";
+    return "signal-host";
   }
 }

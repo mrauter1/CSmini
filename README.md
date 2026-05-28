@@ -6,7 +6,7 @@ Browser-native tactical FPS prototype built with Vite, TypeScript, and Three.js.
 
 - Five original tactical arenas with a menu -> roster -> match loop
 - Solo drill fallback with lightweight hostile operators
-- Browser-hosted multiplayer with manual offer and answer signaling
+- Browser-hosted multiplayer with Cloudflare room-code signaling and manual offer/answer fallback
 - Host-authoritative roster, movement, snapshots, and damage resolution
 - Guest-local recoil and firing feel with host-validated shot claims
 - Same-browser `BroadcastChannel` transport retained as a dev-room fallback
@@ -27,25 +27,25 @@ npm run build
 npm run preview -- --host 127.0.0.1 --strictPort --port 4173
 ```
 
-## Host A Room
+## Host A Cloud Room
 
 1. Open `Open Multiplayer Setup` from the menu or map roster.
 2. Pick a map.
-3. Choose `Host via WebRTC`.
-4. Generate the offer blob.
-5. Send that blob to the other player through chat, DM, or any copy-paste channel.
-6. Paste the guest answer back into the host screen.
-7. Wait for the status to show `connected`, then enter the arena.
+3. Choose `Host Cloud Room`.
+4. Send the room code to the other player.
+5. Wait for the status to show `connected`, then enter the arena.
 
-## Join A Room
+## Join A Cloud Room
 
 1. Open `Open Multiplayer Setup`.
 2. Pick the same map as the host.
-3. Choose `Join via WebRTC`.
-4. Paste the host offer blob.
-5. Generate the answer blob.
-6. Send that answer back to the host.
-7. Enter the arena after the host applies the answer and the room reaches `connected`.
+3. Choose `Join Cloud Room`.
+4. Enter the host room code.
+5. Wait for the status to show `connected`, then enter the arena.
+
+## Manual WebRTC Fallback
+
+Use `Manual Host` and `Manual Join` if the Cloudflare signaling service is unavailable. This keeps the old copy-paste offer/answer flow available without changing the match protocol.
 
 ## How Authority Works
 
@@ -58,16 +58,16 @@ npm run preview -- --host 127.0.0.1 --strictPort --port 4173
 ## Why This Still Works As A Static Site
 
 - The frontend remains a plain client-side build that can be published from `dist/`.
-- Manual signaling removes the need for a required backend service.
+- Cloudflare signaling only exchanges room presence, SDP, and ICE candidates.
 - No always-on authoritative game server was added.
-- The only runtime infrastructure is the browsers already participating in the room.
+- The only gameplay transport is still the browser-to-browser WebRTC DataChannel.
 
 ## Social Trust And Limitations
 
 - The host can still cheat because the host owns the canonical state.
 - There are no authenticated accounts or trusted identities yet.
-- Offer and answer exchange is manual by design.
-- The current WebRTC transport uses direct ICE gathering only with `iceServers: []`.
+- Manual offer and answer exchange is still available as a fallback.
+- The current WebRTC transport uses Google STUN servers by default.
 - NAT or firewall combinations can block connection establishment.
 - The UX is polished for two players first, although the protocol is not hard-coded to stay that way.
 - Host migration is not implemented yet.
@@ -79,6 +79,8 @@ npm run typecheck
 npm run build
 npm run qa:local-flow
 npm run qa:manual-signaling
+npm run qa:signaling-worker
+npm run qa:cloud-signaling
 npm run qa:host-room
 npm run qa:shot-validation
 npm run qa:final

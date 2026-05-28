@@ -11,6 +11,8 @@ export interface RoomSetupRenderState {
   selectedKind: RoomConnectionKind;
   supportError: string;
   copyStatus: string;
+  roomCode: string;
+  signalingUrl: string;
   connection?: RoomConnectionUiSnapshot;
   canEnterArena: boolean;
 }
@@ -147,11 +149,58 @@ function renderBroadcastPanel(state: RoomSetupRenderState): string {
   `;
 }
 
-function renderHostPanel(state: RoomSetupRenderState): string {
+function renderSignalHostPanel(state: RoomSetupRenderState): string {
+  const roomCode = state.connection?.roomCode ?? state.roomCode;
   return `
     <section class="room-setup__workflow panel">
       <div class="panel__header">
-        <p>Host Flow</p>
+        <p>Cloud Host Flow</p>
+        <span class="chip chip--primary">Room Code</span>
+      </div>
+      <p class="panel__text">
+        Share this room code with the joining player. Cloudflare only exchanges signaling messages; gameplay still uses the browser WebRTC data channel.
+      </p>
+      <label class="room-setup__field">
+        <span>Room Code</span>
+        <input readonly data-room-field="room-code-output" value="${escapeHtml(roomCode)}" />
+      </label>
+      <p class="room-setup__endpoint">${escapeHtml(state.signalingUrl)}</p>
+      <div class="room-setup__actions">
+        <button class="button" data-action="room-copy" data-field="room-code-output">Copy Code</button>
+        <button class="button ${state.canEnterArena ? "button--primary" : ""}" data-action="enter-room-stage" ${state.canEnterArena ? "" : "disabled"}>Enter Arena</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderSignalJoinPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Cloud Join Flow</p>
+        <span class="chip chip--primary">No Blob Exchange</span>
+      </div>
+      <p class="panel__text">
+        Enter the host room code for this map. The signaling server exchanges the WebRTC offer, answer, and ICE candidates automatically.
+      </p>
+      <label class="room-setup__field">
+        <span>Host Room Code</span>
+        <input data-room-field="room-code-input" value="${escapeHtml(state.roomCode)}" placeholder="ABC123" />
+      </label>
+      <p class="room-setup__endpoint">${escapeHtml(state.signalingUrl)}</p>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-connect-signaling">Join Room</button>
+        <button class="button ${state.canEnterArena ? "button--primary" : ""}" data-action="enter-room-stage" ${state.canEnterArena ? "" : "disabled"}>Enter Arena</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderManualHostPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Manual Host Flow</p>
         <span class="chip chip--primary">Offer / Answer</span>
       </div>
       <p class="panel__text">
@@ -178,11 +227,11 @@ function renderHostPanel(state: RoomSetupRenderState): string {
   `;
 }
 
-function renderJoinPanel(state: RoomSetupRenderState): string {
+function renderManualJoinPanel(state: RoomSetupRenderState): string {
   return `
     <section class="room-setup__workflow panel">
       <div class="panel__header">
-        <p>Join Flow</p>
+        <p>Manual Join Flow</p>
         <span class="chip chip--primary">Paste Offer</span>
       </div>
       <p class="panel__text">
@@ -210,12 +259,16 @@ function renderJoinPanel(state: RoomSetupRenderState): string {
 
 function roomWorkflow(state: RoomSetupRenderState): string {
   switch (state.selectedKind) {
+    case "signal-host":
+      return renderSignalHostPanel(state);
+    case "signal-join":
+      return renderSignalJoinPanel(state);
     case "broadcast":
       return renderBroadcastPanel(state);
     case "webrtc-host":
-      return renderHostPanel(state);
+      return renderManualHostPanel(state);
     case "webrtc-join":
-      return renderJoinPanel(state);
+      return renderManualJoinPanel(state);
   }
 }
 
@@ -239,7 +292,7 @@ export function renderMenu(map: MapDefinition): string {
         <section class="hero-grid__brief">
           <div class="brief-panel">
             <p class="brief-panel__label">Flow</p>
-            <p>Menu → map select → host or join through manual signaling → exchange offer and answer blobs → enter the arena once the connection is live.</p>
+            <p>Menu → map select → host or join through a room code → enter the arena once the browser-to-browser connection is live.</p>
           </div>
           <div class="brief-panel">
             <p class="brief-panel__label">Featured Arena</p>
@@ -269,7 +322,7 @@ export function renderCatalog(maps: MapDefinition[]): string {
           <p class="masthead__eyebrow">Map Select</p>
           <h1>Original Tactical Arenas</h1>
           <p>
-            Every entry includes a theme, spawn setup, cover language, choke-point summary, a distinctive landmark, and a top-down preview. Multiplayer now runs through a dedicated room setup step so the same static site can host local dev rooms or manual WebRTC browser links.
+            Every entry includes a theme, spawn setup, cover language, choke-point summary, a distinctive landmark, and a top-down preview. Multiplayer now runs through a dedicated room setup step with Cloudflare room-code signaling, manual WebRTC fallback, and local dev rooms.
           </p>
         </div>
         <div class="masthead__actions">
@@ -295,7 +348,7 @@ export function renderRoomSetup(map: MapDefinition, state: RoomSetupRenderState)
             <p class="masthead__eyebrow">Room Setup</p>
             <h1>${escapeHtml(map.name)}</h1>
             <p>
-              Manual signaling keeps the project static-site-compatible: one browser can host, another browser can join, and the offer and answer blobs are exchanged directly without an account or always-on server.
+              Cloudflare signaling handles room codes and WebRTC negotiation while the browser host still owns the match. Manual offer and answer signaling remains available as a fallback.
             </p>
           </div>
           <div class="masthead__actions">
@@ -311,8 +364,10 @@ export function renderRoomSetup(map: MapDefinition, state: RoomSetupRenderState)
               <span class="chip">${escapeHtml(state.selectedKind)}</span>
             </div>
             <div class="room-setup__tabs">
-              ${roomKindButton(state.selectedKind, "webrtc-host", "Host via WebRTC", "Generate the offer and accept one guest answer.")}
-              ${roomKindButton(state.selectedKind, "webrtc-join", "Join via WebRTC", "Paste an offer and produce the answer blob.")}
+              ${roomKindButton(state.selectedKind, "signal-host", "Host Cloud Room", "Create a room code and wait for guests.")}
+              ${roomKindButton(state.selectedKind, "signal-join", "Join Cloud Room", "Enter a host code; signaling is automatic.")}
+              ${roomKindButton(state.selectedKind, "webrtc-host", "Manual Host", "Generate the offer and accept one guest answer.")}
+              ${roomKindButton(state.selectedKind, "webrtc-join", "Manual Join", "Paste an offer and produce the answer blob.")}
               ${roomKindButton(state.selectedKind, "broadcast", "Same-Browser Dev Room", "Keep the old local room transport for tab-to-tab testing.")}
             </div>
             <div class="room-setup__preview">

@@ -6,7 +6,8 @@ Date: 2026-05-28
 
 This note records the current durable evidence for the browser-hosted multiplayer branch:
 
-- manual WebRTC offer and answer signaling
+- Cloudflare room-code signaling
+- manual WebRTC offer and answer signaling fallback
 - room connection establishment
 - join and accept flow
 - roster materialization on both peers
@@ -22,6 +23,8 @@ This note records the current durable evidence for the browser-hosted multiplaye
 npm run typecheck
 npm run build
 npm run qa:local-flow
+npm run qa:signaling-worker
+npm run qa:cloud-signaling
 npm run qa:manual-signaling
 npm run qa:host-room
 npm run qa:shot-validation
@@ -30,6 +33,39 @@ npm test
 ```
 
 ## Automated Coverage
+
+### `npm run qa:signaling-worker`
+
+Coverage:
+
+- deployed Worker health endpoint
+- room capacity metadata
+- host and guest WebSocket join
+- `host-ready` and `peer-joined` room events
+- offer and answer relay between targeted peers
+
+Observed result on the current branch:
+
+- `https://csmini-signaling.csmini.workers.dev/health` returned `ok: true`
+- the Worker reported `maxPeersPerRoom: 14`
+- host and guest sockets exchanged `offer` and `answer` through the room Durable Object
+
+### `npm run qa:cloud-signaling`
+
+Coverage:
+
+- host room-code generation
+- guest join by code
+- automatic SDP and ICE exchange through Cloudflare signaling
+- WebRTC DataChannel connection establishment
+- roster population after both peers enter the arena
+
+Observed result on the current branch:
+
+- host generated a non-empty room code
+- host and guest both reached `connected`
+- both peers entered `sandline-foundry`
+- both peers reported roster length `2`
 
 ### `npm run qa:manual-signaling`
 
@@ -130,6 +166,8 @@ That means the finished multiplayer branch now gates on the static build plus th
 Automated today:
 
 - local solo flow
+- Cloudflare signaling health and WebSocket relay
+- room-code WebRTC connection establishment
 - manual signaling state
 - WebRTC connection establishment
 - join and accept flow
@@ -148,7 +186,7 @@ Still manual:
 
 ## Current Limitations
 
-- The transport currently uses `RTCPeerConnection` with `iceServers: []`, so direct connectivity can fail on tougher NAT combinations.
-- Manual signaling is intentionally zero-backend and therefore still awkward for users.
+- The transport currently uses Google STUN by default, but direct connectivity can still fail on tougher NAT combinations without TURN.
+- Manual signaling remains available but is now a fallback, not the default user flow.
 - The UX is polished for one host plus one guest first.
 - Host migration is still a follow-up item, not part of the shipped implementation.

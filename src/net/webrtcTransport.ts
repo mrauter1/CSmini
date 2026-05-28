@@ -8,8 +8,8 @@ import {
 import type { ParticipantIdentity } from "./protocol";
 import type { RoomTransport, RoomTransportEvents, RoomTransportStatus } from "./transport";
 
-const DATA_CHANNEL_LABEL = "dustline-room";
-const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+export const DATA_CHANNEL_LABEL = "dustline-room";
+export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
   { urls: "stun:stun2.l.google.com:19302" },

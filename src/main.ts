@@ -8,6 +8,8 @@ declare global {
     __dustlineQa__?: {
       openMap: (mapId: string, mode: "shared" | "local") => void;
       openRoomSetup: (mapId: string, kind?: RoomConnectionKind) => void;
+      getRoomCode: () => string | null;
+      joinSignalingRoom: (roomCode: string) => boolean;
       createRoomOffer: () => Promise<string | null>;
       applyRoomAnswer: (answer: string) => Promise<boolean>;
       generateRoomAnswer: (offer: string) => Promise<string | null>;
@@ -96,6 +98,8 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
   window.__dustlineQa__ = {
     openMap: (mapId, mode) => app.debugOpenMap(mapId, mode),
     openRoomSetup: (mapId, kind) => app.debugOpenRoomSetup(mapId, kind),
+    getRoomCode: () => app.debugGetRoomCode(),
+    joinSignalingRoom: (roomCode) => app.debugJoinSignalingRoom(roomCode),
     createRoomOffer: () => app.debugCreateRoomOffer(),
     applyRoomAnswer: (answer) => app.debugApplyRoomAnswer(answer),
     generateRoomAnswer: (offer) => app.debugGenerateRoomAnswer(offer),

@@ -7,14 +7,18 @@ Dustline keeps the frontend deployable as a plain static site while still allowi
 ## Why It Stays Static-Site-Compatible
 
 - The deployed app is still just HTML, CSS, and client-side JavaScript.
-- Room setup uses manual copy-paste signaling instead of a required backend.
-- The WebRTC peer connection is created directly between browsers after the host and guest exchange offer and answer blobs out of band.
+- Room setup defaults to a Cloudflare Workers signaling service with one Durable Object per room code.
+- The signaling service exchanges room presence, SDP offers/answers, and ICE candidates only.
+- The WebRTC peer connection is still created directly between browsers; gameplay messages do not flow through Cloudflare.
+- Manual copy-paste signaling remains available as a backend-free fallback.
 - There is no always-on match server, relay, database, or paid authoritative backend in the current implementation.
 
 ## Runtime Model
 
-- `WebRTC Host Room`: one browser creates the offer, accepts exactly one answer in the current UX, and becomes the canonical match host.
-- `WebRTC Join Room`: another browser pastes the host offer, generates an answer, and waits for the host to apply it.
+- `Host Cloud Room`: one browser creates a room code, negotiates WebRTC through Cloudflare signaling, and becomes the canonical match host.
+- `Join Cloud Room`: another browser enters the host code and receives the WebRTC offer through signaling.
+- `Manual Host`: one browser creates the offer, accepts exactly one answer in the fallback UX, and becomes the canonical match host.
+- `Manual Join`: another browser pastes the host offer, generates an answer, and waits for the host to apply it.
 - `Same-Browser Dev Room`: the older `BroadcastChannel` transport still exists for local tab-to-tab development and debugging.
 - The room/session protocol lives under `src/net/` and is versioned so malformed or stale messages can be rejected.
 
@@ -60,23 +64,23 @@ This is a hobby-scale host-authoritative design, not an anti-cheat service.
 
 - The host can still cheat because the host owns the canonical state.
 - Browser-generated identities are not authenticated accounts.
-- Signaling blobs are exchanged manually, so users still need chat, DM, or some other copy-paste channel.
-- The current WebRTC transport uses `RTCPeerConnection` with `iceServers: []`, so connectivity depends on direct candidate compatibility. No TURN relay and no hosted STUN configuration are bundled yet.
+- Room codes are unauthenticated, so anyone with the code can attempt to join.
+- Google STUN servers are configured by default, but no TURN relay is bundled yet.
 
 ## Known Limits
 
 - The shipped UX is polished for two players first, even though the protocol is not hard-coded to a single guest forever.
 - NAT and firewall combinations can prevent the browser-to-browser connection from forming.
-- Manual offer and answer exchange is intentionally clunky but keeps hosting costs near zero.
+- Manual offer and answer exchange is still available if Cloudflare signaling is unavailable.
 - There is no host migration in the current implementation.
 
 ## Follow-Up Path
 
-- Add an optional tiny signaling service so users do not need manual copy-paste for every session.
-- Add optional STUN and TURN configuration once the project is ready to spend on tougher NAT cases.
+- Add optional TURN configuration once the project is ready to spend on tougher NAT cases.
+- Expand the browser-hosted transport from one peer connection to a host-managed peer map before raising the real gameplay cap.
 - Consider witness or checkpoint-based host migration only after the base host-client path is stable enough to justify the added complexity.
 
 ## Evidence
 
-- QA scripts: `scripts/qa/localFlowVerification.mjs`, `scripts/qa/manualSignalingVerification.mjs`, `scripts/qa/hostRoomStateVerification.mjs`, `scripts/qa/shotValidationVerification.mjs`, `scripts/qa/finalVerification.mjs`
+- QA scripts: `scripts/qa/localFlowVerification.mjs`, `scripts/qa/manualSignalingVerification.mjs`, `scripts/qa/signalingWorkerProbe.mjs`, `scripts/qa/cloudSignalingVerification.mjs`, `scripts/qa/hostRoomStateVerification.mjs`, `scripts/qa/shotValidationVerification.mjs`, `scripts/qa/finalVerification.mjs`
 - QA notes: `docs/qa/local-play.md`, `docs/qa/multiplayer.md`

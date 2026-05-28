@@ -653,11 +653,11 @@ p {
   font-size: 0.76rem;
 }
 
-.room-setup__field textarea {
+.room-setup__field textarea,
+.room-setup__field input {
   min-height: 146px;
   width: 100%;
   padding: 14px 16px;
-  resize: vertical;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(8, 9, 7, 0.68);
@@ -665,11 +665,31 @@ p {
   font: 0.88rem/1.4 "Courier New", monospace;
 }
 
+.room-setup__field textarea {
+  resize: vertical;
+}
+
+.room-setup__field input {
+  min-height: 0;
+  height: 54px;
+  resize: none;
+  font-size: 1.28rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
 .room-setup__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 16px;
+}
+
+.room-setup__endpoint {
+  margin-top: 10px;
+  color: var(--muted);
+  font: 0.78rem/1.4 "Courier New", monospace;
+  overflow-wrap: anywhere;
 }
 
 .room-setup__status {
