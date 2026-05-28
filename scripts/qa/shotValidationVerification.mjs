@@ -403,6 +403,34 @@ async function aimGuestAtHost(joinPage) {
   assert(aimed === true, "Guest could not aim at the host.");
 }
 
+async function currentRemoteInputSequence(page) {
+  return page.evaluate(
+    "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0]?.lastInputSequence ?? 0",
+  );
+}
+
+async function syncGuestLookToShot(hostPage, joinPage, layout) {
+  const previousSequence = await currentRemoteInputSequence(hostPage);
+  await joinPage.bringToFront();
+  await joinPage.evaluate(
+    `window.__dustlineQa__.setView(
+      ${layout.guest.x},
+      ${layout.guest.y},
+      ${layout.guest.z},
+      ${layout.host.x},
+      ${layout.host.y},
+      ${layout.host.z}
+    )`,
+  );
+  const sent = await joinPage.evaluate("window.__dustlineQa__.sendInputTick(0, 0, false)");
+  assert(sent === true, "Guest could not send the synchronized aim input tick.");
+  await hostPage.waitForExpression(
+    `(window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0]?.lastInputSequence ?? 0) > ${previousSequence}`,
+    10_000,
+  );
+  await delay(120);
+}
+
 async function main() {
   const preview = await startPreview();
   const chrome = await startChrome();
@@ -416,17 +444,7 @@ async function main() {
     const connection = await connectTwoPlayerRoom(hostPage, joinPage);
 
     const blockedLayout = await stagePair(hostPage, joinPage, "blocked");
-    await joinPage.evaluate(
-      `window.__dustlineQa__.setView(
-        ${blockedLayout.guest.x},
-        ${blockedLayout.guest.y},
-        ${blockedLayout.guest.z},
-        ${blockedLayout.host.x},
-        ${blockedLayout.host.y},
-        ${blockedLayout.host.z}
-      )`,
-    );
-    await delay(350);
+    await syncGuestLookToShot(hostPage, joinPage, blockedLayout);
     const blockedBeforeId = await currentResultId(joinPage);
     const blockedHostHealthBefore = await hostPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.localPlayer?.health ?? -1",
@@ -452,8 +470,7 @@ async function main() {
     assert(blockedHostHealthBefore === 100 && blockedHostHealthAfter === 100, "Blocked shot mutated host health.");
 
     const clearLayout = await stagePair(hostPage, joinPage, "clear");
-    await aimGuestAtHost(joinPage);
-    await delay(350);
+    await syncGuestLookToShot(hostPage, joinPage, clearLayout);
     const acceptedBeforeId = await currentResultId(joinPage);
     const acceptedBeforeCount = await currentResultCount(joinPage);
     const acceptedSent = await joinPage.evaluate(
@@ -472,7 +489,15 @@ async function main() {
     );
     assert(acceptedClaimTick > 0, "Guest did not record the accepted claim tick.");
     const forgedSent = await joinPage.evaluate(
-      `window.__dustlineQa__.submitShotClaim({ tick: ${acceptedClaimTick} + 40 })`,
+      `window.__dustlineQa__.submitShotClaim({
+        tick: ${acceptedClaimTick} + 40,
+        origin: ${JSON.stringify(clearLayout.guest)},
+        direction: {
+          x: ${clearLayout.host.x - clearLayout.guest.x},
+          y: 0,
+          z: ${clearLayout.host.z - clearLayout.guest.z}
+        }
+      })`,
     );
     assert(forgedSent === true, "Guest could not submit the immediate forged shot claim.");
     const acceptedLastResult = await waitForResult(joinPage, acceptedBeforeId);
