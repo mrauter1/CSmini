@@ -406,7 +406,14 @@ export class TacticalShellApp {
     this.match?.debugJump();
   }
 
-  debugJumpSample(): { peakY: number; landedY: number; landed: boolean } | null {
+  debugJumpSample():
+    | {
+        peakY: number;
+        landedY: number;
+        landed: boolean;
+        airborneSeconds: number;
+      }
+    | null {
     return this.match?.debugJumpSample() ?? null;
   }
 

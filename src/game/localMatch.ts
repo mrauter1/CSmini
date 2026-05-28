@@ -32,7 +32,15 @@ import {
   type CollisionWorld,
 } from "./collision";
 import {
+  CROUCH_EYE_HEIGHT,
   PLAYER_RADIUS,
+  PLAYER_AIR_CONTROL,
+  PLAYER_CROUCH_MULTIPLIER,
+  PLAYER_GRAVITY,
+  PLAYER_JUMP_VELOCITY,
+  PLAYER_SPRINT_MULTIPLIER,
+  PLAYER_WALK_SPEED,
+  STANDING_EYE_HEIGHT,
   createPlayerMovementState,
   currentBodyHeight,
   currentEyeHeight,
@@ -62,6 +70,7 @@ import {
   type HostageUnitRuntime,
 } from "./hostageState";
 import {
+  ROUND_DURATIONS,
   createBriefingRoundState,
   createInitialRoundState,
   emptyTeamCounts,
@@ -460,6 +469,43 @@ export class LocalMatch {
         objectiveLabel: this.roundState.activeMission.objectiveLabel,
         result: this.roundState.resolutionLabel,
       },
+      tuning: {
+        movement: {
+          standingEyeHeight: Number(STANDING_EYE_HEIGHT.toFixed(2)),
+          crouchEyeHeight: Number(CROUCH_EYE_HEIGHT.toFixed(2)),
+          walkSpeed: Number(PLAYER_WALK_SPEED.toFixed(2)),
+          sprintMultiplier: Number(PLAYER_SPRINT_MULTIPLIER.toFixed(2)),
+          sprintSpeed: Number((PLAYER_WALK_SPEED * PLAYER_SPRINT_MULTIPLIER).toFixed(2)),
+          crouchMultiplier: Number(PLAYER_CROUCH_MULTIPLIER.toFixed(2)),
+          crouchSpeed: Number((PLAYER_WALK_SPEED * PLAYER_CROUCH_MULTIPLIER).toFixed(2)),
+          airControl: Number(PLAYER_AIR_CONTROL.toFixed(2)),
+          gravity: Number(PLAYER_GRAVITY.toFixed(2)),
+          jumpVelocity: Number(PLAYER_JUMP_VELOCITY.toFixed(2)),
+        },
+        weapon: {
+          fireInterval: Number(FIRE_INTERVAL.toFixed(2)),
+          reloadDuration: Number(RELOAD_DURATION.toFixed(2)),
+          clipSize: CLIP_SIZE,
+          reserveAmmo: RESERVE_AMMO,
+          recoilKickStanding: 0.8,
+          recoilKickCrouched: 0.58,
+          airborneRecoilPenalty: 0.12,
+          playerDamage: PLAYER_DAMAGE,
+        },
+        round: {
+          briefingSeconds: Number(ROUND_DURATIONS.briefing.toFixed(1)),
+          activeSeconds: Number(ROUND_DURATIONS.active.toFixed(1)),
+          resolutionSeconds: Number(ROUND_DURATIONS.resolution.toFixed(1)),
+        },
+        ai: {
+          enemySpeed: Number(ENEMY_SPEED.toFixed(2)),
+          fireInterval: Number(ENEMY_FIRE_INTERVAL.toFixed(2)),
+          engageDistance: Number(ENEMY_ENGAGE_DISTANCE.toFixed(1)),
+          investigationWindow: Number(ENEMY_INVESTIGATION_WINDOW.toFixed(1)),
+          pursuitWindow: Number(ENEMY_PURSUIT_WINDOW.toFixed(1)),
+          repositionWindow: Number(ENEMY_REPOSITION_WINDOW.toFixed(1)),
+        },
+      },
       bomb: this.debugBombStateSnapshot(),
       hostage: this.debugHostageStateSnapshot(),
       teamSpawns: {
@@ -682,7 +728,12 @@ export class LocalMatch {
     this.emitSnapshot();
   }
 
-  debugJumpSample(): { peakY: number; landedY: number; landed: boolean } {
+  debugJumpSample(): {
+    peakY: number;
+    landedY: number;
+    landed: boolean;
+    airborneSeconds: number;
+  } {
     const sampleState = createPlayerMovementState();
     const sampleCamera = new THREE.PerspectiveCamera();
     const tempForward = new THREE.Vector3();
@@ -693,6 +744,7 @@ export class LocalMatch {
     let peakY = sampleCamera.position.y;
     let landed = false;
     let landedY = sampleCamera.position.y;
+    let airborneFrames = 0;
 
     for (let frame = 0; frame < 180; frame += 1) {
       const result = updatePlayerMovement(
@@ -718,6 +770,7 @@ export class LocalMatch {
       if (frame > 0 && result.grounded) {
         landed = true;
         landedY = sampleCamera.position.y;
+        airborneFrames = frame + 1;
         break;
       }
     }
@@ -726,6 +779,7 @@ export class LocalMatch {
       peakY: Number(peakY.toFixed(3)),
       landedY: Number(landedY.toFixed(3)),
       landed,
+      airborneSeconds: Number(((landed ? airborneFrames : 180) / 60).toFixed(3)),
     };
   }
 
@@ -3253,6 +3307,9 @@ export class LocalMatch {
       actingCombatantName: this.bombState.actingCombatantName,
       progress: Number(progress.toFixed(3)),
       secondsRemaining: Number(secondsRemaining.toFixed(2)),
+      plantSeconds: Number(this.bombState.plantSeconds.toFixed(1)),
+      defuseSeconds: Number(this.bombState.defuseSeconds.toFixed(1)),
+      fuseSeconds: Number(this.bombState.fuseSeconds.toFixed(1)),
       localDistanceToSite: Number(siteDistance.toFixed(2)),
       localCanPlant:
         this.bombState.phase === "carried" &&
@@ -3310,6 +3367,8 @@ export class LocalMatch {
       actingCombatantName: this.hostageState.actingCombatantName,
       progress: Number(progress.toFixed(3)),
       secondsRemaining: Number(secondsRemaining.toFixed(2)),
+      secureSeconds: Number(this.hostageState.secureSeconds.toFixed(2)),
+      extractSeconds: Number(this.hostageState.extractSeconds.toFixed(2)),
       extractedCount: extractedHostageCount(this.hostageState),
       localDistanceToCluster: Number(clusterDistance.toFixed(2)),
       localDistanceToExtraction: Number(extractionDistance.toFixed(2)),

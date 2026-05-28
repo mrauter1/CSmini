@@ -85,7 +85,14 @@ declare global {
       startObjectiveAction: () => boolean;
       setKey: (code: string, active: boolean) => void;
       jump: () => void;
-      jumpSample: () => { peakY: number; landedY: number; landed: boolean } | null;
+      jumpSample: () =>
+        | {
+            peakY: number;
+            landedY: number;
+            landed: boolean;
+            airborneSeconds: number;
+          }
+        | null;
     };
   }
 }

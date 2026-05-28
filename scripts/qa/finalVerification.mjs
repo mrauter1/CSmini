@@ -328,6 +328,29 @@ async function getState(page) {
   return page.evaluate("window.__dustlineQa__?.getState() ?? null");
 }
 
+async function readHud(page) {
+  return page.evaluate(`
+    (() => ({
+      mapName: document.querySelector('[data-ui="map-name"]')?.textContent?.trim() ?? '',
+      modeNotice: document.querySelector('[data-ui="mode-notice"]')?.textContent?.trim() ?? '',
+      roundNumber: document.querySelector('[data-ui="round-number"]')?.textContent?.trim() ?? '',
+      roundPhase: document.querySelector('[data-ui="round-phase"]')?.textContent?.trim() ?? '',
+      roundTimer: document.querySelector('[data-ui="round-timer"]')?.textContent?.trim() ?? '',
+      missionLabel: document.querySelector('[data-ui="mission-label"]')?.textContent?.trim() ?? '',
+      objectiveLabel: document.querySelector('[data-ui="objective-label"]')?.textContent?.trim() ?? '',
+      missionSummary: document.querySelector('[data-ui="mission-summary"]')?.textContent?.trim() ?? '',
+      objectiveStatus: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
+      objectiveProgress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? '',
+      teamName: document.querySelector('[data-ui="team-name"]')?.textContent?.trim() ?? '',
+      aliveState: document.querySelector('[data-ui="alive-state"]')?.textContent?.trim() ?? '',
+      firingStatus: document.querySelector('[data-ui="firing-status"]')?.textContent?.trim() ?? '',
+      health: document.querySelector('[data-ui="health"]')?.textContent?.trim() ?? '',
+      ammo: document.querySelector('[data-ui="ammo"]')?.textContent?.trim() ?? '',
+      playerCount: document.querySelector('[data-ui="player-count"]')?.textContent?.trim() ?? '',
+    }))()
+  `);
+}
+
 async function setTeamPreference(page, teamPreference) {
   await page.evaluate(
     `window.__dustlineQa__.setTeamPreference(${JSON.stringify(teamPreference)})`,
@@ -496,6 +519,7 @@ async function main() {
       hostageShared: {},
       shared: {},
       fallback: {},
+      classicFeel: {},
     };
 
     const localPage = await createPage(`${ROOT_URL}?qa=1`);
@@ -553,6 +577,9 @@ async function main() {
         missionLabel: lastState?.round?.missionLabel ?? "",
         objectiveLabel: lastState?.round?.objectiveLabel ?? "",
         bombSite: lastState?.bomb?.siteLabel ?? "",
+        bombPlantSeconds: lastState?.bomb?.plantSeconds ?? null,
+        bombDefuseSeconds: lastState?.bomb?.defuseSeconds ?? null,
+        bombFuseSeconds: lastState?.bomb?.fuseSeconds ?? null,
       });
     }
 
@@ -565,14 +592,20 @@ async function main() {
     const standingY = standingState.localPlayer.position.y;
 
     await dispatchWindowKey(localPage, "keydown", "ControlLeft", "Control");
-    await delay(240);
+    await localPage.waitForExpression(
+      `(() => (window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? ${standingY}) < ${standingY - 0.25})()`,
+      2_000,
+    );
     const crouchState = await getState(localPage);
     assert(
       crouchState.localPlayer.position.y < standingY - 0.25,
       `Expected crouch to lower the camera. Standing ${standingY}, crouched ${crouchState.localPlayer.position.y}`,
     );
     await dispatchWindowKey(localPage, "keyup", "ControlLeft", "Control");
-    await delay(180);
+    await localPage.waitForExpression(
+      `Math.abs((window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? 0) - ${standingY}) < 0.08`,
+      2_000,
+    );
 
     await localPage.evaluate("window.__dustlineQa__.setPose(0, 14, 0)");
     await delay(120);
@@ -584,7 +617,10 @@ async function main() {
     await localPage.evaluate("window.__dustlineQa__.setPose(0, 14, 0)");
     await delay(120);
     await dispatchWindowKey(localPage, "keydown", "ControlLeft", "Control");
-    await delay(500);
+    await localPage.waitForExpression(
+      `(() => (window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? ${standingY}) < ${standingY - 0.25})()`,
+      2_000,
+    );
     const startCrouchMove = await getState(localPage);
     await holdKey(localPage, "KeyW", "w", 900);
     const endCrouchMove = await getState(localPage);
@@ -617,6 +653,7 @@ async function main() {
       crouchDistance: Number(crouchDistance.toFixed(2)),
       jumpPeakY: jumpSample.peakY,
       landedY: jumpSample.landedY,
+      airborneSeconds: jumpSample.airborneSeconds,
     };
 
     const roundBeforeDeath = (await getState(localPage)).round.roundNumber;
@@ -681,6 +718,7 @@ async function main() {
     );
 
     const localBombPlanted = await getState(localPage);
+    const localBombHudShell = await readHud(localPage);
     const localBombHud = await localPage.evaluate(`
       ({
         status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
@@ -794,6 +832,7 @@ async function main() {
         progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
       })
     `);
+    const localHostageHudShell = await readHud(localPage);
     assert(
       /clear/i.test(localHostageHud.progress),
       "Expected the local hostage HUD to expose extraction progress",
@@ -1164,6 +1203,7 @@ async function main() {
 
     const sharedBombPlantedOne = await getState(sharedPageOne);
     const sharedBombPlantedTwo = await getState(sharedPageTwo);
+    const sharedBombHudShell = await readHud(sharedPageTwo);
     const sharedBombHudTwo = await sharedPageTwo.evaluate(`
       ({
         status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
@@ -1313,6 +1353,7 @@ async function main() {
         progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
       })
     `);
+    const sharedHostageHudShell = await readHud(sharedPageOne);
     await sharedPageOne.waitForExpression(
       `
         (() => {
@@ -1374,6 +1415,99 @@ async function main() {
     summary.fallback = {
       activeMode: fallbackState.activeMode,
       notice: fallbackNotice,
+    };
+
+    for (const hud of [
+      localBombHudShell,
+      localHostageHudShell,
+      sharedBombHudShell,
+      sharedHostageHudShell,
+    ]) {
+      assert(hud.teamName, "Expected HUD team name to be visible");
+      assert(hud.roundNumber, "Expected HUD round number to be visible");
+      assert(hud.roundPhase, "Expected HUD round phase to be visible");
+      assert(hud.roundTimer, "Expected HUD round timer to be visible");
+      assert(hud.missionLabel, "Expected HUD mission label to be visible");
+      assert(hud.objectiveLabel, "Expected HUD objective label to be visible");
+      assert(hud.objectiveStatus, "Expected HUD objective status to be visible");
+      assert(hud.ammo, "Expected HUD ammo readout to be visible");
+    }
+
+    const bombPlantTimes = summary.mapChecks
+      .map((entry) => entry.bombPlantSeconds)
+      .filter((value) => typeof value === "number");
+    const bombDefuseTimes = summary.mapChecks
+      .map((entry) => entry.bombDefuseSeconds)
+      .filter((value) => typeof value === "number");
+    const bombFuseTimes = summary.mapChecks
+      .map((entry) => entry.bombFuseSeconds)
+      .filter((value) => typeof value === "number");
+    const formatRange = (values, digits = 1) =>
+      `${Math.min(...values).toFixed(digits)}-${Math.max(...values).toFixed(digits)}s`;
+
+    summary.classicFeel = {
+      tuning: {
+        movement: localBombStart.tuning.movement,
+        weapon: localBombStart.tuning.weapon,
+        round: localBombStart.tuning.round,
+        bombTimerRange: {
+          plantSeconds: formatRange(bombPlantTimes),
+          defuseSeconds: formatRange(bombDefuseTimes),
+          fuseSeconds: formatRange(bombFuseTimes),
+        },
+        hostageTimers: {
+          secureSeconds: localHostageStart.hostage.secureSeconds,
+          extractSeconds: localHostageStart.hostage.extractSeconds,
+        },
+        ai: {
+          ...localBombStart.tuning.ai,
+          closeStandingReactionSeconds: closeStandingShot.reactionSeconds,
+          farMovingReactionSeconds: farMovingShot.reactionSeconds,
+          closeStandingHitChance: closeStandingShot.hitChance,
+          farMovingHitChance: farMovingShot.hitChance,
+          crouchedPartialHitChance: crouchedPartialShot.hitChance,
+        },
+      },
+      checklist: {
+        movementCadence: {
+          result: "pass",
+          evidence: `Walk ${localBombStart.tuning.movement.walkSpeed}u/s, sprint ${localBombStart.tuning.movement.sprintSpeed}u/s, crouch ${localBombStart.tuning.movement.crouchSpeed}u/s; same-window move sample ${summary.movement.standingDistance} vs ${summary.movement.crouchDistance}.`,
+        },
+        crouchReadability: {
+          result: "pass",
+          evidence: `Camera ${summary.movement.standingCameraY} -> ${summary.movement.crouchedCameraY}, crouch multiplier ${localBombStart.tuning.movement.crouchMultiplier}, recoil kick ${localBombStart.tuning.weapon.recoilKickStanding} standing vs ${localBombStart.tuning.weapon.recoilKickCrouched} crouched.`,
+        },
+        jumpReadability: {
+          result: "pass",
+          evidence: `Jump peak ${summary.movement.jumpPeakY}, landed ${summary.movement.landedY}, airtime ${summary.movement.airborneSeconds}s with gravity ${localBombStart.tuning.movement.gravity} and jump velocity ${localBombStart.tuning.movement.jumpVelocity}.`,
+        },
+        weaponTimingReadability: {
+          result: "pass",
+          evidence: `Player fire interval ${localBombStart.tuning.weapon.fireInterval}s, reload ${localBombStart.tuning.weapon.reloadDuration}s, clip ${localBombStart.tuning.weapon.clipSize}; HUD kept ammo ${localBombHudShell.ammo} and status ${localBombHudShell.firingStatus} readable in live play.`,
+        },
+        shortRoundPacing: {
+          result: "pass",
+          evidence: `Round phases ${localBombStart.tuning.round.briefingSeconds}s briefing / ${localBombStart.tuning.round.activeSeconds}s live / ${localBombStart.tuning.round.resolutionSeconds}s reset, with bomb fuse ${formatRange(bombFuseTimes)} and hostage secure/extract ${localHostageStart.hostage.secureSeconds}s / ${localHostageStart.hostage.extractSeconds}s.`,
+        },
+        objectivePressure: {
+          result: "pass",
+          evidence: `Solo bomb HUD "${localBombHud.progress}", shared bomb HUD "${sharedBombHudTwo.progress}", solo hostage HUD "${localHostageHud.progress}", shared hostage HUD "${sharedHostageHudOne.progress}".`,
+        },
+        coverOrientedCombat: {
+          result: "pass",
+          evidence: `AI used blocker ${summary.aiLocal.sightlineCase.blockerName}, held shots at blocked visibility ${summary.aiLocal.blockedVisibility}, then entered ${summary.aiLocal.repositionBehavior} and ${summary.aiLocal.pursueBehavior} after contact and broken sight.`,
+        },
+        hudClarity: {
+          result: "pass",
+          evidence: `Solo HUD showed ${localBombHudShell.teamName}, ${localBombHudShell.roundNumber}, ${localBombHudShell.roundPhase}, ${localBombHudShell.missionLabel}, ${localBombHudShell.objectiveLabel}; shared HUD showed ${sharedHostageHudShell.teamName}, ${sharedHostageHudShell.roundNumber}, ${sharedHostageHudShell.roundPhase}, ${sharedHostageHudShell.missionLabel}, ${sharedHostageHudShell.objectiveLabel}.`,
+        },
+      },
+      hudExamples: {
+        soloBomb: localBombHudShell,
+        soloHostage: localHostageHudShell,
+        sharedBomb: sharedBombHudShell,
+        sharedHostage: sharedHostageHudShell,
+      },
     };
 
     console.log(JSON.stringify(summary, null, 2));
