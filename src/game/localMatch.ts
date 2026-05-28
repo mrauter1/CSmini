@@ -514,6 +514,20 @@ export class LocalMatch {
       },
       teamCounts: this.teamCountsSnapshot(),
       roster: this.rosterSnapshot(),
+      focusPoints: this.map.scene.focusPoints.map((focusPoint) => ({
+        id: focusPoint.id,
+        label: focusPoint.label,
+        cameraPosition: this.toPoint(
+          new THREE.Vector3(
+            focusPoint.cameraPosition[0],
+            focusPoint.cameraPosition[1],
+            focusPoint.cameraPosition[2],
+          ),
+        ),
+        target: this.toPoint(
+          new THREE.Vector3(focusPoint.target[0], focusPoint.target[1], focusPoint.target[2]),
+        ),
+      })),
       enemies: this.enemies.map((enemy) => ({
         id: enemy.id,
         name: enemy.name,

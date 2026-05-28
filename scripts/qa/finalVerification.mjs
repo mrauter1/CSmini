@@ -97,20 +97,23 @@ function startProcess(command, args, options = {}) {
 }
 
 async function stopProcess(record) {
-  if (!record?.child || record.child.killed) {
+  const child = record?.child;
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
     return;
   }
 
-  record.child.kill("SIGTERM");
+  const exitPromise = new Promise((resolve) => child.once("exit", resolve));
 
-  await Promise.race([
-    new Promise((resolve) => record.child.once("exit", resolve)),
-    delay(2_000).then(() => {
-      if (!record.child.killed) {
-        record.child.kill("SIGKILL");
-      }
-    }),
+  child.kill("SIGTERM");
+  const timedOut = await Promise.race([
+    exitPromise.then(() => false),
+    delay(2_000).then(() => true),
   ]);
+
+  if (timedOut && child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGKILL");
+    await exitPromise;
+  }
 }
 
 class CdpPage {
@@ -161,8 +164,14 @@ class CdpPage {
       return;
     }
 
+    const closed = new Promise((resolve) => {
+      const settle = () => resolve();
+      this.socket.addEventListener("close", settle, { once: true });
+      this.socket.addEventListener("error", settle, { once: true });
+    });
+
     this.socket.close();
-    await delay(50);
+    await Promise.race([closed, delay(500)]);
   }
 
   on(method, handler) {
@@ -351,6 +360,26 @@ async function readHud(page) {
   `);
 }
 
+async function captureScreenshot(page, filename, capturedScreenshots) {
+  assert(SCREENSHOTS.includes(filename), `Unexpected screenshot target: ${filename}`);
+  await page.captureScreenshot(filename);
+  capturedScreenshots.add(filename);
+}
+
+function findFocusPoint(state, focusId) {
+  const focusPoint = state?.focusPoints?.find((entry) => entry.id === focusId) ?? null;
+  assert(focusPoint, `Missing focus point ${focusId}`);
+  return focusPoint;
+}
+
+async function setFocusView(page, state, focusId) {
+  const focusPoint = findFocusPoint(state, focusId);
+  await page.evaluate(
+    `window.__dustlineQa__.setView(${focusPoint.cameraPosition.x}, ${focusPoint.cameraPosition.y}, ${focusPoint.cameraPosition.z}, ${focusPoint.target.x}, ${focusPoint.target.y}, ${focusPoint.target.z})`,
+  );
+  await delay(180);
+}
+
 async function setTeamPreference(page, teamPreference) {
   await page.evaluate(
     `window.__dustlineQa__.setTeamPreference(${JSON.stringify(teamPreference)})`,
@@ -401,20 +430,6 @@ async function stageSharedDuel(page, slot) {
   assert(pose, `Could not stage shared duel pose for slot ${slot}`);
   await delay(180);
   return pose;
-}
-
-async function waitForRemotePosition(page, expected, timeoutMs = 5_000) {
-  await page.waitForExpression(
-    `
-      (() => {
-        const remote = window.__dustlineQa__?.getState()?.remotePlayers?.[0]?.position;
-        return remote
-          && Math.abs(remote.x - ${expected.x}) < 1
-          && Math.abs(remote.z - ${expected.z}) < 1;
-      })()
-    `,
-    timeoutMs,
-  );
 }
 
 async function forceDeath(page, attackerName) {
@@ -504,6 +519,7 @@ async function main() {
   const preview = await startPreview();
   const chrome = await startChrome();
   const pages = [];
+  const capturedScreenshots = new Set();
 
   try {
     const summary = {
@@ -527,9 +543,11 @@ async function main() {
 
     await localPage.bringToFront();
     await localPage.waitForExpression("Boolean(document.querySelector('.screen--menu'))");
+    await captureScreenshot(localPage, "01-menu-briefing.png", capturedScreenshots);
     await click(localPage, '[data-action="show-catalog"]');
     summary.mapCards = await localPage.waitForExpression("document.querySelectorAll('.map-card').length");
     assert(summary.mapCards === 5, `Expected 5 map cards, saw ${summary.mapCards}`);
+    await captureScreenshot(localPage, "02-map-select-roster.png", capturedScreenshots);
 
     const mapIds = [
       "sandline-foundry",
@@ -582,6 +600,26 @@ async function main() {
         bombFuseSeconds: lastState?.bomb?.fuseSeconds ?? null,
       });
     }
+
+    await setTeamPreference(localPage, "amber");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    const showcaseState = await getState(localPage);
+    await setFocusView(localPage, showcaseState, "south-spawn");
+    await captureScreenshot(localPage, "03-sandline-spawn-view.png", capturedScreenshots);
+    await setFocusView(localPage, showcaseState, "courtyard");
+    await captureScreenshot(localPage, "04-sandline-central-yard.png", capturedScreenshots);
+    await setFocusView(localPage, showcaseState, "corridor");
+    await captureScreenshot(localPage, "05-sandline-generator-hall.png", capturedScreenshots);
+    await setFocusView(localPage, showcaseState, "underpass");
+    await captureScreenshot(localPage, "06-sandline-drain-underpass.png", capturedScreenshots);
+    await setFocusView(localPage, showcaseState, "catwalk");
+    await captureScreenshot(localPage, "07-sandline-east-catwalk.png", capturedScreenshots);
+    await setFocusView(localPage, showcaseState, "south-spawn");
+    await captureScreenshot(localPage, "08-weapon-idle-hud.png", capturedScreenshots);
+    await fire(localPage);
+    await delay(40);
+    await captureScreenshot(localPage, "09-weapon-firing-hud.png", capturedScreenshots);
 
     await setTeamPreference(localPage, "amber");
     await openMap(localPage, "sandline-foundry", "local");
@@ -665,6 +703,7 @@ async function main() {
     await delay(1500);
     const stillDeadState = await getState(localPage);
     assert(stillDeadState.localPlayer.dead === true, "Expected player to stay down during the same round");
+    await captureScreenshot(localPage, "11-death-respawn-state.png", capturedScreenshots);
 
     await localPage.evaluate("window.__dustlineQa__.forceNextRound()");
     await delay(350);
@@ -1155,6 +1194,12 @@ async function main() {
       "Expected a different map to remain isolated from the shared room",
     );
 
+    await stageSharedDuel(sharedPageOne, 0);
+    await stageSharedDuel(sharedPageTwo, 1);
+    await delay(500);
+    await captureScreenshot(sharedPageOne, "10-opposing-player.png", capturedScreenshots);
+    await captureScreenshot(sharedPageTwo, "12-two-player-multiplayer.png", capturedScreenshots);
+
     await engageControls(sharedPageOne);
     await engageControls(sharedPageTwo);
     await forceRoundActive(sharedPageOne);
@@ -1510,6 +1555,11 @@ async function main() {
       },
     };
 
+    assert(
+      SCREENSHOTS.every((filename) => capturedScreenshots.has(filename)),
+      `Expected all screenshots to refresh. Captured ${capturedScreenshots.size} of ${SCREENSHOTS.length}.`,
+    );
+
     console.log(JSON.stringify(summary, null, 2));
   } finally {
     await Promise.allSettled(pages.map((page) => page.close()));
@@ -1518,7 +1568,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-  process.exitCode = 1;
-});
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exit(1);
+  });

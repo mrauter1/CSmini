@@ -1,27 +1,51 @@
-# Asset Strategy
+# Asset And Originality Record
 
-## Current Decision
+Date reviewed: `2026-05-28`
 
-This project is currently committed to original/simple geometry only for the implementation phase that follows this subgoal.
+## Shipped Asset Posture
 
-- Approved environment assets: none external
-- Approved character assets: none external
-- Approved weapon assets: none external
-- Approved audio assets: none external
-- Approved textures/materials: none external
+- External environment assets: none
+- External character assets: none
+- External weapon assets: none
+- External audio assets: none
+- External textures/materials: none
+- Runtime dependency profile: browser-only Vite/TypeScript/Three.js stack with `three` as the only runtime dependency
 
-Implementation should use:
+The shipped build stays on original low-poly geometry, simple authored materials, abstract signage, and procedural browser audio. No heavy engine, marketplace content pack, or imported art/audio bundle was added.
 
-- original low-poly geometry
-- procedural or hand-authored simple materials
-- abstract signage and markings
-- original synthesized or browser-generated audio later in the goal
+## Final Originality Review
 
-Reasoning:
+This pass reviewed the current maps, mission content, HUD labels, geometry, UI treatment, audio, and gameplay data against the project’s non-Counter-Strike constraint.
 
-- The reference set already establishes the target style without requiring imported content.
-- The target aesthetic benefits from simple planar geometry more than from high-detail marketplace packs.
-- Staying original by default is the cleanest way to meet the browser-lightweight, license-safe, and non-Counter-Strike requirements.
+### Teams, mission names, and labels
+
+- Team names are original: `Amber Vanguard` and `Cobalt Reach`.
+- Mission names are original: `Relay Charge` and `Evac Escort`.
+- Objective labels and route callouts are original, including `Kiln Yard`, `Water Tower Gate`, `Loading Crew`, `Generator Hall`, `Drain Underpass`, `Archive Court Relay`, and the rest of the shipped roster landmarks.
+- The project does not use `Terrorists`, `Counter-Terrorists`, `de_`, `cs_`, or copied site labels.
+
+### Maps and objective spaces
+
+- The shipped roster uses five original map entries declared in `src/data/maps.ts`:
+  - `Sandline Foundry`
+  - `Transit Crates`
+  - `Breaker Vault`
+  - `Quarry Slip`
+  - `Ledger Annex`
+- Each map declares original team spawns, tactical routes, bomb sites, or hostage spaces through typed metadata instead of relying on copied layouts or legacy naming.
+- The final screenshots in `assets/screenshots/` and the live QA notes in `docs/qa/local-play.md` and `docs/qa/multiplayer.md` confirm those objective spaces in the running build rather than only in static data.
+
+### HUD, UI, audio, and weapon presentation
+
+- The menu, roster, HUD, and prompt treatment are original browser-authored UI surfaces implemented in `src/ui/templates.ts`, `src/ui/app.ts`, and `src/styles.css`.
+- Weapon, character, and environment geometry are built from original primitives in the current Three.js scene blueprints.
+- Audio remains procedural browser synthesis from `src/game/audio.ts`; there are no imported gunshots, voice lines, or commercial sound effects.
+- The current UI and HUD do not copy Counter-Strike branding, logos, fonts, icons, radar art, or panel layouts.
+
+### Gameplay data and tuning
+
+- Round timing, movement values, bomb timers, hostage timers, and AI behavior tuning are project-authored gameplay data documented in `docs/qa/classic-feel.md`.
+- The classic-feel target is an original early-2000s tactical FPS homage, not a claim of exact Counter-Strike equivalence.
 
 ## Hard Rules
 
@@ -29,11 +53,24 @@ Reasoning:
 - Do not use ripped assets from any commercial game.
 - Do not use assets whose original source, author, or license cannot be verified.
 - Do not use CC BY-NC, CC BY-ND, editorial-only, or unclear custom-license assets.
-- Do not import an external asset just because it exists; the default answer is still simple original geometry.
+- Do not import an external asset just because it exists; the default answer remains original lightweight content.
+
+## Evidence Surfaces
+
+- `src/data/maps.ts`
+- `src/game/audio.ts`
+- `src/ui/templates.ts`
+- `src/ui/app.ts`
+- `src/styles.css`
+- `docs/qa/local-play.md`
+- `docs/qa/multiplayer.md`
+- `docs/qa/classic-feel.md`
+- `docs/qa/visual-report.md`
+- `assets/screenshots/`
 
 ## External Asset Gate
 
-If a later subgoal proposes an external asset, it is blocked until this file is updated with a record covering all of the following:
+If a later pass proposes an external asset, it is blocked until this file is updated with a record covering all of the following:
 
 - asset name
 - source page
@@ -54,43 +91,13 @@ An external asset is acceptable only if all of these are true:
 - the license is clearly permissive for this project
 - attribution, if required, is practical and documented
 - the asset is lightweight enough for a browser FPS prototype
-- the asset strengthens the low-poly dusty tactical target instead of modernizing it
-- the same result cannot be reached more cleanly with simple original geometry
-
-## Preferred Build Strategy By Asset Type
-
-### Environment
-
-- Build buildings, walls, ramps, catwalks, shutters, crates, barriers, and pipes from original primitives or simple authored meshes.
-- Favor flat or lightly shaded materials with subtle wear instead of high-resolution scanned textures.
-
-### Characters
-
-- Build readable humanoid placeholders from simple modular body parts.
-- Use team-color accents and silhouette clarity instead of detailed military gear.
-
-### Weapons
-
-- Build original abstract low-poly weapons from simple faceted shapes.
-- Avoid direct replicas of recognizable real-world or Counter-Strike-associated gun silhouettes.
-
-### Audio
-
-- Prefer original synthesized or procedural browser audio for firing, hit confirmation, death, respawn, and menu cues.
-- Keep sounds short, compressed, and retro.
+- the asset strengthens the original dusty tactical target instead of modernizing it away from the intended feel
+- the same result cannot be reached more cleanly with simple original geometry or procedural audio
 
 ## Current Manifest
 
-No external assets are approved at this stage.
+No external runtime assets are approved in the shipped build.
 
 | Asset | Source | Author | License | Commercial Use | Derivatives | Redistribution/Embedding | Attribution | Browser Suitability | Style Fit | Decision | Date Checked |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | rejected by default until evaluated | 2026-05-27 |
-
-## Candidate Record Template
-
-Use this template if a later subgoal needs to evaluate an external asset:
-
-| Asset | Source | Author | License | Commercial Use | Derivatives | Redistribution/Embedding | Attribution | Browser Suitability | Style Fit | Decision | Date Checked |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| example-asset | https://example.com | Example Author | CC0 | yes | yes | yes | none | low-poly, small download | good match / poor match | accept / reject with reason | YYYY-MM-DD |
+| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | rejected by default until evaluated | 2026-05-28 |

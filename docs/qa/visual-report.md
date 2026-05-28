@@ -4,7 +4,7 @@ Date: 2026-05-28
 
 ## Scope
 
-Final verification for the `verification-and-final-reporting` subgoal covered:
+Final verification for the `verification-docs-and-final-reporting` subgoal covered:
 
 - browser launch and map selection
 - main-map visual match against the generated reference set
