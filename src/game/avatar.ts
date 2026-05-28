@@ -14,7 +14,14 @@ export interface CombatantAvatar {
 
 export interface WeaponRig {
   group: THREE.Group;
-  update(elapsed: number, moveBlend: number, recoil: number, firing: boolean): void;
+  update(
+    elapsed: number,
+    moveBlend: number,
+    recoil: number,
+    firing: boolean,
+    crouchBlend: number,
+    airborneBlend: number,
+  ): void;
   setVisible(visible: boolean): void;
 }
 
@@ -183,16 +190,22 @@ export function createWeaponRig(): WeaponRig {
 
   return {
     group,
-    update(elapsed, moveBlend, recoil, firing) {
+    update(elapsed, moveBlend, recoil, firing, crouchBlend, airborneBlend) {
       const bob = Math.sin(elapsed * 9.4) * 0.018 * moveBlend;
       const sway = Math.cos(elapsed * 4.2) * 0.01;
+      const crouchDrop = 0.08 * crouchBlend;
+      const airborneLift = 0.05 * airborneBlend;
 
       group.position.set(
         0.56 + sway,
-        -0.48 + bob - recoil * 0.08,
-        -0.92 + recoil * 0.14,
+        -0.48 + bob - recoil * 0.08 - crouchDrop + airborneLift,
+        -0.92 + recoil * 0.14 + crouchBlend * 0.05,
       );
-      group.rotation.set(-0.1 + recoil * 0.1, -0.18, -0.08 - recoil * 0.12);
+      group.rotation.set(
+        -0.1 + recoil * 0.08 - crouchBlend * 0.04 + airborneBlend * 0.06,
+        -0.18,
+        -0.08 - recoil * 0.12 - crouchBlend * 0.02,
+      );
 
       flash.visible = firing;
       flash.scale.setScalar(firing ? 1 + recoil * 1.5 : 1);

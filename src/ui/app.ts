@@ -1,7 +1,8 @@
 import { featuredMap, getMapById, mapCatalog } from "../data/maps";
-import type { MapDefinition } from "../types";
 import type { LocalMatch, LocalMatchSnapshot } from "../game/localMatch";
 import type { MatchMode } from "../game/multiplayerRoom";
+import { getTeamDefinition, isTeamId } from "../game/teams";
+import type { MapDefinition, TeamPreference } from "../types";
 import { renderCatalog, renderMapStage, renderMenu } from "./templates";
 
 type Screen = "menu" | "catalog" | "stage";
@@ -10,6 +11,7 @@ export class TacticalShellApp {
   private screen: Screen = "menu";
   private activeMapId = featuredMap.id;
   private activeMode: MatchMode = "shared";
+  private teamPreference: TeamPreference = "auto";
   private match?: LocalMatch;
   private renderToken = 0;
 
@@ -44,6 +46,7 @@ export class TacticalShellApp {
     const action = actionButton.dataset.action;
     const mapId = actionButton.dataset.mapId;
     const mode = this.readMode(actionButton.dataset.mode);
+    const team = this.readTeamPreference(actionButton.dataset.team);
 
     switch (action) {
       case "show-menu":
@@ -56,6 +59,14 @@ export class TacticalShellApp {
         return;
       case "lock-match":
         this.match?.requestPointerLock();
+        return;
+      case "set-team":
+        if (!team) {
+          return;
+        }
+
+        this.teamPreference = team;
+        this.render();
         return;
       case "open-map":
       case "swap-map":
@@ -74,17 +85,22 @@ export class TacticalShellApp {
     this.teardownMatch();
 
     if (this.screen === "menu") {
-      this.root.innerHTML = renderMenu(getMapById(this.activeMapId));
+      this.root.innerHTML = renderMenu(getMapById(this.activeMapId), this.teamPreference);
       return;
     }
 
     if (this.screen === "catalog") {
-      this.root.innerHTML = renderCatalog(mapCatalog);
+      this.root.innerHTML = renderCatalog(mapCatalog, this.teamPreference);
       return;
     }
 
     const map = getMapById(this.activeMapId);
-    this.root.innerHTML = renderMapStage(map, mapCatalog, this.activeMode);
+    this.root.innerHTML = renderMapStage(
+      map,
+      mapCatalog,
+      this.activeMode,
+      this.teamPreference,
+    );
 
     const host = this.root.querySelector<HTMLElement>("[data-world-host]");
     if (!host) {
@@ -116,6 +132,7 @@ export class TacticalShellApp {
     try {
       match = new LocalMatch(host, map, {
         mode: this.activeMode,
+        teamPreference: this.teamPreference,
         onActionRequest: (action) => {
           if (token !== this.renderToken) {
             return;
@@ -204,12 +221,18 @@ export class TacticalShellApp {
     setText("ammo", `${snapshot.ammoInClip} / ${snapshot.reserveAmmo}`);
     setText("firing-status", snapshot.firingStatus);
     setText("status", snapshot.statusLine);
-    setText(
-      "player-count",
-      `${snapshot.playerCount} ${snapshot.playerCount === 1 ? "operator" : "operators"}`,
-    );
+    setText("player-count", `${snapshot.playerCount} ${snapshot.playerCount === 1 ? "operator" : "operators"}`);
     setText("prompt", snapshot.prompt);
     setText("death", snapshot.deathLine);
+    setText("team-name", snapshot.teamName);
+    setText("team-banner", snapshot.teamBanner);
+    setText("round-number", `Round ${snapshot.roundNumber}`);
+    setText("round-phase", snapshot.roundPhaseLabel);
+    setText("round-timer", snapshot.roundTimer);
+    setText("mission-label", snapshot.missionLabel);
+    setText("objective-label", snapshot.objectiveLabel);
+    setText("mission-summary", snapshot.missionSummary);
+    setText("alive-state", snapshot.aliveState);
 
     const promptPanel = this.root.querySelector<HTMLElement>('[data-ui="prompt-panel"]');
     if (promptPanel) {
@@ -224,6 +247,7 @@ export class TacticalShellApp {
     const worldShell = this.root.querySelector<HTMLElement>("[data-world-shell]");
     if (worldShell) {
       worldShell.classList.toggle("world-stage__viewport--locked", snapshot.pointerLocked);
+      worldShell.dataset.team = snapshot.teamId;
     }
 
     const hitIndicator = this.root.querySelector<HTMLElement>("[data-hit-indicator]");
@@ -232,22 +256,32 @@ export class TacticalShellApp {
     const damageOverlay = this.root.querySelector<HTMLElement>("[data-damage-overlay]");
     damageOverlay?.classList.toggle("hud-damage--active", snapshot.damageActive);
 
+    const teamCounts = this.root.querySelector<HTMLElement>('[data-ui="team-counts"]');
+    if (teamCounts) {
+      teamCounts.innerHTML = snapshot.teamCounts
+        .map((entry) => {
+          const team = getTeamDefinition(entry.teamId);
+          return `
+            <div class="team-count" data-team="${entry.teamId}">
+              <strong>${this.escapeHtml(team.name)}</strong>
+              <span>${entry.alive} alive / ${entry.total}</span>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
     const roster = this.root.querySelector<HTMLElement>('[data-ui="roster"]');
     if (roster) {
       roster.innerHTML = snapshot.roster
         .map((entry) => {
-          const statusLabel =
-            entry.status === "alive"
-              ? "Alive"
-              : entry.status === "respawning"
-                ? "Respawning"
-                : "Down";
+          const statusLabel = entry.status === "alive" ? "Alive" : "Down";
 
           return `
-            <div class="roster-row ${entry.local ? "roster-row--local" : ""}">
+            <div class="roster-row ${entry.local ? "roster-row--local" : ""}" data-team="${entry.teamId}">
               <div>
                 <strong>${this.escapeHtml(entry.name)}</strong>
-                <span>${statusLabel}</span>
+                <span>${this.escapeHtml(entry.teamLabel)} · ${statusLabel}</span>
               </div>
               <div>
                 <small>${entry.health} HP</small>
@@ -273,6 +307,11 @@ export class TacticalShellApp {
     this.activeMapId = getMapById(mapId).id;
     this.activeMode = mode;
     this.screen = "stage";
+    this.render();
+  }
+
+  debugSetTeamPreference(teamPreference: TeamPreference): void {
+    this.teamPreference = teamPreference;
     this.render();
   }
 
@@ -325,6 +364,22 @@ export class TacticalShellApp {
     this.match?.debugForcePlayerDeath(attackerName);
   }
 
+  debugForceNextRound(): void {
+    this.match?.debugForceNextRound();
+  }
+
+  debugSetKey(code: string, active: boolean): void {
+    this.match?.debugSetKey(code, active);
+  }
+
+  debugJump(): void {
+    this.match?.debugJump();
+  }
+
+  debugJumpSample(): { peakY: number; landedY: number; landed: boolean } | null {
+    return this.match?.debugJumpSample() ?? null;
+  }
+
   debugAimAt(combatantId: string): boolean {
     return this.match?.debugAimAt(combatantId) ?? false;
   }
@@ -344,6 +399,14 @@ export class TacticalShellApp {
 
   private readMode(value: string | undefined): MatchMode | undefined {
     if (value === "shared" || value === "local") {
+      return value;
+    }
+
+    return undefined;
+  }
+
+  private readTeamPreference(value: string | undefined): TeamPreference | undefined {
+    if (value === "auto" || isTeamId(value)) {
       return value;
     }
 

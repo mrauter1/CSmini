@@ -4,40 +4,60 @@ Date: 2026-05-28
 
 ## Scope
 
-Targeted verification for the `local-fps-loop-and-presentation` subgoal:
+Targeted verification for `round-core-and-movement-foundation`:
 
-- first-person controls
-- visible weapon and retro HUD
-- shooting and ammo change
-- local enemy damage against the player
-- return path to map select
-- runtime cleanliness during normal local play
+- explicit team entry in the browser flow
+- roster-wide team spawn separation across every shipped playable map
+- live round metadata driven from declared mission data
+- crouch camera and speed change
+- jump lift and safe landing
+- dead-until-next-round behavior in the local round shell
 
 ## Commands
 
 ```bash
 npm run typecheck
 npm run build
-npm run preview -- --host 127.0.0.1 --strictPort --port 4173
+npm test
 ```
 
-## Headless Runtime Evidence
+`npm test` runs `node scripts/qa/finalVerification.mjs`, which starts `vite preview`, opens a WebGL-capable headless Chrome session, and drives the browser QA hooks exposed through `window.__dustlineQa__`.
 
-Validated against `vite preview` on `http://127.0.0.1:4173/` using a WebGL-capable headless Chrome session with the app's fallback mouse-look path enabled under `navigator.webdriver`.
+## Fresh Results
 
-Observed results:
+### Roster-wide map pass
 
-- Menu loaded successfully.
-- Map roster rendered 5 map cards.
-- Deploying `Sandline Foundry` mounted exactly 1 gameplay canvas.
-- Engaging the match hid the control prompt and activated the local control path.
-- Firing once via the keyboard fallback changed ammo from `24 / 120` to `23 / 120`.
-- Moving into combat reduced player health from `100` to `16`, proving enemy damage, HUD health updates, and the local combat loop.
-- Pressing `M` returned to the catalog, and the DOM retained `0` gameplay canvases afterward, confirming clean teardown on map exit.
-- The successful run reported no page errors and no runtime exceptions.
+Each shipped playable map was opened twice in live local play: once as `Amber Vanguard` and once as `Cobalt Reach`. The harness confirmed a valid round state and mission label on load, then compared the resulting local spawn positions.
+
+- `Sandline Foundry`: spawn separation `29.17` units, live mission `Relay Charge`, objective `Kiln Yard`
+- `Transit Crates`: spawn separation `30.41` units, live mission `Relay Charge`, objective `Gantry Console`
+- `Breaker Vault`: spawn separation `28.16` units, live mission `Relay Charge`, objective `Turbine Rim`
+- `Quarry Slip`: spawn separation `28.07` units, live mission `Relay Charge`, objective `Slip Cradle`
+- `Ledger Annex`: spawn separation `28.16` units, live mission `Relay Charge`, objective `Archive Court Relay`
+
+Result: every shipped map loaded a live round from the declared mission metadata and used clearly distinct team spawn areas in play, not just in static data.
+
+### Movement checks
+
+- Standing camera height: `1.62`
+- Crouched camera height: `1.26`
+- Standing forward sample over the same timed window: `1.69` units
+- Crouched forward sample over the same timed window: `0.98` units
+- Jump sample peak camera height: `2.59`
+- Jump sample landed camera height: `1.62`
+
+Result: crouch lowered the camera and reduced speed; jump produced a clear airborne lift and returned to the original eye height on landing.
+
+### Round-respawn case
+
+- The harness forced player death in an active local round.
+- After `1.5s`, the player was still down in the same round.
+- A QA-only hook, `window.__dustlineQa__.forceNextRound()`, then advanced the match into the next round briefing.
+- On the round reset, the player returned alive with `100 HP`, and the round counter advanced from `1` to `2`.
+
+Result: default gameplay keeps the player out for the rest of the round. The forced next-round hook is a QA exception path used only to prove the reset behavior without waiting for the full objective timer.
 
 ## Notes
 
-- Pointer lock is still the primary interaction path in normal browsers.
-- The app also supports a browser-safe fallback mouse-look mode so local play remains testable when pointer lock is unavailable or blocked by automation environments.
-- Multiplayer presence, shared combat, and room isolation are intentionally deferred to the next subgoal.
+- The movement and round verification stayed inside the browser build; no extra engine or non-browser runtime was introduced.
+- The jump sample in the QA harness uses the live movement integrator through a dedicated QA hook to avoid headless browser timing noise while still validating the same movement code path.

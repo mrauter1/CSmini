@@ -1,11 +1,13 @@
 import "./styles.css";
 
 import { TacticalShellApp } from "./ui/app";
+import type { TeamPreference } from "./types";
 
 declare global {
   interface Window {
     __dustlineQa__?: {
       openMap: (mapId: string, mode: "shared" | "local") => void;
+      setTeamPreference: (teamPreference: TeamPreference) => void;
       returnToCatalog: () => void;
       getState: () => Record<string, unknown> | null;
       engageControls: () => void;
@@ -41,6 +43,10 @@ declare global {
       sharedTarget: () => string | null;
       fire: () => void;
       forcePlayerDeath: (attackerName?: string) => void;
+      forceNextRound: () => void;
+      setKey: (code: string, active: boolean) => void;
+      jump: () => void;
+      jumpSample: () => { peakY: number; landedY: number; landed: boolean } | null;
     };
   }
 }
@@ -57,6 +63,7 @@ app.mount();
 if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")) {
   window.__dustlineQa__ = {
     openMap: (mapId, mode) => app.debugOpenMap(mapId, mode),
+    setTeamPreference: (teamPreference) => app.debugSetTeamPreference(teamPreference),
     returnToCatalog: () => app.debugReturnToCatalog(),
     getState: () => app.debugGetState(),
     engageControls: () => app.debugEngageControls(),
@@ -70,6 +77,10 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     sharedTarget: () => app.debugSharedTarget(),
     fire: () => app.debugFire(),
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),
+    forceNextRound: () => app.debugForceNextRound(),
+    setKey: (code, active) => app.debugSetKey(code, active),
+    jump: () => app.debugJump(),
+    jumpSample: () => app.debugJumpSample(),
   };
 }
 

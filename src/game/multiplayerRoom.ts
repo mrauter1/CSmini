@@ -1,3 +1,6 @@
+import type { SerializedRoundState } from "./rounds";
+import type { TeamId, TeamPreference } from "../types";
+
 const HEARTBEAT_MS = 100;
 const STALE_PEER_MS = 2400;
 const OPERATOR_CALLSIGNS = ["Atlas", "Bishop", "Cinder", "Lancer", "Nova", "Pike", "Rivet", "Sable"];
@@ -5,7 +8,7 @@ const OPERATOR_ACCENTS = ["#CFA66F", "#6F8FAA", "#819B58", "#B86E4E", "#7A8E96",
 const SESSION_KEY = "dustline.operator-seed";
 
 export type MatchMode = "local" | "shared";
-export type CombatantStatus = "alive" | "down" | "respawning";
+export type CombatantStatus = "alive" | "down";
 
 export interface RoomIdentity {
   id: string;
@@ -17,20 +20,26 @@ export interface RoomPresenceSnapshot {
   id: string;
   name: string;
   accentColor: string;
+  teamId: TeamId;
+  teamPreference: TeamPreference;
   health: number;
   eliminations: number;
   deaths: number;
   status: CombatantStatus;
+  roundState: SerializedRoundState;
   position: [number, number, number];
   look: [number, number, number];
   updatedAt: number;
 }
 
 export interface OutboundRoomPresence {
+  teamId: TeamId;
+  teamPreference: TeamPreference;
   health: number;
   eliminations: number;
   deaths: number;
   status: CombatantStatus;
+  roundState: SerializedRoundState;
   position: [number, number, number];
   look: [number, number, number];
 }

@@ -1,4 +1,7 @@
 export type Vec3 = [number, number, number];
+export type TeamId = "amber" | "cobalt";
+export type TeamPreference = TeamId | "auto";
+export type MissionType = "bomb" | "hostage";
 
 export type RouteKind = "main" | "corridor" | "flank" | "spawn" | "landmark";
 
@@ -119,6 +122,63 @@ export interface LandmarkNote {
   focusId: string;
 }
 
+export interface TeamSpawnZone {
+  teamId: TeamId;
+  label: string;
+  description: string;
+  focusId: string;
+}
+
+export interface BombSiteDefinition {
+  id: string;
+  label: string;
+  description: string;
+  focusId: string;
+  routeIds: string[];
+  radius: number;
+}
+
+export interface BombMissionDefinition {
+  label: string;
+  briefing: string;
+  deliveryTeam: TeamId;
+  holdTeam: TeamId;
+  sites: BombSiteDefinition[];
+  plantSeconds: number;
+  defuseSeconds: number;
+}
+
+export interface HostageClusterDefinition {
+  id: string;
+  label: string;
+  description: string;
+  focusId: string;
+  routeIds: string[];
+  hostages: number;
+}
+
+export interface ExtractionZoneDefinition {
+  label: string;
+  description: string;
+  focusId: string;
+  routeIds: string[];
+  radius: number;
+}
+
+export interface HostageMissionDefinition {
+  label: string;
+  briefing: string;
+  rescueTeam: TeamId;
+  holdTeam: TeamId;
+  hostageClusters: HostageClusterDefinition[];
+  extractionZone: ExtractionZoneDefinition;
+}
+
+export interface MapMissionSet {
+  bomb?: BombMissionDefinition;
+  hostage?: HostageMissionDefinition;
+}
+
 export interface MapDefinition {
   id: string;
   name: string;
@@ -133,6 +193,9 @@ export interface MapDefinition {
   preview: PreviewSpec;
   scene: SceneBlueprint;
   spawnNotes: SpawnNote[];
-  routes: RouteNote[];
+  teamSpawns: Record<TeamId, TeamSpawnZone>;
+  tacticalRoutes: RouteNote[];
+  supportedMissions: MissionType[];
+  objectives: MapMissionSet;
   landmarks: LandmarkNote[];
 }

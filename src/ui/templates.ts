@@ -1,6 +1,8 @@
-import { renderPreviewSvg } from "./previewSvg";
-import type { MapDefinition } from "../types";
+import { missionBadges } from "../game/missions";
 import type { MatchMode } from "../game/multiplayerRoom";
+import { TEAM_ORDER, getTeamDefinition, teamPreferenceLabel } from "../game/teams";
+import type { MapDefinition, TeamPreference } from "../types";
+import { renderPreviewSvg } from "./previewSvg";
 
 function escapeHtml(value: string): string {
   return value
@@ -10,7 +12,49 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function missionChip(label: string): string {
+  return `<span class="chip">${escapeHtml(label)}</span>`;
+}
+
+function teamPreferenceButton(preference: TeamPreference, activePreference: TeamPreference): string {
+  const team = preference === "auto" ? null : getTeamDefinition(preference);
+
+  return `
+    <button
+      class="team-pick ${activePreference === preference ? "team-pick--active" : ""}"
+      data-action="set-team"
+      data-team="${preference}"
+      ${team ? `data-team-tone="${team.id}"` : ""}
+    >
+      <strong>${escapeHtml(teamPreferenceLabel(preference))}</strong>
+      <span>${escapeHtml(team ? team.summary : "Balance the room automatically or default to Amber Vanguard in solo play.")}</span>
+    </button>
+  `;
+}
+
+function renderTeamPicker(teamPreference: TeamPreference): string {
+  return `
+    <section class="team-panel panel">
+      <div class="panel__header">
+        <p>Round Entry</p>
+        <span class="chip chip--primary">${escapeHtml(teamPreferenceLabel(teamPreference))}</span>
+      </div>
+      <h2>Choose Your Team</h2>
+      <p class="panel__text">
+        Team selection is locked in before the round loads. Pick a side directly or keep the room on explicit auto-assignment.
+      </p>
+      <div class="team-picks">
+        ${teamPreferenceButton("auto", teamPreference)}
+        ${TEAM_ORDER.map((teamId) => teamPreferenceButton(teamId, teamPreference)).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function mapCard(map: MapDefinition, index: number): string {
+  const missionLabels = missionBadges(map);
+  const routeLabels = map.tacticalRoutes.map((route) => route.name).join(" / ");
+
   return `
     <article class="map-card ${map.mainMap ? "map-card--featured" : ""}">
       <div class="map-card__topline">
@@ -18,7 +62,7 @@ function mapCard(map: MapDefinition, index: number): string {
         <div class="map-card__actions">
           ${map.mainMap ? '<span class="chip chip--primary">Primary Arena</span>' : ""}
           <button class="button button--tiny button--primary" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Join Room</button>
-          <button class="button button--tiny" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo Drill</button>
+          <button class="button button--tiny" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo Round</button>
         </div>
       </div>
       <div class="map-card__preview">
@@ -26,6 +70,9 @@ function mapCard(map: MapDefinition, index: number): string {
       </div>
       <h3>${escapeHtml(map.name)}</h3>
       <p class="map-card__summary">${escapeHtml(map.shortDescription)}</p>
+      <div class="map-card__chips">
+        ${missionLabels.map(missionChip).join("")}
+      </div>
       <dl class="meta-grid">
         <div>
           <dt>Theme</dt>
@@ -36,12 +83,8 @@ function mapCard(map: MapDefinition, index: number): string {
           <dd>${escapeHtml(map.spawnSetup)}</dd>
         </div>
         <div>
-          <dt>Cover</dt>
-          <dd>${escapeHtml(map.cover)}</dd>
-        </div>
-        <div>
-          <dt>Chokes</dt>
-          <dd>${escapeHtml(map.chokePoints)}</dd>
+          <dt>Routes</dt>
+          <dd>${escapeHtml(routeLabels)}</dd>
         </div>
         <div>
           <dt>Landmark</dt>
@@ -66,14 +109,25 @@ function mapRibbonButton(map: MapDefinition, activeMapId: string, mode: MatchMod
   `;
 }
 
-export function renderMenu(map: MapDefinition): string {
+function controlHint(label: string, text: string): string {
+  return `
+    <div class="control-hint">
+      <p>${escapeHtml(label)}</p>
+      <span>${escapeHtml(text)}</span>
+    </div>
+  `;
+}
+
+export function renderMenu(map: MapDefinition, teamPreference: TeamPreference): string {
+  const missionLabels = missionBadges(map);
+
   return `
     <section class="screen screen--menu">
       <header class="hero-panel">
         <p class="hero-panel__kicker">Browser Tactical Prototype</p>
         <h1>Dustline Protocol</h1>
         <p class="hero-panel__lede">
-          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with a five-map roster, same-map shared-room firefights, and a solo-drill fallback that stays playable without any backend.
+          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with round timers, two original teams, mission-ready map metadata, and a same-map shared-room browser loop.
         </p>
         <div class="hero-panel__actions">
           <button class="button button--primary" data-action="show-catalog">Open Map Roster</button>
@@ -86,14 +140,15 @@ export function renderMenu(map: MapDefinition): string {
         <section class="hero-grid__brief">
           <div class="brief-panel">
             <p class="brief-panel__label">Flow</p>
-            <p>Menu → map select → choose shared room or solo drill → move, shoot, take damage, respawn, or bounce back to map select without leaving the browser.</p>
+            <p>Choose a team, deploy into a timed round, crouch or jump through the lane choices, and stay down until the next reset once you lose the duel.</p>
           </div>
           <div class="brief-panel">
             <p class="brief-panel__label">Featured Arena</p>
             <h2>${escapeHtml(map.name)}</h2>
             <p>${escapeHtml(map.tacticalSummary)}</p>
-            <p class="brief-panel__note">${escapeHtml(map.landmark)}</p>
+            <p class="brief-panel__note">${missionLabels.map(missionChip).join("")}</p>
           </div>
+          ${renderTeamPicker(teamPreference)}
         </section>
 
         <section class="hero-grid__preview panel">
@@ -108,7 +163,7 @@ export function renderMenu(map: MapDefinition): string {
   `;
 }
 
-export function renderCatalog(maps: MapDefinition[]): string {
+export function renderCatalog(maps: MapDefinition[], teamPreference: TeamPreference): string {
   return `
     <section class="screen screen--catalog">
       <header class="masthead panel">
@@ -116,15 +171,17 @@ export function renderCatalog(maps: MapDefinition[]): string {
           <p class="masthead__eyebrow">Map Select</p>
           <h1>Original Tactical Arenas</h1>
           <p>
-            Every entry includes a theme, spawn setup, cover language, choke-point summary, a distinctive landmark, and a top-down preview. Shared-room deploy syncs same-map tabs through the browser, while solo drill keeps the local fallback combat loop available at all times.
+            Every entry now declares team spawns, tactical routes, and live mission metadata for both relay-charge and evac-escort round shells. Shared-room deploy syncs same-map tabs through the browser, while solo play keeps the local fallback combat loop available at all times.
           </p>
         </div>
         <div class="masthead__actions">
           <button class="button" data-action="show-menu">Back to Briefing</button>
           <button class="button button--primary" data-action="open-map" data-mode="shared" data-map-id="${maps[0]?.id ?? ""}">Join Featured Room</button>
-          <button class="button" data-action="open-map" data-mode="local" data-map-id="${maps[0]?.id ?? ""}">Open Solo Drill</button>
+          <button class="button" data-action="open-map" data-mode="local" data-map-id="${maps[0]?.id ?? ""}">Open Solo Round</button>
         </div>
       </header>
+
+      ${renderTeamPicker(teamPreference)}
 
       <div class="map-grid">
         ${maps.map(mapCard).join("")}
@@ -133,23 +190,16 @@ export function renderCatalog(maps: MapDefinition[]): string {
   `;
 }
 
-function controlHint(label: string, text: string): string {
-  return `
-    <div class="control-hint">
-      <p>${escapeHtml(label)}</p>
-      <span>${escapeHtml(text)}</span>
-    </div>
-  `;
-}
-
-export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: MatchMode): string {
-  const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Drill";
-  const modeNotice =
-    mode === "shared"
-      ? `Shared room armed for ${escapeHtml(map.name)}. Open the same map in another tab or window to link operators.`
-      : "Local fallback mode: solo skirmish with procedural audio and lightweight hostile operators.";
-  const switchModeLabel = mode === "shared" ? "Switch to Solo Drill" : "Switch to Shared Room";
+export function renderMapStage(
+  map: MapDefinition,
+  maps: MapDefinition[],
+  mode: MatchMode,
+  teamPreference: TeamPreference,
+): string {
+  const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Round";
+  const switchModeLabel = mode === "shared" ? "Switch to Solo Round" : "Switch to Shared Room";
   const switchMode = mode === "shared" ? "local" : "shared";
+  const missionLabels = missionBadges(map);
 
   return `
     <section class="screen screen--match">
@@ -163,11 +213,34 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
                 <p class="hud-label">Map</p>
                 <h1 class="hud-map" data-ui="map-name">${escapeHtml(map.name)}</h1>
                 <p class="hud-note" data-ui="mode-notice">
-                  ${modeNotice}
+                  ${mode === "shared" ? `Shared room armed for ${escapeHtml(map.name)}.` : "Solo round armed."}
                 </p>
               </div>
 
+              <div class="hud-card hud-card--round">
+                <p class="hud-label">Round</p>
+                <div class="hud-round__topline">
+                  <strong data-ui="round-number">Round 1</strong>
+                  <span data-ui="round-phase">Briefing</span>
+                </div>
+                <h2 class="hud-round__clock" data-ui="round-timer">00:00</h2>
+                <p class="hud-round__mission"><span data-ui="mission-label">Relay Charge</span> · <span data-ui="objective-label">Objective</span></p>
+                <p class="hud-note" data-ui="mission-summary">Mission briefing pending.</p>
+              </div>
+
               <div class="hud-card hud-card--stats">
+                <div class="hud-stat">
+                  <span>Team</span>
+                  <strong data-ui="team-name">${escapeHtml(teamPreferenceLabel(teamPreference))}</strong>
+                </div>
+                <div class="hud-stat">
+                  <span>State</span>
+                  <strong data-ui="alive-state">Alive</strong>
+                </div>
+                <div class="hud-stat">
+                  <span>Status</span>
+                  <strong data-ui="firing-status">Hold</strong>
+                </div>
                 <div class="hud-stat">
                   <span>Health</span>
                   <strong data-ui="health">100</strong>
@@ -176,23 +249,27 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
                   <span>Ammo</span>
                   <strong data-ui="ammo">24 / 120</strong>
                 </div>
-                <div class="hud-stat">
-                  <span>Status</span>
-                  <strong data-ui="firing-status">Ready</strong>
+              </div>
+
+              <div class="hud-card hud-card--teams">
+                <div class="panel__header panel__header--compact">
+                  <p>Team Counts</p>
+                  <span class="chip" data-ui="player-count">1 operator</span>
                 </div>
+                <div class="hud-team-counts" data-ui="team-counts"></div>
               </div>
 
               <div class="hud-card hud-card--roster">
                 <div class="panel__header panel__header--compact">
                   <p>Roster</p>
-                  <span class="chip" data-ui="player-count">4 operators</span>
+                  <span class="chip" data-ui="team-banner">${escapeHtml(teamPreferenceLabel(teamPreference))}</span>
                 </div>
                 <div class="hud-roster" data-ui="roster"></div>
               </div>
 
               <div class="hud-card hud-card--status">
                 <p class="hud-label">Status Feed</p>
-                <p data-ui="status">Solo skirmish active.</p>
+                <p data-ui="status">Round feed pending.</p>
               </div>
 
               <div class="hud-crosshair" data-hit-indicator>
@@ -207,7 +284,7 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
                 <p class="hud-label">Deploy Controls</p>
                 <h2>Pointer Lock Ready</h2>
                 <p data-ui="prompt">
-                  Click the viewport to lock the mouse. WASD moves, Shift sprints, left click or Space fires, R reloads, and M reopens map select.
+                  Click the viewport to lock the mouse. WASD moves, Shift sprints, Ctrl crouches, Space jumps, left click fires, R reloads, and M reopens map select.
                 </p>
                 <div class="hud-overlay__actions">
                   <button class="button button--primary" data-action="lock-match">Lock Controls</button>
@@ -218,8 +295,8 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
 
               <div class="hud-overlay hud-overlay--death" data-ui="death-panel" hidden>
                 <p class="hud-label">Operator Down</p>
-                <h2 data-ui="death">Respawn in 3.2s</h2>
-                <p>Wait for reinsertion or press <strong>M</strong> to reopen the roster.</p>
+                <h2 data-ui="death">Down for the round.</h2>
+                <p>Stay out until the next reset or press <strong>M</strong> to reopen the roster.</p>
               </div>
             </div>
           </div>
@@ -230,6 +307,9 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
             <p class="masthead__eyebrow">${modeEyebrow}</p>
             <h2>${escapeHtml(map.shortDescription)}</h2>
             <p class="panel__text">${escapeHtml(map.tacticalSummary)}</p>
+            <div class="map-card__chips">
+              ${missionLabels.map(missionChip).join("")}
+            </div>
           </div>
           <div class="match-console__actions">
             <button class="button" data-action="show-catalog">Change Map</button>
@@ -238,19 +318,20 @@ export function renderMapStage(map: MapDefinition, maps: MapDefinition[], mode: 
           </div>
           <div class="control-grid">
             ${controlHint("Move", "WASD + Shift")}
-            ${controlHint("Look", "Pointer lock or fallback")}
-            ${controlHint("Shoot", "Left click or Space")}
+            ${controlHint("Crouch", "Ctrl")}
+            ${controlHint("Jump", "Space")}
+            ${controlHint("Shoot", "Left Click")}
             ${controlHint("Reload", "R")}
-            ${controlHint("Map Select", "M or button")}
-            ${controlHint("Mode", mode === "shared" ? "Same-map tab sync" : "Local fallback")}
-            ${controlHint("HUD", "HP, ammo, roster, hit cue")}
+            ${controlHint("Map Select", "M")}
+            ${controlHint("Mode", mode === "shared" ? "Same-map room sync" : "Local round shell")}
           </div>
+          ${renderTeamPicker(teamPreference)}
         </div>
 
         <div class="map-ribbon panel">
           <div class="panel__header">
             <p>Quick Deploy</p>
-            <span class="chip">${mode === "shared" ? "Shared Room" : "Solo Drill"}</span>
+            <span class="chip">${mode === "shared" ? "Shared Room" : "Solo Round"}</span>
           </div>
           <div class="map-ribbon__list">
             ${maps.map((entry) => mapRibbonButton(entry, map.id, mode)).join("")}

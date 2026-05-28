@@ -274,6 +274,51 @@ p {
   border-color: rgba(237, 197, 132, 0.28);
 }
 
+.team-panel {
+  padding: 22px;
+}
+
+.team-picks {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.team-pick {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.team-pick strong {
+  font-size: 0.98rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.team-pick span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.team-pick--active {
+  border-color: rgba(237, 197, 132, 0.38);
+  background: rgba(197, 159, 99, 0.12);
+}
+
+.team-pick[data-team-tone="amber"].team-pick--active {
+  background: rgba(214, 160, 103, 0.14);
+}
+
+.team-pick[data-team-tone="cobalt"].team-pick--active {
+  background: rgba(111, 143, 170, 0.14);
+}
+
 .map-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -323,6 +368,13 @@ p {
   border-radius: 18px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.map-card__chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
 }
 
 .meta-grid {
@@ -617,25 +669,40 @@ p {
   padding: 16px 18px;
 }
 
+.hud-card--round {
+  top: 18px;
+  left: min(456px, calc(100% - 36px));
+  width: min(320px, calc(100% - 36px));
+  padding: 16px 18px;
+}
+
 .hud-card--stats {
   top: 18px;
   right: 18px;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(88px, 1fr));
   gap: 10px;
   padding: 14px;
 }
 
+.hud-card--teams {
+  top: 170px;
+  left: 18px;
+  width: min(320px, calc(100% - 36px));
+  padding: 14px;
+}
+
 .hud-card--roster {
-  top: 110px;
+  top: 170px;
   right: 18px;
   width: min(280px, calc(100% - 36px));
   padding: 14px;
 }
 
 .hud-card--status {
-  left: 18px;
+  left: 354px;
   bottom: 18px;
-  max-width: 420px;
+  max-width: 520px;
   padding: 14px 18px;
 }
 
@@ -650,6 +717,35 @@ p {
 .hud-map {
   font-size: clamp(1.8rem, 3vw, 3rem);
   line-height: 0.94;
+}
+
+.hud-round__topline,
+.hud-team-counts {
+  display: grid;
+  gap: 8px;
+}
+
+.hud-round__topline {
+  grid-template-columns: auto auto;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.hud-round__topline span,
+.hud-round__mission {
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+}
+
+.hud-round__clock {
+  margin-top: 8px;
+  font-size: clamp(1.9rem, 3vw, 2.8rem);
+}
+
+.hud-round__mission {
+  margin-top: 8px;
 }
 
 .hud-note {
@@ -690,6 +786,36 @@ p {
   gap: 8px;
 }
 
+.team-count {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.team-count strong {
+  font-size: 0.9rem;
+}
+
+.team-count span {
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+.team-count[data-team="amber"],
+.roster-row[data-team="amber"] {
+  border-color: rgba(214, 160, 103, 0.22);
+}
+
+.team-count[data-team="cobalt"],
+.roster-row[data-team="cobalt"] {
+  border-color: rgba(111, 143, 170, 0.22);
+}
+
 .roster-row {
   display: flex;
   justify-content: space-between;
@@ -713,6 +839,14 @@ p {
 .roster-row--local {
   border-color: rgba(226, 197, 138, 0.28);
   background: rgba(197, 159, 99, 0.12);
+}
+
+.world-stage__viewport[data-team="amber"] {
+  box-shadow: inset 0 0 0 1px rgba(214, 160, 103, 0.22);
+}
+
+.world-stage__viewport[data-team="cobalt"] {
+  box-shadow: inset 0 0 0 1px rgba(111, 143, 170, 0.22);
 }
 
 .hud-crosshair {
@@ -868,7 +1002,13 @@ p {
     min-height: 360px;
   }
 
-   .hud-card--map {
+  .hud-card--map {
+    width: min(360px, calc(100% - 36px));
+  }
+
+  .hud-card--round {
+    left: 18px;
+    top: 132px;
     width: min(360px, calc(100% - 36px));
   }
 
@@ -880,9 +1020,22 @@ p {
     justify-content: space-between;
   }
 
+  .hud-card--teams {
+    top: auto;
+    bottom: 196px;
+    width: min(320px, calc(100% - 36px));
+  }
+
   .hud-card--roster {
-    top: 112px;
+    top: 132px;
     width: 240px;
+  }
+
+  .hud-card--status {
+    left: 18px;
+    right: 18px;
+    bottom: 252px;
+    max-width: none;
   }
 }
 
@@ -914,6 +1067,8 @@ p {
   }
 
   .hud-card--map,
+  .hud-card--round,
+  .hud-card--teams,
   .hud-card--roster,
   .hud-card--status {
     left: 14px;
@@ -926,9 +1081,17 @@ p {
     top: 14px;
   }
 
+  .hud-card--round {
+    top: 132px;
+  }
+
+  .hud-card--teams {
+    top: 312px;
+  }
+
   .hud-card--roster {
     top: auto;
-    bottom: 98px;
+    bottom: 136px;
   }
 
   .hud-card--status {
@@ -940,7 +1103,7 @@ p {
     right: 14px;
     bottom: 14px;
     top: auto;
-    flex-wrap: wrap;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .hud-overlay {

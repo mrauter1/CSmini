@@ -1,12 +1,19 @@
 import type {
+  BombSiteDefinition,
+  ExtractionZoneDefinition,
+  HostageClusterDefinition,
   LandmarkNote,
   MapDefinition,
+  MapMissionSet,
+  MissionType,
   PreviewElement,
   PreviewSpec,
   Primitive,
   RouteNote,
   SceneBlueprint,
   SpawnNote,
+  TeamId,
+  TeamSpawnZone,
   Vec3,
 } from "../types";
 
@@ -265,6 +272,20 @@ const transitCratesScene: SceneBlueprint = {
   defaultFocusId: "yard",
   focusPoints: [
     {
+      id: "south-depot",
+      label: "South Depot Apron",
+      description: "South spawn buffered by a shed block and short cover before the lane opens.",
+      cameraPosition: v(-2, 6.5, 25),
+      target: v(-2, 2, 15),
+    },
+    {
+      id: "north-wagon",
+      label: "North Wagon Bay",
+      description: "North spawn tucked behind the wagons and depot hall edge.",
+      cameraPosition: v(10, 6.5, -26),
+      target: v(3, 2, -15),
+    },
+    {
       id: "yard",
       label: "Container Lane",
       description: "Main cargo lane framed by crate stacks and a gantry.",
@@ -324,6 +345,20 @@ const breakerVaultScene: SceneBlueprint = {
   groundSize: [58, 46],
   defaultFocusId: "pit",
   focusPoints: [
+    {
+      id: "south-apron",
+      label: "South Bunker Apron",
+      description: "South spawn with quick access into the pit rim or drain route.",
+      cameraPosition: v(-4, 6.5, 23),
+      target: v(-1, 2, 14),
+    },
+    {
+      id: "north-apron",
+      label: "North Bunker Apron",
+      description: "North spawn protected by the bunker lip before the first peek.",
+      cameraPosition: v(6, 6.5, -24),
+      target: v(2, 2, -14),
+    },
     {
       id: "pit",
       label: "Turbine Pit",
@@ -386,6 +421,20 @@ const quarrySlipScene: SceneBlueprint = {
   defaultFocusId: "slip-yard",
   focusPoints: [
     {
+      id: "south-pocket",
+      label: "South Loading Pocket",
+      description: "South spawn behind the concrete berms before the yard opens.",
+      cameraPosition: v(-4, 6.5, 24),
+      target: v(-1, 2, 14),
+    },
+    {
+      id: "north-slip",
+      label: "North Cargo Slip",
+      description: "North spawn tucked by the cargo shed and slip edge.",
+      cameraPosition: v(8, 6.5, -25),
+      target: v(1, 2, -14),
+    },
+    {
       id: "slip-yard",
       label: "Slip Yard",
       description: "Open dock lane broken by concrete berms and container cover.",
@@ -447,6 +496,20 @@ const ledgerAnnexScene: SceneBlueprint = {
   defaultFocusId: "archive-court",
   focusPoints: [
     {
+      id: "south-admin",
+      label: "South Admin Entry",
+      description: "South spawn screened by shelves before the court opens.",
+      cameraPosition: v(-4, 6.5, 24),
+      target: v(-1, 2, 14),
+    },
+    {
+      id: "north-wing",
+      label: "North Archive Wing",
+      description: "North spawn buffered by the archive block and backline pillars.",
+      cameraPosition: v(8, 6.5, -24),
+      target: v(2, 2, -14),
+    },
+    {
       id: "archive-court",
       label: "Archive Court",
       description: "Central admin court with shelves, low walls, and fast crossfire.",
@@ -496,16 +559,97 @@ const ledgerAnnexScene: SceneBlueprint = {
   ],
 };
 
-function rosterDetails(
-  spawnNotes: SpawnNote[],
-  routes: RouteNote[],
+function spawnZone(teamId: TeamId, label: string, description: string, focusId: string): TeamSpawnZone {
+  return {
+    teamId,
+    label,
+    description,
+    focusId,
+  };
+}
+
+function spawnNotesFromTeams(teamSpawns: Record<TeamId, TeamSpawnZone>): SpawnNote[] {
+  return Object.values(teamSpawns).map((spawn) => ({
+    name: spawn.label,
+    description: spawn.description,
+    focusId: spawn.focusId,
+  }));
+}
+
+function bombSite(
+  id: string,
+  label: string,
+  description: string,
+  focusId: string,
+  routeIds: string[],
+  radius = 4.8,
+): BombSiteDefinition {
+  return {
+    id,
+    label,
+    description,
+    focusId,
+    routeIds,
+    radius,
+  };
+}
+
+function hostageCluster(
+  id: string,
+  label: string,
+  description: string,
+  focusId: string,
+  routeIds: string[],
+  hostages = 2,
+): HostageClusterDefinition {
+  return {
+    id,
+    label,
+    description,
+    focusId,
+    routeIds,
+    hostages,
+  };
+}
+
+function extractionZone(
+  label: string,
+  description: string,
+  focusId: string,
+  routeIds: string[],
+  radius = 5.4,
+): ExtractionZoneDefinition {
+  return {
+    label,
+    description,
+    focusId,
+    routeIds,
+    radius,
+  };
+}
+
+function mapDetails(
+  teamSpawns: Record<TeamId, TeamSpawnZone>,
+  tacticalRoutes: RouteNote[],
   landmarks: LandmarkNote[],
+  objectives: MapMissionSet,
+  supportedMissions: MissionType[] = ["bomb", "hostage"],
 ): {
   spawnNotes: SpawnNote[];
-  routes: RouteNote[];
+  teamSpawns: Record<TeamId, TeamSpawnZone>;
+  tacticalRoutes: RouteNote[];
   landmarks: LandmarkNote[];
+  objectives: MapMissionSet;
+  supportedMissions: MissionType[];
 } {
-  return { spawnNotes, routes, landmarks };
+  return {
+    spawnNotes: spawnNotesFromTeams(teamSpawns),
+    teamSpawns,
+    tacticalRoutes,
+    landmarks,
+    objectives,
+    supportedMissions,
+  };
 }
 
 export const mapCatalog: MapDefinition[] = [
@@ -549,21 +693,21 @@ export const mapCatalog: MapDefinition[] = [
       text(208, 168, "Drain Underpass", "preview__sub"),
     ]),
     scene: sandlineFoundryScene,
-    ...rosterDetails(
-      [
-        {
-          name: "Water Tower Court",
-          description:
-            "South spawn sheltered by the tank legs, a shed block, and a short divider wall.",
-          focusId: "south-spawn",
-        },
-        {
-          name: "Blue Shutter Bay",
-          description:
-            "North spawn framed by the loading awning and an offset stack for spawn safety.",
-          focusId: "north-spawn",
-        },
-      ],
+    ...mapDetails(
+      {
+        amber: spawnZone(
+          "amber",
+          "Water Tower Court",
+          "Amber Vanguard stages in the south court behind the water tower legs and divider wall.",
+          "south-spawn",
+        ),
+        cobalt: spawnZone(
+          "cobalt",
+          "Blue Shutter Bay",
+          "Cobalt Reach stages in the north bay behind the loading awning and stack offset.",
+          "north-spawn",
+        ),
+      },
       [
         {
           id: "main-yard",
@@ -621,6 +765,62 @@ export const mapCatalog: MapDefinition[] = [
           focusId: "catwalk",
         },
       ],
+      {
+        bomb: {
+          label: "Relay Charge",
+          briefing:
+            "Amber Vanguard can arm either the Kiln Yard relay or the Shutter Lift panel while Cobalt Reach hold the clock.",
+          deliveryTeam: "amber",
+          holdTeam: "cobalt",
+          plantSeconds: 3.4,
+          defuseSeconds: 4.2,
+          sites: [
+            bombSite(
+              "kiln-yard",
+              "Kiln Yard",
+              "Crate-island pressure point in the middle of the foundry yard.",
+              "courtyard",
+              ["main-yard", "generator-hall"],
+            ),
+            bombSite(
+              "shutter-lift",
+              "Shutter Lift",
+              "North loading relay tucked below the blue awning and catwalk return.",
+              "loading-bay",
+              ["drain-underpass", "main-yard"],
+            ),
+          ],
+        },
+        hostage: {
+          label: "Evac Escort",
+          briefing:
+            "Cobalt Reach must secure pinned workers and escort them back through the south court before Amber Vanguard collapse the route.",
+          rescueTeam: "cobalt",
+          holdTeam: "amber",
+          hostageClusters: [
+            hostageCluster(
+              "generator-workers",
+              "Generator Workers",
+              "Crew held inside the west corridor where tight cover limits the first peek.",
+              "corridor",
+              ["generator-hall", "main-yard"],
+            ),
+            hostageCluster(
+              "loading-crew",
+              "Loading Crew",
+              "Stragglers trapped near the loading rail at the north edge.",
+              "loading-bay",
+              ["drain-underpass", "main-yard"],
+            ),
+          ],
+          extractionZone: extractionZone(
+            "Water Tower Gate",
+            "South-side release pocket sheltered by the tower legs and divider wall.",
+            "south-spawn",
+            ["main-yard", "generator-hall"],
+          ),
+        },
+      },
     ),
   },
   {
@@ -660,20 +860,21 @@ export const mapCatalog: MapDefinition[] = [
       text(206, 170, "Rail Flank", "preview__sub"),
     ]),
     scene: transitCratesScene,
-    ...rosterDetails(
-      [
-        {
-          name: "South Depot Apron",
-          description: "Short cover and a shed block protect the south opener.",
-          focusId: "yard",
-        },
-        {
-          name: "North Wagon Bay",
-          description:
-            "A deeper backline behind the blue hall and flatbeds prevents instant exposure.",
-          focusId: "rail",
-        },
-      ],
+    ...mapDetails(
+      {
+        amber: spawnZone(
+          "amber",
+          "South Depot Apron",
+          "Amber Vanguard stage on the south apron with shed cover before the lane opens.",
+          "south-depot",
+        ),
+        cobalt: spawnZone(
+          "cobalt",
+          "North Wagon Bay",
+          "Cobalt Reach hold the north wagons with the blue hall and flatbeds shielding first contact.",
+          "north-wagon",
+        ),
+      },
       [
         {
           id: "container-lane",
@@ -715,6 +916,62 @@ export const mapCatalog: MapDefinition[] = [
           focusId: "shutter",
         },
       ],
+      {
+        bomb: {
+          label: "Relay Charge",
+          briefing:
+            "Amber Vanguard can wire the gantry console or the wagon switch while Cobalt Reach defend the depot clock.",
+          deliveryTeam: "amber",
+          holdTeam: "cobalt",
+          plantSeconds: 3.5,
+          defuseSeconds: 4.3,
+          sites: [
+            bombSite(
+              "gantry-console",
+              "Gantry Console",
+              "Central control point exposed under the overhead beam.",
+              "yard",
+              ["container-lane", "shutter-alley"],
+            ),
+            bombSite(
+              "wagon-switch",
+              "Wagon Switch",
+              "Rail-side signal panel protected by flatbed cover.",
+              "rail",
+              ["rail-flank", "container-lane"],
+            ),
+          ],
+        },
+        hostage: {
+          label: "Evac Escort",
+          briefing:
+            "Cobalt Reach must recover trapped freight staff and bring them clear through the north wagons before Amber Vanguard close the lanes.",
+          rescueTeam: "cobalt",
+          holdTeam: "amber",
+          hostageClusters: [
+            hostageCluster(
+              "shutter-staff",
+              "Shutter Staff",
+              "Rail clerks trapped along the west service alley.",
+              "shutter",
+              ["shutter-alley", "container-lane"],
+            ),
+            hostageCluster(
+              "gantry-riggers",
+              "Gantry Riggers",
+              "Cargo riggers pinned beneath the central crane line.",
+              "yard",
+              ["container-lane", "rail-flank"],
+            ),
+          ],
+          extractionZone: extractionZone(
+            "North Wagon Lane",
+            "Rail-side release point behind the flatbed wagons.",
+            "rail",
+            ["rail-flank", "container-lane"],
+          ),
+        },
+      },
     ),
   },
   {
@@ -755,19 +1012,21 @@ export const mapCatalog: MapDefinition[] = [
       text(206, 168, "Drain Flank", "preview__sub"),
     ]),
     scene: breakerVaultScene,
-    ...rosterDetails(
-      [
-        {
-          name: "South Bunker Apron",
-          description: "Immediate split into pit pressure or drain rotation.",
-          focusId: "pit",
-        },
-        {
-          name: "North Bunker Apron",
-          description: "Backline spawn buffered by the pit rim and blast hall entry.",
-          focusId: "pit",
-        },
-      ],
+    ...mapDetails(
+      {
+        amber: spawnZone(
+          "amber",
+          "South Bunker Apron",
+          "Amber Vanguard stage on the south apron with immediate access to pit pressure or the drain loop.",
+          "south-apron",
+        ),
+        cobalt: spawnZone(
+          "cobalt",
+          "North Bunker Apron",
+          "Cobalt Reach hold the north bunker with pit rim cover on the opening beat.",
+          "north-apron",
+        ),
+      },
       [
         {
           id: "pit-rim",
@@ -810,6 +1069,62 @@ export const mapCatalog: MapDefinition[] = [
           focusId: "drain-flank",
         },
       ],
+      {
+        bomb: {
+          label: "Relay Charge",
+          briefing:
+            "Amber Vanguard can arm either the turbine rim or the blast lock while Cobalt Reach work the bunker timer.",
+          deliveryTeam: "amber",
+          holdTeam: "cobalt",
+          plantSeconds: 3.5,
+          defuseSeconds: 4.4,
+          sites: [
+            bombSite(
+              "turbine-rim",
+              "Turbine Rim",
+              "Center platform overlooking the pit and both bunker lips.",
+              "pit",
+              ["pit-rim", "drain-route"],
+            ),
+            bombSite(
+              "blast-lock",
+              "Blast Lock",
+              "Heavy west-side control door beside the blast hall frames.",
+              "blast-door",
+              ["blast-door-hall", "pit-rim"],
+            ),
+          ],
+        },
+        hostage: {
+          label: "Evac Escort",
+          briefing:
+            "Cobalt Reach must recover bunker staff and route them out through the north apron before Amber Vanguard cut off the bridge.",
+          rescueTeam: "cobalt",
+          holdTeam: "amber",
+          hostageClusters: [
+            hostageCluster(
+              "drain-crew",
+              "Drain Crew",
+              "Maintenance team pinned near the east drainage route.",
+              "drain-flank",
+              ["drain-route", "pit-rim"],
+            ),
+            hostageCluster(
+              "blast-staff",
+              "Blast Staff",
+              "Bunker clerks trapped near the west blast hall.",
+              "blast-door",
+              ["blast-door-hall", "pit-rim"],
+            ),
+          ],
+          extractionZone: extractionZone(
+            "North Bunker Exit",
+            "Rear apron release zone shielded by the bunker lip.",
+            "pit",
+            ["pit-rim", "drain-route"],
+          ),
+        },
+      },
     ),
   },
   {
@@ -849,19 +1164,21 @@ export const mapCatalog: MapDefinition[] = [
       text(206, 168, "Pier Catwalk", "preview__sub"),
     ]),
     scene: quarrySlipScene,
-    ...rosterDetails(
-      [
-        {
-          name: "South Loading Pocket",
-          description: "Concrete berms stop the spawn from opening into a full crossfire.",
-          focusId: "slip-yard",
-        },
-        {
-          name: "North Cargo Slip",
-          description: "Cargo shed edges and container corners keep the north spawn safe.",
-          focusId: "pier-catwalk",
-        },
-      ],
+    ...mapDetails(
+      {
+        amber: spawnZone(
+          "amber",
+          "South Loading Pocket",
+          "Amber Vanguard stage behind the south berms with fast access into Slip Yard.",
+          "south-pocket",
+        ),
+        cobalt: spawnZone(
+          "cobalt",
+          "North Cargo Slip",
+          "Cobalt Reach hold the north cargo slip with shed corners and container cover.",
+          "north-slip",
+        ),
+      },
       [
         {
           id: "slip-yard",
@@ -903,6 +1220,62 @@ export const mapCatalog: MapDefinition[] = [
           focusId: "pier-catwalk",
         },
       ],
+      {
+        bomb: {
+          label: "Relay Charge",
+          briefing:
+            "Amber Vanguard can arm the slip cradle or the pier winch while Cobalt Reach control the harbor timer.",
+          deliveryTeam: "amber",
+          holdTeam: "cobalt",
+          plantSeconds: 3.4,
+          defuseSeconds: 4.1,
+          sites: [
+            bombSite(
+              "slip-cradle",
+              "Slip Cradle",
+              "Dockside relay in the center yard between the berms and containers.",
+              "slip-yard",
+              ["slip-yard", "office-run"],
+            ),
+            bombSite(
+              "pier-winch",
+              "Pier Winch",
+              "Winch controls tucked beside the raised pier catwalk.",
+              "pier-catwalk",
+              ["pier-catwalk", "slip-yard"],
+            ),
+          ],
+        },
+        hostage: {
+          label: "Evac Escort",
+          briefing:
+            "Cobalt Reach must clear dock workers and bring them through the north slip before Amber Vanguard lock the shoreline.",
+          rescueTeam: "cobalt",
+          holdTeam: "amber",
+          hostageClusters: [
+            hostageCluster(
+              "office-staff",
+              "Office Staff",
+              "Harbor office crew trapped in the left-side admin lane.",
+              "office-run",
+              ["office-run", "slip-yard"],
+            ),
+            hostageCluster(
+              "crane-team",
+              "Crane Team",
+              "Pier workers pinned under the mooring crane sightline.",
+              "slip-yard",
+              ["slip-yard", "pier-catwalk"],
+            ),
+          ],
+          extractionZone: extractionZone(
+            "North Cargo Release",
+            "Cargo slip release line tucked beside the north shed.",
+            "pier-catwalk",
+            ["pier-catwalk", "slip-yard"],
+          ),
+        },
+      },
     ),
   },
   {
@@ -942,21 +1315,21 @@ export const mapCatalog: MapDefinition[] = [
       text(206, 168, "Archive Bridge", "preview__sub"),
     ]),
     scene: ledgerAnnexScene,
-    ...rosterDetails(
-      [
-        {
-          name: "South Admin Entry",
-          description:
-            "The south opener gets two quick exits and shelf cover before the first duel.",
-          focusId: "archive-court",
-        },
-        {
-          name: "North Archive Wing",
-          description:
-            "A deeper backline with pillars and the archive block protecting the spawn.",
-          focusId: "bridge-flank",
-        },
-      ],
+    ...mapDetails(
+      {
+        amber: spawnZone(
+          "amber",
+          "South Admin Entry",
+          "Amber Vanguard stage behind south shelves with two quick exits into the court or records lane.",
+          "south-admin",
+        ),
+        cobalt: spawnZone(
+          "cobalt",
+          "North Archive Wing",
+          "Cobalt Reach hold the north archive wing behind pillars and the archive block.",
+          "north-wing",
+        ),
+      },
       [
         {
           id: "archive-court",
@@ -1000,6 +1373,62 @@ export const mapCatalog: MapDefinition[] = [
           focusId: "archive-court",
         },
       ],
+      {
+        bomb: {
+          label: "Relay Charge",
+          briefing:
+            "Amber Vanguard can arm either the archive court relay or the bridge lock while Cobalt Reach slow the lane timings.",
+          deliveryTeam: "amber",
+          holdTeam: "cobalt",
+          plantSeconds: 3.5,
+          defuseSeconds: 4.2,
+          sites: [
+            bombSite(
+              "archive-court-relay",
+              "Archive Court Relay",
+              "Central records terminal exposed between dividers and pillar cover.",
+              "archive-court",
+              ["archive-court", "records-run"],
+            ),
+            bombSite(
+              "bridge-lock",
+              "Bridge Lock",
+              "Upper lock panel beside the raised archive bridge.",
+              "bridge-flank",
+              ["archive-bridge", "archive-court"],
+            ),
+          ],
+        },
+        hostage: {
+          label: "Evac Escort",
+          briefing:
+            "Cobalt Reach must secure office staff and route them back through the north wing before Amber Vanguard shut the stacks.",
+          rescueTeam: "cobalt",
+          holdTeam: "amber",
+          hostageClusters: [
+            hostageCluster(
+              "records-clerks",
+              "Records Clerks",
+              "Clerks pinned in the left-side storage corridor.",
+              "records-run",
+              ["records-run", "archive-court"],
+            ),
+            hostageCluster(
+              "archive-custody",
+              "Archive Custody",
+              "Custodial pair trapped near the center stacks and court dividers.",
+              "archive-court",
+              ["archive-court", "archive-bridge"],
+            ),
+          ],
+          extractionZone: extractionZone(
+            "North Archive Wing",
+            "Backline release zone behind the archive block and pillars.",
+            "bridge-flank",
+            ["archive-bridge", "archive-court"],
+          ),
+        },
+      },
     ),
   },
 ];

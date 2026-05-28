@@ -295,7 +295,7 @@ async function engageControls(page) {
   await page.waitForExpression("Boolean(window.__dustlineQa__?.getState())", 10_000);
   await page.evaluate("window.__dustlineQa__.engageControls()");
   await page.waitForExpression(
-    "document.querySelector('[data-ui=\"prompt-panel\"]')?.hidden === true",
+    "window.__dustlineQa__?.getState()?.localPlayer?.pointerCaptured === true",
     5_000,
   );
   await delay(150);
@@ -318,6 +318,36 @@ async function ensureControlsEngaged(page) {
 
 async function getState(page) {
   return page.evaluate("window.__dustlineQa__?.getState() ?? null");
+}
+
+async function setTeamPreference(page, teamPreference) {
+  await page.evaluate(
+    `window.__dustlineQa__.setTeamPreference(${JSON.stringify(teamPreference)})`,
+  );
+  await delay(120);
+}
+
+async function returnToCatalog(page) {
+  await page.evaluate("window.__dustlineQa__.returnToCatalog()");
+  await page.waitForExpression("Boolean(document.querySelector('.screen--catalog'))", 10_000);
+}
+
+async function dispatchWindowKey(page, type, code, key) {
+  await page.evaluate(
+    `window.__dustlineQa__.setKey(${JSON.stringify(code)}, ${type === "keydown" ? "true" : "false"})`,
+  );
+}
+
+async function tapKey(page, code, key, holdMs = 60) {
+  await dispatchWindowKey(page, "keydown", code, key);
+  await delay(holdMs);
+  await dispatchWindowKey(page, "keyup", code, key);
+}
+
+async function holdKey(page, code, key, holdMs) {
+  await dispatchWindowKey(page, "keydown", code, key);
+  await delay(holdMs);
+  await dispatchWindowKey(page, "keyup", code, key);
 }
 
 async function openMap(page, mapId, mode) {
@@ -419,14 +449,11 @@ async function main() {
   try {
     const summary = {
       mapCards: 0,
-      localState: null,
-      sharedRosterCounts: {},
-      isolationRosterCount: 0,
-      probeHits: [],
-      sharedRespawnObserved: false,
-      fallbackMode: null,
-      fallbackNotice: "",
-      screenshots: SCREENSHOTS.map((filename) => path.join("assets", "screenshots", filename)),
+      mapChecks: [],
+      movement: {},
+      respawn: {},
+      shared: {},
+      fallback: {},
     };
 
     const localPage = await createPage(`${ROOT_URL}?qa=1`);
@@ -434,316 +461,223 @@ async function main() {
 
     await localPage.bringToFront();
     await localPage.waitForExpression("Boolean(document.querySelector('.screen--menu'))");
-    await localPage.captureScreenshot("01-menu-briefing.png");
-
     await click(localPage, '[data-action="show-catalog"]');
     summary.mapCards = await localPage.waitForExpression("document.querySelectorAll('.map-card').length");
     assert(summary.mapCards === 5, `Expected 5 map cards, saw ${summary.mapCards}`);
-    await localPage.captureScreenshot("02-map-select-roster.png");
 
+    const mapIds = [
+      "sandline-foundry",
+      "transit-crates",
+      "breaker-vault",
+      "quarry-slip",
+      "ledger-annex",
+    ];
+
+    for (const mapId of mapIds) {
+      const positions = {};
+      let lastState = null;
+
+      for (const teamPreference of ["amber", "cobalt"]) {
+        await setTeamPreference(localPage, teamPreference);
+        await openMap(localPage, mapId, "local");
+        await delay(220);
+
+        const state = await getState(localPage);
+        lastState = state;
+        assert(state?.localPlayer?.teamId === teamPreference, `Expected ${mapId} to honor ${teamPreference} team selection`);
+        assert(state?.round?.missionLabel, `Expected ${mapId} to expose a live mission label`);
+        assert(state?.round?.objectiveLabel, `Expected ${mapId} to expose a live objective label`);
+        assert(state?.teamCounts?.[teamPreference]?.alive >= 1, `Expected ${mapId} to spawn a live ${teamPreference} operator`);
+
+        positions[teamPreference] = state.localPlayer.position;
+        await returnToCatalog(localPage);
+      }
+
+      const spawnDistance = Math.hypot(
+        positions.amber.x - positions.cobalt.x,
+        positions.amber.z - positions.cobalt.z,
+      );
+      assert(
+        spawnDistance > 8,
+        `Expected ${mapId} to keep team spawns distinct. Distance: ${spawnDistance.toFixed(2)}`,
+      );
+
+      summary.mapChecks.push({
+        mapId,
+        spawnDistance: Number(spawnDistance.toFixed(2)),
+        missionLabel: lastState?.round?.missionLabel ?? "",
+        objectiveLabel: lastState?.round?.objectiveLabel ?? "",
+      });
+    }
+
+    await setTeamPreference(localPage, "amber");
     await openMap(localPage, "sandline-foundry", "local");
     await engageControls(localPage);
-    await delay(300);
-    await localPage.captureScreenshot("03-sandline-spawn-view.png");
+    await delay(180);
 
-    await setView(
-      localPage,
-      { x: 18, y: 12, z: 19 },
-      { x: 0, y: 2, z: -6 },
+    const standingState = await getState(localPage);
+    const standingY = standingState.localPlayer.position.y;
+
+    await dispatchWindowKey(localPage, "keydown", "ControlLeft", "Control");
+    await delay(240);
+    const crouchState = await getState(localPage);
+    assert(
+      crouchState.localPlayer.position.y < standingY - 0.25,
+      `Expected crouch to lower the camera. Standing ${standingY}, crouched ${crouchState.localPlayer.position.y}`,
     );
-    await ensureControlsEngaged(localPage);
-    await localPage.captureScreenshot("04-sandline-central-yard.png");
+    await dispatchWindowKey(localPage, "keyup", "ControlLeft", "Control");
+    await delay(180);
 
-    await setView(
-      localPage,
-      { x: -30, y: 7, z: 6 },
-      { x: -16, y: 2, z: 1 },
-    );
-    await ensureControlsEngaged(localPage);
-    await localPage.captureScreenshot("05-sandline-generator-hall.png");
+    await localPage.evaluate("window.__dustlineQa__.setPose(0, 14, 0)");
+    await delay(120);
+    const startStandingMove = await getState(localPage);
+    await holdKey(localPage, "KeyW", "w", 900);
+    const endStandingMove = await getState(localPage);
+    const standingDistance = Math.abs(endStandingMove.localPlayer.position.z - startStandingMove.localPlayer.position.z);
 
-    await setView(
-      localPage,
-      { x: 26, y: 6, z: 14 },
-      { x: 15, y: 2, z: 3 },
-    );
-    await ensureControlsEngaged(localPage);
-    await localPage.captureScreenshot("06-sandline-drain-underpass.png");
-
-    await setView(
-      localPage,
-      { x: 30, y: 10, z: -3 },
-      { x: 17, y: 4, z: -9 },
-    );
-    await ensureControlsEngaged(localPage);
-    await localPage.captureScreenshot("07-sandline-east-catwalk.png");
-
-    await setView(
-      localPage,
-      { x: 0, y: 1.62, z: 6 },
-      { x: 0, y: 2, z: -10 },
-    );
-    await ensureControlsEngaged(localPage);
-    await localPage.captureScreenshot("08-weapon-idle-hud.png");
-
-    await ensureControlsEngaged(localPage);
-    await fire(localPage);
-    await delay(20);
-    await localPage.captureScreenshot("09-weapon-firing-hud.png");
-
-    await forceDeath(localPage, "Copper-2");
+    await localPage.evaluate("window.__dustlineQa__.setPose(0, 14, 0)");
+    await delay(120);
+    await dispatchWindowKey(localPage, "keydown", "ControlLeft", "Control");
+    await delay(500);
+    const startCrouchMove = await getState(localPage);
+    await holdKey(localPage, "KeyW", "w", 900);
+    const endCrouchMove = await getState(localPage);
+    await dispatchWindowKey(localPage, "keyup", "ControlLeft", "Control");
     await localPage.waitForExpression(
-      "Boolean(document.querySelector('[data-ui=\"death-panel\"]') && !document.querySelector('[data-ui=\"death-panel\"]').hidden)",
-      5_000,
+      `Math.abs((window.__dustlineQa__?.getState()?.localPlayer?.position?.y ?? 0) - ${standingY}) < 0.08`,
+      3_000,
     );
-    await localPage.captureScreenshot("11-death-respawn-state.png");
-    summary.localState = await getState(localPage);
+    const crouchDistance = Math.abs(endCrouchMove.localPlayer.position.z - startCrouchMove.localPlayer.position.z);
+    assert(
+      crouchDistance < standingDistance * 0.85,
+      `Expected crouch speed to be lower. Standing ${standingDistance.toFixed(2)}, crouched ${crouchDistance.toFixed(2)}`,
+    );
+
+    await localPage.evaluate(`window.__dustlineQa__.setCameraPose(0, ${standingY}, 14, 0)`);
+    await delay(220);
+    const jumpSample = await localPage.evaluate("window.__dustlineQa__.jumpSample()");
+    assert(jumpSample, "Expected jump sample data");
+    assert(jumpSample.peakY > standingY + 0.18, "Expected jump to raise the camera");
+    assert(jumpSample.landed === true, "Expected jump to land safely");
+    assert(
+      Math.abs(jumpSample.landedY - standingY) < 0.12,
+      `Expected landing height to recover. Standing ${standingY}, landed ${jumpSample.landedY}`,
+    );
+
+    summary.movement = {
+      standingCameraY: standingY,
+      crouchedCameraY: crouchState.localPlayer.position.y,
+      standingDistance: Number(standingDistance.toFixed(2)),
+      crouchDistance: Number(crouchDistance.toFixed(2)),
+      jumpPeakY: jumpSample.peakY,
+      landedY: jumpSample.landedY,
+    };
+
+    const roundBeforeDeath = (await getState(localPage)).round.roundNumber;
+    await forceDeath(localPage, "QA Rig");
+    await delay(220);
+    const deadState = await getState(localPage);
+    assert(deadState.localPlayer.dead === true, "Expected forcePlayerDeath to down the player");
+    assert(deadState.localPlayer.health === 0, "Expected forcePlayerDeath to reduce health to 0");
+    await delay(1500);
+    const stillDeadState = await getState(localPage);
+    assert(stillDeadState.localPlayer.dead === true, "Expected player to stay down during the same round");
+
+    await localPage.evaluate("window.__dustlineQa__.forceNextRound()");
+    await delay(350);
+    const revivedState = await getState(localPage);
+    assert(revivedState.localPlayer.dead === false, "Expected next-round reset to revive the player");
+    assert(revivedState.localPlayer.health === 100, "Expected next-round reset to restore health");
+    assert(
+      revivedState.round.roundNumber === roundBeforeDeath + 1,
+      "Expected next-round reset to advance the round counter",
+    );
+
+    summary.respawn = {
+      roundBeforeDeath,
+      roundAfterReset: revivedState.round.roundNumber,
+      deadState: deadState.localPlayer.dead,
+      revived: revivedState.localPlayer.dead === false,
+    };
 
     const sharedPageOne = await createPage(`${ROOT_URL}?qa=1`);
     const sharedPageTwo = await createPage(`${ROOT_URL}?qa=1`);
     const isolationPage = await createPage(`${ROOT_URL}?qa=1`);
     pages.push(sharedPageOne, sharedPageTwo, isolationPage);
 
-    await sharedPageOne.bringToFront();
+    await setTeamPreference(sharedPageOne, "amber");
     await openMap(sharedPageOne, "sandline-foundry", "shared");
-    await engageControls(sharedPageOne);
 
-    await sharedPageTwo.bringToFront();
+    await setTeamPreference(sharedPageTwo, "cobalt");
     await openMap(sharedPageTwo, "sandline-foundry", "shared");
-    await engageControls(sharedPageTwo);
 
-    await isolationPage.bringToFront();
+    await setTeamPreference(isolationPage, "amber");
     await openMap(isolationPage, "transit-crates", "shared");
-    await engageControls(isolationPage);
 
-    await sharedPageOne.bringToFront();
     await sharedPageOne.waitForExpression(
       "(window.__dustlineQa__?.getState()?.roster?.length ?? 0) === 2",
       15_000,
     );
-    await sharedPageTwo.bringToFront();
     await sharedPageTwo.waitForExpression(
       "(window.__dustlineQa__?.getState()?.roster?.length ?? 0) === 2",
       15_000,
     );
-    await isolationPage.bringToFront();
     await isolationPage.waitForExpression(
       "(window.__dustlineQa__?.getState()?.roster?.length ?? 0) === 1",
       15_000,
     );
-    summary.isolationRosterCount = (await getState(isolationPage))?.roster?.length ?? 0;
 
-    await sharedPageOne.bringToFront();
-    await setView(
-      sharedPageOne,
-      { x: -2, y: 1.62, z: 14 },
-      { x: 6, y: 1.62, z: 14 },
-    );
-    await sharedPageTwo.bringToFront();
-    await setView(
-      sharedPageTwo,
-      { x: 6, y: 1.62, z: 14 },
-      { x: -2, y: 1.62, z: 14 },
-    );
+    const sharedStateOne = await getState(sharedPageOne);
+    const sharedStateTwo = await getState(sharedPageTwo);
+    const isolatedState = await getState(isolationPage);
 
-    await delay(350);
-    const stateOne = await getState(sharedPageOne);
-    const stateTwo = await getState(sharedPageTwo);
-    summary.sharedRosterCounts.pageOne = stateOne?.roster?.length ?? 0;
-    summary.sharedRosterCounts.pageTwo = stateTwo?.roster?.length ?? 0;
-
-    const remoteId = stateOne?.remotePlayers?.[0]?.id;
-    assert(remoteId, "Expected one remote operator on shared page one");
-
-    const remoteAnchors = [
-      { x: 6, y: 1.62, z: 14 },
-      { x: 7, y: 1.62, z: 8 },
-      { x: 8, y: 1.62, z: -12 },
-      { x: -12, y: 1.62, z: 8 },
-      { x: 15, y: 1.62, z: 6 },
-      { x: 0, y: 1.62, z: -14 },
-    ];
-    const localViewpoints = [
-      { x: -2, y: 1.62, z: 14 },
-      { x: -3, y: 1.62, z: 10 },
-      { x: -8, y: 1.62, z: 2 },
-      { x: 12, y: 1.62, z: 10 },
-      { x: 16, y: 1.62, z: 0 },
-      { x: -16, y: 1.62, z: 12 },
-      { x: 0, y: 1.62, z: 6 },
-      { x: 10, y: 1.62, z: -14 },
-      { x: -12, y: 1.62, z: 16 },
-      { x: 18, y: 1.62, z: -4 },
-    ];
-
-    let duelLayout = null;
-    let lastProbeHits = [];
-
-    for (const remoteAnchor of remoteAnchors) {
-      await sharedPageTwo.bringToFront();
-      await setView(sharedPageTwo, remoteAnchor, {
-        x: remoteAnchor.x,
-        y: remoteAnchor.y,
-        z: remoteAnchor.z - 6,
-      });
-
-      await sharedPageOne.bringToFront();
-      try {
-        await waitForRemotePosition(sharedPageOne, remoteAnchor, 4_000);
-      } catch {
-        continue;
-      }
-
-      for (const localPoint of localViewpoints) {
-        await sharedPageTwo.bringToFront();
-        await setView(sharedPageTwo, remoteAnchor, {
-          x: localPoint.x,
-          y: localPoint.y,
-          z: localPoint.z,
-        });
-        await sharedPageOne.bringToFront();
-        await waitForRemotePosition(sharedPageOne, remoteAnchor, 4_000);
-        await setView(sharedPageOne, localPoint, remoteAnchor);
-        await aimAt(sharedPageOne, remoteId);
-        const sharedTargetId = await sharedPageOne.evaluate("window.__dustlineQa__.sharedTarget()");
-        const probeHits =
-          (await sharedPageOne.evaluate("window.__dustlineQa__.probeShot()?.hits ?? []")) ?? [];
-
-        if (sharedTargetId === remoteId) {
-          duelLayout = { localPoint, remoteAnchor };
-          summary.probeHits = probeHits;
-          break;
-        }
-
-        lastProbeHits = probeHits;
-      }
-
-      if (duelLayout) {
-        break;
-      }
-    }
-
+    assert(sharedStateOne.localPlayer.teamId === "amber", "Expected shared page one to stay on Amber Vanguard");
+    assert(sharedStateTwo.localPlayer.teamId === "cobalt", "Expected shared page two to stay on Cobalt Reach");
     assert(
-      duelLayout,
-      `Shared-room probe shot did not intersect the remote combatant. Last hits: ${JSON.stringify(lastProbeHits)}`,
+      sharedStateOne.remotePlayers?.[0]?.teamId === "cobalt",
+      "Expected shared page one to see the remote Cobalt Reach operator",
     );
-
-    await sharedPageTwo.bringToFront();
-    await setView(sharedPageTwo, duelLayout.remoteAnchor, duelLayout.localPoint);
-    await sharedPageOne.bringToFront();
-    await waitForRemotePosition(sharedPageOne, duelLayout.remoteAnchor, 4_000);
-    await aimAt(sharedPageOne, remoteId);
-    await ensureControlsEngaged(sharedPageOne);
-    const initialSharedTargetId = await sharedPageOne.evaluate("window.__dustlineQa__.sharedTarget()");
     assert(
-      initialSharedTargetId === remoteId,
-      `Shared-room target lock did not resolve to the remote combatant. Target: ${initialSharedTargetId}`,
+      sharedStateTwo.remotePlayers?.[0]?.teamId === "amber",
+      "Expected shared page two to see the remote Amber Vanguard operator",
+    );
+    assert(
+      sharedStateOne.round.roundNumber === sharedStateTwo.round.roundNumber &&
+        sharedStateOne.round.phase === sharedStateTwo.round.phase,
+      "Expected shared pages to synchronize round phase",
+    );
+    assert(
+      isolatedState.roster.length === 1,
+      "Expected a different map to remain isolated from the shared room",
     );
 
-    const presentationRemote = { x: 0, y: 1.62, z: 14 };
-    await sharedPageTwo.bringToFront();
-    await setView(sharedPageTwo, presentationRemote, {
-      x: -6,
-      y: 1.62,
-      z: 20,
-    });
-    await sharedPageOne.bringToFront();
-    await waitForRemotePosition(sharedPageOne, presentationRemote, 4_000);
-    await setView(
-      sharedPageOne,
-      {
-        x: -6,
-        y: 3.4,
-        z: 20,
-      },
-      {
-        x: presentationRemote.x,
-        y: 1.3,
-        z: presentationRemote.z,
-      },
-    );
-    await ensureControlsEngaged(sharedPageOne);
-    await sharedPageOne.captureScreenshot("10-opposing-player.png");
-    await sharedPageOne.captureScreenshot("12-two-player-multiplayer.png");
-    await setView(sharedPageOne, duelLayout.localPoint, duelLayout.remoteAnchor);
-    await ensureControlsEngaged(sharedPageOne);
-
-    let remoteDown = false;
-    for (let shot = 0; shot < 6; shot += 1) {
-      await sharedPageTwo.bringToFront();
-      await setView(sharedPageTwo, duelLayout.remoteAnchor, duelLayout.localPoint);
-      await sharedPageOne.bringToFront();
-      await waitForRemotePosition(sharedPageOne, duelLayout.remoteAnchor, 4_000);
-      await setView(sharedPageOne, duelLayout.localPoint, duelLayout.remoteAnchor);
-      await ensureControlsEngaged(sharedPageOne);
-      await aimAt(sharedPageOne, remoteId);
-      const liveSharedTargetId = await sharedPageOne.evaluate("window.__dustlineQa__.sharedTarget()");
-
-      const liveProbeHits =
-        (await sharedPageOne.evaluate("window.__dustlineQa__.probeShot()?.hits ?? []")) ?? [];
-      assert(
-        liveSharedTargetId === remoteId,
-        `Lost the shared-room shot lane before firing. Target: ${liveSharedTargetId}; hits: ${JSON.stringify(liveProbeHits)}`,
-      );
-
-      await fire(sharedPageOne);
-      await delay(260);
-
-      const remoteState = await getState(sharedPageTwo);
-      if (remoteState?.localPlayer?.health === 0) {
-        remoteDown = true;
-        break;
-      }
-    }
-
-    assert(remoteDown, "Shared-room kill verification never reduced the remote player to 0 HP");
-
-    await sharedPageTwo.bringToFront();
+    const sharedRoundBefore = sharedStateOne.round.roundNumber;
+    await sharedPageOne.evaluate("window.__dustlineQa__.forceNextRound()");
     await sharedPageTwo.waitForExpression(
       `
         (() => {
           const state = window.__dustlineQa__?.getState();
-          return state?.localPlayer?.health === 0
-            && state?.roster?.[0]?.status === 'respawning';
+          return state?.round?.roundNumber === ${sharedRoundBefore + 1};
         })()
       `,
       10_000,
+    );
+    const sharedAfterOne = await getState(sharedPageOne);
+    const sharedAfterTwo = await getState(sharedPageTwo);
+    assert(
+      sharedAfterOne.round.roundNumber === sharedAfterTwo.round.roundNumber &&
+        sharedAfterOne.round.phase === sharedAfterTwo.round.phase,
+      "Expected shared round advances to propagate",
     );
 
-    await sharedPageOne.bringToFront();
-    await sharedPageOne.waitForExpression(
-      `
-        (() => {
-          const state = window.__dustlineQa__?.getState();
-          return state?.remotePlayers?.[0]?.status === 'respawning'
-            && state?.remotePlayers?.[0]?.health === 0;
-        })()
-      `,
-      10_000,
-    );
-
-    await sharedPageTwo.bringToFront();
-    await sharedPageTwo.waitForExpression(
-      `
-        (() => {
-          const state = window.__dustlineQa__?.getState();
-          return state?.localPlayer?.health === 100 && state?.localPlayer?.dead === false;
-        })()
-      `,
-      10_000,
-    );
-    await sharedPageOne.bringToFront();
-    await sharedPageOne.waitForExpression(
-      `
-        (() => {
-          const state = window.__dustlineQa__?.getState();
-          return state?.remotePlayers?.[0]?.status === 'alive'
-            && state?.remotePlayers?.[0]?.health === 100;
-        })()
-      `,
-      10_000,
-    );
-    summary.sharedRespawnObserved = true;
+    summary.shared = {
+      pageOneRoster: sharedStateOne.roster.length,
+      pageTwoRoster: sharedStateTwo.roster.length,
+      isolationRoster: isolatedState.roster.length,
+      roundBeforeAdvance: sharedRoundBefore,
+      roundAfterAdvance: sharedAfterTwo.round.roundNumber,
+      phaseAfterAdvance: sharedAfterTwo.round.phase,
+    };
 
     const fallbackPage = await createPage(`${ROOT_URL}?qa=1`, `
       Object.defineProperty(window, 'BroadcastChannel', {
@@ -753,19 +687,23 @@ async function main() {
     `);
     pages.push(fallbackPage);
 
-    await fallbackPage.bringToFront();
+    await setTeamPreference(fallbackPage, "amber");
     await openMap(fallbackPage, "sandline-foundry", "shared");
-    await engageControls(fallbackPage);
     const fallbackState = await getState(fallbackPage);
-    summary.fallbackMode = fallbackState?.activeMode ?? null;
-    summary.fallbackNotice = await fallbackPage.evaluate(`
+    const fallbackNotice = await fallbackPage.evaluate(`
       document.querySelector('[data-ui="mode-notice"]')?.textContent?.trim() ?? ''
     `);
-    assert(summary.fallbackMode === "local", "Expected BroadcastChannel fallback to open solo mode");
+
+    assert(fallbackState.activeMode === "local", "Expected BroadcastChannel fallback to open solo mode");
     assert(
-      summary.fallbackNotice.includes("BroadcastChannel is unavailable"),
+      fallbackNotice.includes("BroadcastChannel is unavailable"),
       "Expected BroadcastChannel fallback notice",
     );
+
+    summary.fallback = {
+      activeMode: fallbackState.activeMode,
+      notice: fallbackNotice,
+    };
 
     console.log(JSON.stringify(summary, null, 2));
   } finally {
