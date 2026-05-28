@@ -48,6 +48,14 @@ export interface ObjectiveStateSnapshot {
   detail?: string;
 }
 
+export interface WeaponStateSnapshot {
+  ammoInClip: number;
+  reserveAmmo: number;
+  reloadSequence: number;
+  reloadEndsAt: number;
+  spreadIndex: number;
+}
+
 interface EnvelopeBase<Type extends string, Payload> {
   protocol: typeof ROOM_PROTOCOL;
   version: typeof ROOM_PROTOCOL_VERSION;
@@ -122,6 +130,7 @@ export type HostSnapshotMessage = EnvelopeBase<
 export type ShotClaimMessage = EnvelopeBase<
   "shot-claim",
   {
+    claimId: number;
     shooterId: string;
     tick: number;
     origin: NetworkVector3;
@@ -138,12 +147,15 @@ export type ShotClaimMessage = EnvelopeBase<
 export type ShotResultMessage = EnvelopeBase<
   "shot-result",
   {
+    claimId: number;
     shooterId: string;
     targetId?: string;
     decision: ShotResultDecision;
     damage: number;
     reason: string;
-    authoritativeHealth?: number;
+    shooterWeapon: WeaponStateSnapshot;
+    targetHealth?: number;
+    targetStatus?: CombatantStatus;
   }
 >;
 
@@ -189,6 +201,8 @@ export type RoomMessage =
 export type RoomMessageType = RoomMessage["type"];
 export type RoomInputTick = InputTickMessage["payload"];
 export type HostRoomSnapshot = HostSnapshotMessage["payload"];
+export type RoomShotClaim = ShotClaimMessage["payload"];
+export type RoomShotResult = ShotResultMessage["payload"];
 
 export function encodeRoomMessage(message: RoomMessage): string {
   return JSON.stringify(message);
@@ -330,6 +344,7 @@ function isShotClaimPayload(
   payload: Record<string, unknown>,
 ): payload is ShotClaimMessage["payload"] {
   return (
+    isSafeNumber(payload.claimId) &&
     typeof payload.shooterId === "string" &&
     isSafeNumber(payload.tick) &&
     isVector3(payload.origin) &&
@@ -347,13 +362,15 @@ function isShotResultPayload(
   payload: Record<string, unknown>,
 ): payload is ShotResultMessage["payload"] {
   return (
+    isSafeNumber(payload.claimId) &&
     typeof payload.shooterId === "string" &&
     (typeof payload.targetId === "undefined" || typeof payload.targetId === "string") &&
     isShotResultDecision(payload.decision) &&
     isSafeNumber(payload.damage) &&
     typeof payload.reason === "string" &&
-    (typeof payload.authoritativeHealth === "undefined" ||
-      isSafeNumber(payload.authoritativeHealth))
+    isWeaponStateSnapshot(payload.shooterWeapon) &&
+    (typeof payload.targetHealth === "undefined" || isSafeNumber(payload.targetHealth)) &&
+    (typeof payload.targetStatus === "undefined" || isCombatantStatus(payload.targetStatus))
   );
 }
 
@@ -418,6 +435,17 @@ function isObjectiveStateSnapshot(value: unknown): value is ObjectiveStateSnapsh
     typeof value.phase === "string" &&
     (typeof value.value === "undefined" || isSafeNumber(value.value)) &&
     (typeof value.detail === "undefined" || typeof value.detail === "string")
+  );
+}
+
+function isWeaponStateSnapshot(value: unknown): value is WeaponStateSnapshot {
+  return (
+    isRecord(value) &&
+    isSafeNumber(value.ammoInClip) &&
+    isSafeNumber(value.reserveAmmo) &&
+    isSafeNumber(value.reloadSequence) &&
+    isSafeNumber(value.reloadEndsAt) &&
+    isSafeNumber(value.spreadIndex)
   );
 }
 

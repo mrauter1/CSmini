@@ -14,8 +14,11 @@ import {
   type ParticipantRecord,
   type RoomInputEvent,
   type RoomIdentity,
+  type RoomShotClaimEvent,
+  type RoomShotResultEvent,
   type TeamAssignment,
 } from "../net/matchRoomConnection";
+import type { RoomShotClaim, WeaponStateSnapshot } from "../net/protocol";
 import {
   createCombatantAvatar,
   createWeaponRig,
@@ -30,6 +33,18 @@ import {
   resolveHorizontalMovement,
   type CollisionWorld,
 } from "./collision";
+import {
+  type CombatantRewindState,
+  createInitialWeaponState,
+  noteInputSequence,
+  SHARED_WEAPON_ID,
+  type SharedWeaponState,
+  ShotRewindBuffer,
+  snapshotWeaponState,
+  startWeaponReload,
+  syncWeaponState,
+  validateShotClaim,
+} from "./sharedShotValidation";
 
 const PLAYER_EYE_HEIGHT = 1.62;
 const PLAYER_BODY_HEIGHT = 1.72;
@@ -51,6 +66,15 @@ const HIT_INDICATOR_DURATION = 0.16;
 const DAMAGE_FLASH_DURATION = 0.2;
 const MUZZLE_FLASH_DURATION = 0.06;
 const REMOTE_LERP_SPEED = 12;
+const FIRE_INTERVAL_MS = FIRE_INTERVAL * 1000;
+const RELOAD_DURATION_MS = RELOAD_DURATION * 1000;
+const SHOT_MAX_LATENCY_MS = 700;
+const SHOT_MAX_FUTURE_SKEW_MS = 180;
+const SHOT_MAX_INPUT_SEQUENCE_LAG = 18;
+const SHOT_MAX_ORIGIN_DELTA = 1.75;
+const SHOT_MAX_AIM_ANGLE_RAD = Math.PI * 0.18;
+const SHOT_MAX_RANGE = 72;
+const SHOT_REWIND_DRIFT_MS = 180;
 
 const ENEMY_NAMES = ["Copper-2", "Vale-3", "Rook-4"];
 const ENEMY_ACCENTS = ["#6F8FAA", "#819B58", "#B86E4E"];
@@ -143,6 +167,24 @@ interface DebugInputState {
   sprint: boolean;
 }
 
+interface PendingShotClaim {
+  claimId: number;
+  submittedAt: number;
+  targetId?: string;
+}
+
+interface DebugShotClaimOverride {
+  tick?: number;
+  ammoInClip?: number;
+  reserveAmmo?: number;
+  reloadSequence?: number;
+  spreadIndex?: number;
+  inputSequence?: number;
+  weaponId?: string;
+  origin?: { x: number; y: number; z: number };
+  direction?: { x: number; y: number; z: number };
+}
+
 export class LocalMatch {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
@@ -171,6 +213,10 @@ export class LocalMatch {
   private readonly lookEuler = new THREE.Euler(0, 0, 0, "YXZ");
   private readonly playerIdentity: RoomIdentity;
   private readonly roomId: string;
+  private readonly rewindBuffer = new ShotRewindBuffer();
+  private readonly remoteWeaponStates = new Map<string, SharedWeaponState>();
+  private readonly pendingShotClaims = new Map<number, PendingShotClaim>();
+  private readonly recentShotResults: RoomShotResultEvent[] = [];
 
   private sharedRoom?: MatchRoomConnection;
   private activeMode: MatchMode = "local";
@@ -199,10 +245,15 @@ export class LocalMatch {
   private lastInputSentAt = 0;
   private nextInputSequence = 1;
   private lastInputSignature = "";
+  private reloadSequence = 0;
+  private spreadIndex = 0;
+  private nextShotClaimId = 1;
   private nextHostSnapshotId = 1;
   private lastHostSnapshotId = 0;
   private authoritativePosition?: THREE.Vector3;
   private authoritativeRespawnAtMs = 0;
+  private lastShotClaim?: RoomShotClaim;
+  private lastShotResult?: RoomShotResultEvent;
 
   constructor(
     private readonly host: HTMLElement,
@@ -252,6 +303,9 @@ export class LocalMatch {
     this.handleResize();
     this.attachEvents();
     this.animate();
+    if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.recordSharedCombatFrame(Date.now());
+    }
     this.emitSnapshot();
   }
 
@@ -310,6 +364,10 @@ export class LocalMatch {
         name: this.playerIdentity.name,
         health: this.playerHealth,
         dead: this.playerDead,
+        ammoInClip: this.ammoInClip,
+        reserveAmmo: this.reserveAmmo,
+        reloadSequence: this.reloadSequence,
+        spreadIndex: this.spreadIndex,
         position: {
           x: Number(this.camera.position.x.toFixed(2)),
           y: Number(this.camera.position.y.toFixed(2)),
@@ -330,6 +388,21 @@ export class LocalMatch {
           z: Number(actor.displayPosition.z.toFixed(2)),
         },
       })),
+      sharedCombat:
+        this.activeMode !== "shared"
+          ? null
+          : {
+              pendingShotClaimIds: [...this.pendingShotClaims.keys()],
+              lastShotClaim: this.lastShotClaim ?? null,
+              lastShotResult: this.lastShotResult ?? null,
+              recentShotResults: this.recentShotResults,
+              remoteWeaponStates: [...this.remoteWeaponStates.entries()].map(([id, state]) => ({
+                id,
+                ...snapshotWeaponState(state),
+                nextReadyAt: state.nextReadyAt,
+                lastInputSequence: state.lastInputSequence,
+              })),
+            },
     };
   }
 
@@ -392,8 +465,108 @@ export class LocalMatch {
     };
   }
 
+  debugStageBlockedSharedShot(slot: 0 | 1):
+    | {
+        self: { x: number; y: number; z: number };
+        target: { x: number; y: number; z: number };
+      }
+    | null {
+    const pair = this.findDebugPair(false);
+    if (!pair) {
+      return null;
+    }
+
+    const self = pair[slot];
+    const target = pair[slot === 0 ? 1 : 0];
+    this.debugSetView(self.x, PLAYER_EYE_HEIGHT, self.z, target.x, PLAYER_EYE_HEIGHT, target.z);
+
+    return {
+      self: {
+        x: Number(self.x.toFixed(2)),
+        y: PLAYER_EYE_HEIGHT,
+        z: Number(self.z.toFixed(2)),
+      },
+      target: {
+        x: Number(target.x.toFixed(2)),
+        y: PLAYER_EYE_HEIGHT,
+        z: Number(target.z.toFixed(2)),
+      },
+    };
+  }
+
+  debugStageAuthoritativeSharedPair(
+    kind: "clear" | "blocked",
+  ):
+    | {
+        host: { x: number; y: number; z: number };
+        guest: { x: number; y: number; z: number };
+        guestId: string;
+      }
+    | null {
+    if (this.activeMode !== "shared" || this.sharedRole !== "host") {
+      return null;
+    }
+
+    const guestActor = [...this.remoteActors.values()].sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )[0];
+    if (!guestActor) {
+      return null;
+    }
+
+    const pair = this.findDebugPair(kind === "clear");
+    if (!pair) {
+      return null;
+    }
+
+    const hostPosition = pair[0];
+    const guestPosition = pair[1];
+    this.camera.position.set(hostPosition.x, PLAYER_EYE_HEIGHT, hostPosition.z);
+    this.camera.lookAt(guestPosition.x, PLAYER_EYE_HEIGHT, guestPosition.z);
+    guestActor.targetPosition.copy(guestPosition);
+    guestActor.displayPosition.copy(guestPosition);
+    guestActor.forward.copy(hostPosition.clone().sub(guestPosition).setY(0).normalize());
+    guestActor.lastSeenAt = Date.now();
+    this.recordSharedCombatFrame(Date.now());
+    this.publishHostSnapshot(true);
+    this.emitSnapshot();
+
+    return {
+      host: {
+        x: Number(hostPosition.x.toFixed(2)),
+        y: PLAYER_EYE_HEIGHT,
+        z: Number(hostPosition.z.toFixed(2)),
+      },
+      guest: {
+        x: Number(guestPosition.x.toFixed(2)),
+        y: PLAYER_EYE_HEIGHT,
+        z: Number(guestPosition.z.toFixed(2)),
+      },
+      guestId: guestActor.id,
+    };
+  }
+
   debugFire(): void {
     this.fire(performance.now() / 1000);
+    this.emitSnapshot();
+  }
+
+  debugSubmitShotClaim(overrides: DebugShotClaimOverride = {}): boolean {
+    if (this.activeMode !== "shared" || this.sharedRole !== "guest" || !this.sharedRoom) {
+      return false;
+    }
+
+    const claim = this.buildShotClaim(Date.now(), overrides);
+    if (!claim) {
+      return false;
+    }
+
+    this.lastShotClaim = claim;
+    return this.sharedRoom.sendShotClaim(claim);
+  }
+
+  debugStartReload(): void {
+    this.tryReload();
     this.emitSnapshot();
   }
 
@@ -524,6 +697,16 @@ export class LocalMatch {
       onInput: (event) => {
         if (this.sharedRole === "host") {
           this.handleSharedRoomInput(event);
+        }
+      },
+      onShotClaim: (event) => {
+        if (this.sharedRole === "host") {
+          this.handleSharedShotClaim(event);
+        }
+      },
+      onShotResult: (event) => {
+        if (this.sharedRole === "guest") {
+          this.handleSharedShotResult(event);
         }
       },
       onSnapshot: (snapshot) => {
@@ -698,6 +881,8 @@ export class LocalMatch {
     this.reloadEndsAt = 0;
     this.ammoInClip = CLIP_SIZE;
     this.reserveAmmo = RESERVE_AMMO;
+    this.reloadSequence = 0;
+    this.spreadIndex = 0;
     this.recoil = 0;
     this.weaponRig.setVisible(true);
     if (this.activeMode === "shared" && this.sharedRole === "host") {
@@ -771,6 +956,10 @@ export class LocalMatch {
   private ensureRemoteActorFromParticipant(participant: ParticipantRecord): RemoteActor {
     const spawnPosition = this.sharedSpawnPoint(participant.id);
     const existing = this.remoteActors.get(participant.id);
+
+    if (this.sharedRole === "host" && !this.remoteWeaponStates.has(participant.id)) {
+      this.remoteWeaponStates.set(participant.id, createInitialWeaponState(CLIP_SIZE, RESERVE_AMMO));
+    }
 
     if (existing) {
       existing.name = participant.name;
@@ -876,6 +1065,7 @@ export class LocalMatch {
     }
 
     this.remoteActors.delete(peerId);
+    this.remoteWeaponStates.delete(peerId);
     this.scene.remove(actor.avatar.group);
     disposeObject(actor.avatar.group);
 
@@ -906,6 +1096,15 @@ export class LocalMatch {
     actor.inputMovement.set(event.movement[0], event.movement[1]);
     actor.inputSprint = event.actions.includes("sprint");
     actor.lastSeenAt = event.sentAt;
+
+    const weaponState = this.remoteWeaponStates.get(event.peerId);
+    if (weaponState) {
+      noteInputSequence(weaponState, event.sequence);
+      syncWeaponState(weaponState, Date.now(), CLIP_SIZE);
+      if (event.actions.includes("reload")) {
+        startWeaponReload(weaponState, event.tick, CLIP_SIZE, RELOAD_DURATION_MS);
+      }
+    }
 
     const lookLength = Math.hypot(event.look[0], event.look[2]);
     if (lookLength > 0.01) {
@@ -973,6 +1172,9 @@ export class LocalMatch {
       this.reloadEndsAt = 0;
       this.ammoInClip = CLIP_SIZE;
       this.reserveAmmo = RESERVE_AMMO;
+      this.reloadSequence = 0;
+      this.spreadIndex = 0;
+      this.pendingShotClaims.clear();
       this.weaponRig.setVisible(true);
       this.camera.position.x = presence.position[0];
       this.camera.position.z = presence.position[2];
@@ -1127,6 +1329,8 @@ export class LocalMatch {
     }
     this.updateRespawns(now);
     if (this.activeMode === "shared" && this.sharedRole === "host") {
+      this.syncRemoteWeaponStates(Date.now());
+      this.recordSharedCombatFrame(Date.now());
       this.publishHostSnapshot();
     }
     this.sharedRoom?.tick();
@@ -1246,18 +1450,9 @@ export class LocalMatch {
       return;
     }
 
-    this.nextShotAt = now + FIRE_INTERVAL;
-    this.ammoInClip -= 1;
-    this.recoil = Math.min(1, this.recoil + 0.8);
-    this.muzzleFlashUntil = now + MUZZLE_FLASH_DURATION;
-    this.audio.fire();
-
     this.scene.updateMatrixWorld(true);
     this.attackDirection.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
     this.raycaster.set(this.camera.position, this.attackDirection);
-
-    const combatantMeshes =
-      this.activeMode === "shared" ? this.remoteRaycastMeshes : this.enemyRaycastMeshes;
     const environmentIntersections = this.raycaster.intersectObjects(
       this.environmentRaycastMeshes,
       false,
@@ -1266,29 +1461,25 @@ export class LocalMatch {
 
     if (this.activeMode === "shared") {
       const remoteTarget = this.findRemoteShotTarget(environmentDistance);
-      if (!remoteTarget || this.sharedRole !== "host" || remoteTarget.status !== "alive") {
+      const claim = this.sharedRole === "guest" ? this.buildShotClaim(Date.now()) : null;
+      this.applyLocalShotEffects(now);
+
+      if (this.sharedRole === "guest") {
+        this.sendGuestShotClaim(claim, remoteTarget, now);
         return;
       }
 
-      remoteTarget.hitFlashUntil = now + 0.12;
-      this.hitIndicatorUntil = now + HIT_INDICATOR_DURATION;
-      this.audio.hitConfirm();
-      remoteTarget.health = Math.max(0, remoteTarget.health - PLAYER_DAMAGE);
-
-      if (remoteTarget.health <= 0) {
-        remoteTarget.deaths += 1;
-        remoteTarget.status = "respawning";
-        remoteTarget.respawnAt = Date.now() + PLAYER_RESPAWN_DELAY * 1000;
-        this.playerEliminations += 1;
-        this.pushFeed(`${remoteTarget.name} dropped.`, 1.7);
-      } else {
-        this.pushFeed(`${remoteTarget.name} tagged.`, 0.8);
+      if (remoteTarget && remoteTarget.status === "alive") {
+        this.applyRemoteActorDamage(remoteTarget, PLAYER_DAMAGE, this.playerIdentity.id, now);
+        this.hitIndicatorUntil = now + HIT_INDICATOR_DURATION;
+        this.audio.hitConfirm();
+        this.publishHostSnapshot(true);
       }
-
-      this.publishHostSnapshot(true);
       return;
     }
 
+    this.applyLocalShotEffects(now);
+    const combatantMeshes = this.enemyRaycastMeshes;
     const intersections = this.raycaster.intersectObjects(combatantMeshes, false);
 
     for (const hit of intersections) {
@@ -1320,6 +1511,315 @@ export class LocalMatch {
       }
 
       return;
+    }
+  }
+
+  private applyLocalShotEffects(now: number): void {
+    this.nextShotAt = now + FIRE_INTERVAL;
+    this.ammoInClip -= 1;
+    this.spreadIndex += 1;
+    this.recoil = Math.min(1, this.recoil + 0.8);
+    this.muzzleFlashUntil = now + MUZZLE_FLASH_DURATION;
+    this.audio.fire();
+  }
+
+  private buildShotClaim(
+    tickMs: number,
+    overrides: DebugShotClaimOverride = {},
+  ): RoomShotClaim | null {
+    if (this.activeMode !== "shared") {
+      return null;
+    }
+
+    const direction = overrides.direction
+      ? new THREE.Vector3(overrides.direction.x, overrides.direction.y, overrides.direction.z)
+      : this.attackDirection.clone();
+    if (direction.lengthSq() <= 0.001) {
+      direction.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    }
+    direction.normalize();
+
+    const origin = overrides.origin
+      ? new THREE.Vector3(overrides.origin.x, overrides.origin.y, overrides.origin.z)
+      : this.camera.position.clone();
+
+    return {
+      claimId: this.nextShotClaimId++,
+      shooterId: this.playerIdentity.id,
+      tick: overrides.tick ?? tickMs,
+      origin: [origin.x, origin.y, origin.z],
+      direction: [direction.x, direction.y, direction.z],
+      ammoInClip: overrides.ammoInClip ?? this.ammoInClip,
+      reserveAmmo: overrides.reserveAmmo ?? this.reserveAmmo,
+      reloadSequence: overrides.reloadSequence ?? this.reloadSequence,
+      spreadIndex: overrides.spreadIndex ?? this.spreadIndex,
+      inputSequence: overrides.inputSequence ?? Math.max(0, this.nextInputSequence - 1),
+      weaponId: overrides.weaponId ?? SHARED_WEAPON_ID,
+    };
+  }
+
+  private sendGuestShotClaim(
+    claim: RoomShotClaim | null,
+    predictedTarget: RemoteActor | undefined,
+    now: number,
+  ): void {
+    if (!claim || !this.sharedRoom) {
+      return;
+    }
+
+    this.lastShotClaim = claim;
+    this.pendingShotClaims.set(claim.claimId, {
+      claimId: claim.claimId,
+      submittedAt: Date.now(),
+      targetId: predictedTarget?.id,
+    });
+
+    if (predictedTarget?.status === "alive") {
+      this.hitIndicatorUntil = now + HIT_INDICATOR_DURATION * 0.45;
+    }
+
+    if (!this.sharedRoom.sendShotClaim(claim)) {
+      this.pendingShotClaims.delete(claim.claimId);
+      this.pushFeed("Shot uplink failed.", 0.7);
+    }
+  }
+
+  private handleSharedShotClaim(event: RoomShotClaimEvent): void {
+    if (this.sharedRole !== "host" || !this.sharedRoom) {
+      return;
+    }
+
+    const weaponState = this.remoteWeaponStates.get(event.peerId);
+    if (!weaponState) {
+      return;
+    }
+
+    noteInputSequence(weaponState, event.inputSequence);
+    syncWeaponState(weaponState, event.tick, CLIP_SIZE);
+
+    const shooter =
+      this.rewindBuffer.sample(event.peerId, event.tick, SHOT_REWIND_DRIFT_MS) ??
+      (() => {
+        const actor = this.remoteActors.get(event.peerId);
+        return actor ? this.buildRemoteRewindFrame(actor, Date.now()) : undefined;
+      })();
+    if (!shooter) {
+      const rejected = {
+        claimId: event.claimId,
+        shooterId: event.shooterId,
+        decision: "rejected" as const,
+        damage: 0,
+        reason: "rewind-missing",
+        shooterWeapon: snapshotWeaponState(weaponState),
+      };
+      this.sharedRoom.sendShotResult(rejected, event.peerId);
+      this.lastShotResult = {
+        peerId: this.playerIdentity.id,
+        sentAt: Date.now(),
+        ...rejected,
+      };
+      return;
+    }
+
+    const targets = this.collectShotValidationTargets(event.peerId, event.tick);
+    const resolution = validateShotClaim({
+      claim: event,
+      shooter,
+      targets,
+      weaponState,
+      collisionWorld: this.collisionWorld,
+      nowMs: Date.now(),
+      config: {
+        clipSize: CLIP_SIZE,
+        damage: PLAYER_DAMAGE,
+        fireIntervalMs: FIRE_INTERVAL_MS,
+        maxLatencyMs: SHOT_MAX_LATENCY_MS,
+        maxFutureSkewMs: SHOT_MAX_FUTURE_SKEW_MS,
+        maxInputSequenceLag: SHOT_MAX_INPUT_SEQUENCE_LAG,
+        maxOriginDelta: SHOT_MAX_ORIGIN_DELTA,
+        maxAimAngleRad: SHOT_MAX_AIM_ANGLE_RAD,
+        maxRange: SHOT_MAX_RANGE,
+        rewindDriftMs: SHOT_REWIND_DRIFT_MS,
+        targetRadius: 0.55,
+        targetHeight: 2.15,
+      },
+    });
+
+    const now = performance.now() / 1000;
+    if (resolution.targetId && resolution.damage > 0) {
+      if (resolution.targetId === this.playerIdentity.id) {
+        this.applyPlayerDamage(resolution.damage, shooter.name, now, shooter.id);
+      } else {
+        const target = this.remoteActors.get(resolution.targetId);
+        if (target) {
+          this.applyRemoteActorDamage(target, resolution.damage, shooter.id, now);
+        }
+      }
+      this.publishHostSnapshot(true);
+    }
+
+    this.sharedRoom.sendShotResult(resolution, event.peerId);
+    this.lastShotResult = {
+      peerId: this.playerIdentity.id,
+      sentAt: Date.now(),
+      ...resolution,
+    };
+  }
+
+  private handleSharedShotResult(event: RoomShotResultEvent): void {
+    if (event.shooterId !== this.playerIdentity.id) {
+      return;
+    }
+
+    const now = performance.now() / 1000;
+    this.lastShotResult = event;
+    this.recentShotResults.push(event);
+    if (this.recentShotResults.length > 8) {
+      this.recentShotResults.shift();
+    }
+    const pending = this.pendingShotClaims.get(event.claimId);
+    this.pendingShotClaims.delete(event.claimId);
+    this.applyAuthoritativeWeaponState(event.shooterWeapon);
+
+    if (event.targetId) {
+      const target = this.remoteActors.get(event.targetId);
+      if (target) {
+        target.health = event.targetHealth ?? target.health;
+        target.status = event.targetStatus ?? target.status;
+        if (target.status === "respawning") {
+          target.respawnAt = Date.now() + PLAYER_RESPAWN_DELAY * 1000;
+        }
+      }
+    }
+
+    if (event.damage > 0 && event.targetId) {
+      const target = this.remoteActors.get(event.targetId);
+      if (target) {
+        target.hitFlashUntil = now + 0.12;
+      }
+      this.hitIndicatorUntil = now + HIT_INDICATOR_DURATION;
+      this.audio.hitConfirm();
+      this.pushFeed(
+        event.targetStatus === "respawning" ? "Host confirmed elimination." : "Host confirmed hit.",
+        event.targetStatus === "respawning" ? 1.4 : 0.8,
+      );
+      return;
+    }
+
+    if (pending?.targetId) {
+      this.hitIndicatorUntil = 0;
+    }
+
+    if (event.reason === "blocked-by-cover") {
+      this.pushFeed("Host rejected the shot through cover.", 0.9);
+      return;
+    }
+
+    if (event.reason === "fire-rate") {
+      this.pushFeed("Host rejected the shot timing.", 0.9);
+      return;
+    }
+
+    if (event.reason === "ammo-state" || event.reason === "reload-state") {
+      this.pushFeed("Host corrected your weapon state.", 0.9);
+    }
+  }
+
+  private collectShotValidationTargets(
+    shooterId: string,
+    tickMs: number,
+  ): Array<CombatantRewindState & { capturedAt: number }> {
+    const targets: Array<CombatantRewindState & { capturedAt: number }> = [];
+
+    if (this.playerIdentity.id !== shooterId) {
+      const localFrame =
+        this.rewindBuffer.sample(this.playerIdentity.id, tickMs, SHOT_REWIND_DRIFT_MS) ??
+        this.buildLocalRewindFrame(Date.now());
+      targets.push(localFrame);
+    }
+
+    for (const actor of this.remoteActors.values()) {
+      if (actor.id === shooterId) {
+        continue;
+      }
+
+      const frame =
+        this.rewindBuffer.sample(actor.id, tickMs, SHOT_REWIND_DRIFT_MS) ??
+        this.buildRemoteRewindFrame(actor, Date.now());
+      targets.push(frame);
+    }
+
+    return targets;
+  }
+
+  private buildLocalRewindFrame(capturedAt: number): CombatantRewindState & { capturedAt: number } {
+    this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    return {
+      id: this.playerIdentity.id,
+      name: this.playerIdentity.name,
+      team: this.sharedTeam,
+      status: this.playerDead ? "respawning" : "alive",
+      health: this.playerHealth,
+      capturedAt,
+      position: this.camera.position.clone(),
+      look: this.tempLook.clone(),
+    };
+  }
+
+  private buildRemoteRewindFrame(
+    actor: RemoteActor,
+    capturedAt: number,
+  ): CombatantRewindState & { capturedAt: number } {
+    return {
+      id: actor.id,
+      name: actor.name,
+      team: actor.team,
+      status: actor.status,
+      health: actor.health,
+      capturedAt,
+      position: actor.targetPosition.clone().setY(PLAYER_EYE_HEIGHT),
+      look: actor.forward.clone(),
+    };
+  }
+
+  private applyAuthoritativeWeaponState(state: WeaponStateSnapshot): void {
+    this.ammoInClip = state.ammoInClip;
+    this.reserveAmmo = state.reserveAmmo;
+    this.reloadSequence = state.reloadSequence;
+    this.spreadIndex = state.spreadIndex;
+    if (state.reloadEndsAt > Date.now()) {
+      this.reloadEndsAt = performance.now() / 1000 + (state.reloadEndsAt - Date.now()) / 1000;
+      return;
+    }
+    this.reloadEndsAt = 0;
+  }
+
+  private applyRemoteActorDamage(
+    target: RemoteActor,
+    amount: number,
+    shooterId: string,
+    now: number,
+  ): void {
+    if (target.status !== "alive") {
+      return;
+    }
+
+    target.health = Math.max(0, target.health - amount);
+    target.hitFlashUntil = now + 0.12;
+
+    if (target.health <= 0) {
+      target.deaths += 1;
+      target.status = "respawning";
+      target.respawnAt = Date.now() + PLAYER_RESPAWN_DELAY * 1000;
+      this.awardElimination(shooterId);
+      if (shooterId === this.playerIdentity.id) {
+        this.pushFeed(`${target.name} dropped.`, 1.7);
+      }
+      return;
+    }
+
+    if (shooterId === this.playerIdentity.id) {
+      this.pushFeed(`${target.name} tagged.`, 0.8);
     }
   }
 
@@ -1371,6 +1871,7 @@ export class LocalMatch {
       return;
     }
 
+    this.reloadSequence += 1;
     this.reloadEndsAt = performance.now() / 1000 + RELOAD_DURATION;
     this.pushFeed("Reloading...", RELOAD_DURATION);
   }
@@ -1581,7 +2082,7 @@ export class LocalMatch {
     amount: number,
     attacker: string,
     now: number,
-    _attackerId?: string,
+    attackerId?: string,
   ): void {
     if (this.playerDead) {
       return;
@@ -1600,7 +2101,9 @@ export class LocalMatch {
       this.playerRespawnsAt = now + PLAYER_RESPAWN_DELAY;
       this.authoritativeRespawnAtMs = Date.now() + PLAYER_RESPAWN_DELAY * 1000;
 
-      if (this.activeMode !== "shared") {
+      if (this.activeMode === "shared" && this.sharedRole === "host" && attackerId) {
+        this.awardElimination(attackerId);
+      } else if (this.activeMode !== "shared") {
         const killer = this.enemies.find((enemy) => enemy.name === attacker);
         if (killer) {
           killer.eliminations += 1;
@@ -1653,7 +2156,42 @@ export class LocalMatch {
         actor.hitFlashUntil = 0;
         actor.targetPosition.copy(this.sharedSpawnPoint(actor.id, actor.deaths));
         actor.displayPosition.copy(actor.targetPosition);
+        const weaponState = this.remoteWeaponStates.get(actor.id);
+        if (weaponState) {
+          this.remoteWeaponStates.set(actor.id, createInitialWeaponState(CLIP_SIZE, RESERVE_AMMO));
+        }
       }
+    }
+  }
+
+  private syncRemoteWeaponStates(nowMs: number): void {
+    for (const state of this.remoteWeaponStates.values()) {
+      syncWeaponState(state, nowMs, CLIP_SIZE);
+    }
+  }
+
+  private recordSharedCombatFrame(capturedAt: number): void {
+    if (this.activeMode !== "shared" || this.sharedRole !== "host") {
+      return;
+    }
+
+    const states: CombatantRewindState[] = [this.buildLocalRewindFrame(capturedAt)];
+    for (const actor of this.remoteActors.values()) {
+      states.push(this.buildRemoteRewindFrame(actor, capturedAt));
+    }
+
+    this.rewindBuffer.record(capturedAt, states);
+  }
+
+  private awardElimination(shooterId: string): void {
+    if (shooterId === this.playerIdentity.id) {
+      this.playerEliminations += 1;
+      return;
+    }
+
+    const shooter = this.remoteActors.get(shooterId);
+    if (shooter) {
+      shooter.eliminations += 1;
     }
   }
 
@@ -1879,6 +2417,10 @@ export class LocalMatch {
   }
 
   private findDebugDuelPair(): [THREE.Vector3, THREE.Vector3] | null {
+    return this.findDebugPair(true);
+  }
+
+  private findDebugPair(requireLineOfSight: boolean): [THREE.Vector3, THREE.Vector3] | null {
     const candidates = [
       ...this.spawnCandidates.map((candidate) => candidate.clone()),
       ...this.map.scene.focusPoints.map((focusPoint) =>
@@ -1896,32 +2438,46 @@ export class LocalMatch {
         const start = candidates[left];
         const end = candidates[right];
         const distance = start.distanceTo(end);
+        const minDistance = requireLineOfSight ? 6 : 4;
+        const maxDistance = requireLineOfSight ? 20 : 28;
 
-        if (distance < 6 || distance > 20) {
+        if (distance < minDistance || distance > maxDistance) {
+          continue;
+        }
+
+        const startView = start.clone().setY(PLAYER_EYE_HEIGHT);
+        const endView = end.clone().setY(PLAYER_EYE_HEIGHT);
+        const visible = hasLineOfSight(this.collisionWorld, startView, endView);
+        if (visible !== requireLineOfSight) {
           continue;
         }
 
         if (
-          !hasLineOfSight(
-            this.collisionWorld,
-            start.clone().setY(PLAYER_EYE_HEIGHT),
-            end.clone().setY(PLAYER_EYE_HEIGHT),
-          )
-        ) {
-          continue;
-        }
-
-        if (
-          !this.hasDebugSightline(
-            start.clone().setY(PLAYER_EYE_HEIGHT),
-            end.clone().setY(PLAYER_EYE_HEIGHT),
-          )
+          requireLineOfSight &&
+          !this.hasDebugSightline(startView, endView)
         ) {
           continue;
         }
 
         return [start, end];
       }
+    }
+
+    if (!requireLineOfSight && this.map.id === "sandline-foundry") {
+      return [
+        findOpenGroundPosition(
+          this.collisionWorld,
+          new THREE.Vector3(6, 0, 3),
+          PLAYER_RADIUS,
+          PLAYER_BODY_HEIGHT,
+        ),
+        findOpenGroundPosition(
+          this.collisionWorld,
+          new THREE.Vector3(15, 0, 3),
+          PLAYER_RADIUS,
+          PLAYER_BODY_HEIGHT,
+        ),
+      ];
     }
 
     return this.spawnCandidates.length >= 2

@@ -39,6 +39,23 @@ declare global {
             target: { x: number; y: number; z: number };
           }
         | null;
+      stageBlockedSharedShot: (
+        slot: 0 | 1,
+      ) =>
+        | {
+            self: { x: number; y: number; z: number };
+            target: { x: number; y: number; z: number };
+          }
+        | null;
+      stageAuthoritativeSharedPair: (
+        kind: "clear" | "blocked",
+      ) =>
+        | {
+            host: { x: number; y: number; z: number };
+            guest: { x: number; y: number; z: number };
+            guestId: string;
+          }
+        | null;
       aimAt: (combatantId: string) => boolean;
       probeShot: () => {
         direction: { x: number; y: number; z: number };
@@ -46,6 +63,18 @@ declare global {
       } | null;
       sharedTarget: () => string | null;
       fire: () => void;
+      submitShotClaim: (overrides?: {
+        tick?: number;
+        ammoInClip?: number;
+        reserveAmmo?: number;
+        reloadSequence?: number;
+        spreadIndex?: number;
+        inputSequence?: number;
+        weaponId?: string;
+        origin?: { x: number; y: number; z: number };
+        direction?: { x: number; y: number; z: number };
+      }) => boolean;
+      startReload: () => void;
       forcePlayerDeath: (attackerName?: string) => void;
       setInputState: (movementX: number, movementZ: number, sprint?: boolean) => void;
       clearInputState: () => void;
@@ -78,10 +107,14 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     setView: (x, y, z, targetX, targetY, targetZ) =>
       app.debugSetView(x, y, z, targetX, targetY, targetZ),
     stageSharedDuel: (slot) => app.debugStageSharedDuel(slot),
+    stageBlockedSharedShot: (slot) => app.debugStageBlockedSharedShot(slot),
+    stageAuthoritativeSharedPair: (kind) => app.debugStageAuthoritativeSharedPair(kind),
     aimAt: (combatantId) => app.debugAimAt(combatantId),
     probeShot: () => app.debugProbeShot(),
     sharedTarget: () => app.debugSharedTarget(),
     fire: () => app.debugFire(),
+    submitShotClaim: (overrides) => app.debugSubmitShotClaim(overrides),
+    startReload: () => app.debugStartReload(),
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),
     setInputState: (movementX, movementZ, sprint) =>
       app.debugSetInputState(movementX, movementZ, sprint),

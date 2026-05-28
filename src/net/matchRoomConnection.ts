@@ -13,6 +13,8 @@ import {
   type RoomInputTick,
   type RoomLifecyclePhase,
   type RoomMessage,
+  type RoomShotClaim,
+  type RoomShotResult,
   ROOM_PROTOCOL,
   ROOM_PROTOCOL_VERSION,
   type TeamAssignment,
@@ -40,10 +42,22 @@ export interface RoomInputEvent extends RoomInputTick {
   sentAt: number;
 }
 
+export interface RoomShotClaimEvent extends RoomShotClaim {
+  peerId: string;
+  sentAt: number;
+}
+
+export interface RoomShotResultEvent extends RoomShotResult {
+  peerId: string;
+  sentAt: number;
+}
+
 export interface SharedRoomHandlers {
   onParticipant: (participant: ParticipantRecord, event: "joined" | "updated") => void;
   onLeave: (peerId: string, reason: "leave" | "stale") => void;
   onInput: (event: RoomInputEvent) => void;
+  onShotClaim: (event: RoomShotClaimEvent) => void;
+  onShotResult: (event: RoomShotResultEvent) => void;
   onSnapshot: (snapshot: HostRoomSnapshot) => void;
   onRoomClosed: (reason: string) => void;
 }
@@ -79,6 +93,8 @@ export interface MatchRoomConnection {
   setHandlers(handlers: SharedRoomHandlers): void;
   publishHostSnapshot(snapshot: HostRoomSnapshot, force?: boolean): void;
   sendInputTick(input: RoomInputTick): boolean;
+  sendShotClaim(claim: RoomShotClaim): boolean;
+  sendShotResult(result: RoomShotResult, toPeerId?: string): boolean;
   tick(now?: number): void;
   dispose(): void;
   subscribe(listener: () => void): () => void;
@@ -299,6 +315,22 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     }
 
     return this.sendMessage("input-tick", input, this.hostPeerId);
+  }
+
+  sendShotClaim(claim: RoomShotClaim): boolean {
+    if (this.role !== "guest") {
+      return false;
+    }
+
+    return this.sendMessage("shot-claim", claim, this.hostPeerId);
+  }
+
+  sendShotResult(result: RoomShotResult, toPeerId?: string): boolean {
+    if (this.role !== "host") {
+      return false;
+    }
+
+    return this.sendMessage("shot-result", result, toPeerId);
   }
 
   tick(now = Date.now()): void {
@@ -705,7 +737,23 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         this.handlers.onSnapshot(message.payload);
         return;
       case "shot-claim":
+        if (this.role === "host") {
+          this.handlers.onShotClaim({
+            peerId: message.fromPeerId,
+            sentAt: message.sentAt,
+            ...message.payload,
+          });
+        }
+        return;
       case "shot-result":
+        if (this.role === "guest") {
+          this.handlers.onShotResult({
+            peerId: message.fromPeerId,
+            sentAt: message.sentAt,
+            ...message.payload,
+          });
+        }
+        return;
       case "objective-event":
         return;
       case "heartbeat":

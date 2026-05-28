@@ -37,6 +37,8 @@ const NOOP_ROOM_HANDLERS: SharedRoomHandlers = {
   onParticipant: () => undefined,
   onLeave: () => undefined,
   onInput: () => undefined,
+  onShotClaim: () => undefined,
+  onShotResult: () => undefined,
   onSnapshot: () => undefined,
   onRoomClosed: () => undefined,
 };
@@ -700,6 +702,45 @@ export class TacticalShellApp {
 
   debugFire(): void {
     this.match?.debugFire();
+  }
+
+  debugStageBlockedSharedShot(slot: 0 | 1):
+    | {
+        self: { x: number; y: number; z: number };
+        target: { x: number; y: number; z: number };
+      }
+    | null {
+    return this.match?.debugStageBlockedSharedShot(slot) ?? null;
+  }
+
+  debugStageAuthoritativeSharedPair(
+    kind: "clear" | "blocked",
+  ):
+    | {
+        host: { x: number; y: number; z: number };
+        guest: { x: number; y: number; z: number };
+        guestId: string;
+      }
+    | null {
+    return this.match?.debugStageAuthoritativeSharedPair(kind) ?? null;
+  }
+
+  debugSubmitShotClaim(overrides?: {
+    tick?: number;
+    ammoInClip?: number;
+    reserveAmmo?: number;
+    reloadSequence?: number;
+    spreadIndex?: number;
+    inputSequence?: number;
+    weaponId?: string;
+    origin?: { x: number; y: number; z: number };
+    direction?: { x: number; y: number; z: number };
+  }): boolean {
+    return this.match?.debugSubmitShotClaim(overrides) ?? false;
+  }
+
+  debugStartReload(): void {
+    this.match?.debugStartReload();
   }
 
   debugForcePlayerDeath(attackerName?: string): void {

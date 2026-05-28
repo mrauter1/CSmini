@@ -555,126 +555,64 @@ async function main() {
     const remoteId = stateOne?.remotePlayers?.[0]?.id;
     assert(remoteId, "Expected one remote operator on shared page one");
 
-    const remoteAnchors = [
-      { x: 6, y: 1.62, z: 14 },
-      { x: 7, y: 1.62, z: 8 },
-      { x: 8, y: 1.62, z: -12 },
-      { x: -12, y: 1.62, z: 8 },
-      { x: 15, y: 1.62, z: 6 },
-      { x: 0, y: 1.62, z: -14 },
-    ];
-    const localViewpoints = [
-      { x: -2, y: 1.62, z: 14 },
-      { x: -3, y: 1.62, z: 10 },
-      { x: -8, y: 1.62, z: 2 },
-      { x: 12, y: 1.62, z: 10 },
-      { x: 16, y: 1.62, z: 0 },
-      { x: -16, y: 1.62, z: 12 },
-      { x: 0, y: 1.62, z: 6 },
-      { x: 10, y: 1.62, z: -14 },
-      { x: -12, y: 1.62, z: 16 },
-      { x: 18, y: 1.62, z: -4 },
-    ];
-
-    let duelLayout = null;
-    let lastProbeHits = [];
-
-    for (const remoteAnchor of remoteAnchors) {
-      await sharedPageTwo.bringToFront();
-      await setView(sharedPageTwo, remoteAnchor, {
-        x: remoteAnchor.x,
-        y: remoteAnchor.y,
-        z: remoteAnchor.z - 6,
-      });
-
-      await sharedPageOne.bringToFront();
-      try {
-        await waitForRemotePosition(sharedPageOne, remoteAnchor, 4_000);
-      } catch {
-        continue;
-      }
-
-      for (const localPoint of localViewpoints) {
-        await sharedPageTwo.bringToFront();
-        await setView(sharedPageTwo, remoteAnchor, {
-          x: localPoint.x,
-          y: localPoint.y,
-          z: localPoint.z,
-        });
-        await sharedPageOne.bringToFront();
-        await waitForRemotePosition(sharedPageOne, remoteAnchor, 4_000);
-        await setView(sharedPageOne, localPoint, remoteAnchor);
-        await aimAt(sharedPageOne, remoteId);
-        const sharedTargetId = await sharedPageOne.evaluate("window.__dustlineQa__.sharedTarget()");
-        const probeHits =
-          (await sharedPageOne.evaluate("window.__dustlineQa__.probeShot()?.hits ?? []")) ?? [];
-
-        if (sharedTargetId === remoteId) {
-          duelLayout = { localPoint, remoteAnchor };
-          summary.probeHits = probeHits;
-          break;
-        }
-
-        lastProbeHits = probeHits;
-      }
-
-      if (duelLayout) {
-        break;
-      }
-    }
-
-    assert(
-      duelLayout,
-      `Shared-room probe shot did not intersect the remote combatant. Last hits: ${JSON.stringify(lastProbeHits)}`,
+    const duelLayout = await sharedPageOne.evaluate(
+      "window.__dustlineQa__.stageAuthoritativeSharedPair('clear')",
     );
+    assert(duelLayout, "Shared-room host could not stage an authoritative duel pair.");
 
     await sharedPageTwo.bringToFront();
-    await setView(sharedPageTwo, duelLayout.remoteAnchor, duelLayout.localPoint);
+    await sharedPageTwo.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState()?.match;
+          const local = state?.localPlayer?.position;
+          if (!local) {
+            return false;
+          }
+          return Math.hypot(local.x - ${duelLayout.guest.x}, local.z - ${duelLayout.guest.z}) < 0.35;
+        })()
+      `,
+      4_000,
+    );
+
     await sharedPageOne.bringToFront();
-    await waitForRemotePosition(sharedPageOne, duelLayout.remoteAnchor, 4_000);
+    await setView(sharedPageOne, duelLayout.host, duelLayout.guest);
     await aimAt(sharedPageOne, remoteId);
     await ensureControlsEngaged(sharedPageOne);
     const initialSharedTargetId = await sharedPageOne.evaluate("window.__dustlineQa__.sharedTarget()");
+    summary.probeHits =
+      (await sharedPageOne.evaluate("window.__dustlineQa__.probeShot()?.hits ?? []")) ?? [];
     assert(
       initialSharedTargetId === remoteId,
       `Shared-room target lock did not resolve to the remote combatant. Target: ${initialSharedTargetId}`,
     );
 
-    const presentationRemote = { x: 0, y: 1.62, z: 14 };
-    await sharedPageTwo.bringToFront();
-    await setView(sharedPageTwo, presentationRemote, {
-      x: -6,
-      y: 1.62,
-      z: 20,
-    });
     await sharedPageOne.bringToFront();
-    await waitForRemotePosition(sharedPageOne, presentationRemote, 4_000);
     await setView(
       sharedPageOne,
       {
-        x: -6,
+        x: duelLayout.host.x - 4.5,
         y: 3.4,
-        z: 20,
+        z: duelLayout.host.z + 4.5,
       },
       {
-        x: presentationRemote.x,
+        x: duelLayout.guest.x,
         y: 1.3,
-        z: presentationRemote.z,
+        z: duelLayout.guest.z,
       },
     );
     await ensureControlsEngaged(sharedPageOne);
     await sharedPageOne.captureScreenshot("10-opposing-player.png");
     await sharedPageOne.captureScreenshot("12-two-player-multiplayer.png");
-    await setView(sharedPageOne, duelLayout.localPoint, duelLayout.remoteAnchor);
+    await sharedPageOne.evaluate("window.__dustlineQa__.stageAuthoritativeSharedPair('clear')");
+    await setView(sharedPageOne, duelLayout.host, duelLayout.guest);
     await ensureControlsEngaged(sharedPageOne);
 
     let remoteDown = false;
     for (let shot = 0; shot < 6; shot += 1) {
-      await sharedPageTwo.bringToFront();
-      await setView(sharedPageTwo, duelLayout.remoteAnchor, duelLayout.localPoint);
       await sharedPageOne.bringToFront();
-      await waitForRemotePosition(sharedPageOne, duelLayout.remoteAnchor, 4_000);
-      await setView(sharedPageOne, duelLayout.localPoint, duelLayout.remoteAnchor);
+      await sharedPageOne.evaluate("window.__dustlineQa__.stageAuthoritativeSharedPair('clear')");
+      await setView(sharedPageOne, duelLayout.host, duelLayout.guest);
       await ensureControlsEngaged(sharedPageOne);
       await aimAt(sharedPageOne, remoteId);
       const liveSharedTargetId = await sharedPageOne.evaluate("window.__dustlineQa__.sharedTarget()");
