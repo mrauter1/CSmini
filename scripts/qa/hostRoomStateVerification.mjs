@@ -479,9 +479,9 @@ async function main() {
 
     const initialGuestOnHost = await readRemotePosition(hostPage);
     assert(
-      (await driveGuestInputUntilObserved(hostPage, joinPage, initialGuestOnHost, 0, 1, true)) ===
+      (await driveGuestInputUntilObserved(hostPage, joinPage, initialGuestOnHost, -1, 1, true)) ===
         true,
-      "Guest input delivery was not reflected in the host state.",
+      "Diagonal guest input delivery was not reflected in the host state.",
     );
     const hostRemoteAfterGuestInput = await readRemotePosition(hostPage);
     const hostRemoteInputState = await hostPage.evaluate(

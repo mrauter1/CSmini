@@ -75,6 +75,8 @@ const SHOT_MAX_ORIGIN_DELTA = 1.75;
 const SHOT_MAX_AIM_ANGLE_RAD = Math.PI * 0.18;
 const SHOT_MAX_RANGE = 72;
 const SHOT_REWIND_DRIFT_MS = 180;
+const MAX_REMOTE_INPUT_AXIS = 1.01;
+const MAX_REMOTE_INPUT_VECTOR_LENGTH = Math.SQRT2 + 0.01;
 
 const ENEMY_NAMES = ["Copper-2", "Vale-3", "Rook-4"];
 const ENEMY_ACCENTS = ["#6F8FAA", "#819B58", "#B86E4E"];
@@ -1119,13 +1121,18 @@ export class LocalMatch {
       return;
     }
 
-    const movementLength = Math.hypot(event.movement[0], event.movement[1]);
-    if (movementLength > 1.25) {
+    const [movementX, movementZ] = event.movement;
+    const movementLength = Math.hypot(movementX, movementZ);
+    if (
+      Math.abs(movementX) > MAX_REMOTE_INPUT_AXIS ||
+      Math.abs(movementZ) > MAX_REMOTE_INPUT_AXIS ||
+      movementLength > MAX_REMOTE_INPUT_VECTOR_LENGTH
+    ) {
       return;
     }
 
     actor.lastInputSequence = event.sequence;
-    actor.inputMovement.set(event.movement[0], event.movement[1]);
+    actor.inputMovement.set(movementX, movementZ);
     actor.inputSprint = event.actions.includes("sprint");
     actor.lastSeenAt = event.sentAt;
 
