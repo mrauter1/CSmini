@@ -252,6 +252,51 @@ class CdpPage {
     await delay(120);
   }
 
+  async trustedClick(selector) {
+    const rect = await this.evaluate(`
+      (() => {
+        const element = document.querySelector(${JSON.stringify(selector)});
+        if (!element) {
+          return null;
+        }
+        const box = element.getBoundingClientRect();
+        return {
+          x: box.left + box.width / 2,
+          y: box.top + box.height / 2,
+          width: box.width,
+          height: box.height,
+        };
+      })()
+    `);
+
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: rect.x,
+      y: rect.y,
+      button: "none",
+    });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: rect.x,
+      y: rect.y,
+      button: "left",
+      clickCount: 1,
+    });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: rect.x,
+      y: rect.y,
+      button: "left",
+      clickCount: 1,
+    });
+    await delay(120);
+    return true;
+  }
+
   async captureScreenshot(filename) {
     const result = await this.send("Page.captureScreenshot", {
       format: "png",
@@ -317,9 +362,21 @@ async function waitForMap(page, mapId) {
 
 async function engageControls(page) {
   await page.waitForExpression("Boolean(window.__dustlineQa__?.getState())", 10_000);
-  await page.evaluate("window.__dustlineQa__.engageControls()");
+  const alreadyEngaged = await page.evaluate(
+    "window.__dustlineQa__?.getState()?.localPlayer?.pointerCaptured === true",
+  );
+  if (!alreadyEngaged) {
+    const clicked = await page.trustedClick('[data-action="lock-match"]');
+    if (!clicked) {
+      await page.evaluate("window.__dustlineQa__.engageControls()");
+    }
+  }
   await page.waitForExpression(
     "window.__dustlineQa__?.getState()?.localPlayer?.pointerCaptured === true",
+    5_000,
+  );
+  await page.waitForExpression(
+    "window.__dustlineQa__?.getState()?.audioState?.contextState === 'running'",
     5_000,
   );
   await delay(150);
@@ -737,8 +794,55 @@ function assertRemoteAim(entries, label) {
   }
 }
 
+const EXPECTED_TEAM_VISUALS = {
+  amber: {
+    jacketColor: "#735036",
+    vestColor: "#C79258",
+    trouserColor: "#4E3F30",
+    hasDominoMask: true,
+  },
+  cobalt: {
+    jacketColor: "#3F5863",
+    vestColor: "#6F8FAA",
+    trouserColor: "#273B45",
+    hasDominoMask: false,
+  },
+};
+
+function assertTeamVisual(entries, teamId, label) {
+  const expected = EXPECTED_TEAM_VISUALS[teamId];
+  const teamEntries = (entries ?? []).filter((entry) => entry?.teamId === teamId);
+  assert(teamEntries.length > 0, `Expected at least one ${label} ${teamId} visual sample`);
+
+  for (const entry of teamEntries) {
+    const visual = entry.visual;
+    const actorLabel = entry.id ?? entry.name ?? "actor";
+    assert(visual, `Expected ${label} ${actorLabel} to expose team visual debug state`);
+    assert(
+      visual.jacketColor === expected.jacketColor,
+      `Expected ${label} ${actorLabel} jacket ${expected.jacketColor}, saw ${visual.jacketColor}`,
+    );
+    assert(
+      visual.vestColor === expected.vestColor,
+      `Expected ${label} ${actorLabel} vest ${expected.vestColor}, saw ${visual.vestColor}`,
+    );
+    assert(
+      visual.trouserColor === expected.trouserColor,
+      `Expected ${label} ${actorLabel} trousers ${expected.trouserColor}, saw ${visual.trouserColor}`,
+    );
+    assert(
+      visual.hasDominoMask === expected.hasDominoMask,
+      `Expected ${label} ${actorLabel} domino mask ${expected.hasDominoMask}, saw ${visual.hasDominoMask}`,
+    );
+  }
+}
+
 function worldFireEvents(state) {
   return (state?.audio ?? []).filter((event) => event.type === "world-fire");
+}
+
+function playableWorldFireEvents(state) {
+  return worldFireEvents(state).filter((event) => event.playable === true);
 }
 
 function shotEvents(state, type) {
@@ -1366,6 +1470,7 @@ async function main() {
     const aiOpeningState = await getState(localPage);
     const openingBehaviors = aiOpeningState.enemies.map((enemy) => enemy.ai.behavior);
     assertAlivePosture(aiOpeningState.enemies, "opening solo enemy");
+    assertTeamVisual(aiOpeningState.enemies, "cobalt", "opening solo enemy");
     const sightlineCase = await stageAiSightlineCase(localPage);
     await localPage.waitForExpression(
       `
@@ -1443,10 +1548,13 @@ async function main() {
     const engageEnemy = engageState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
     assert(engageEnemy?.ai?.behavior === "engage", "Expected the staged AI to enter engage behavior");
     assertAlivePosture([engageEnemy], "engage solo enemy");
-    const aiWorldFire = worldFireEvents(engageState).at(-1);
-    assert(aiWorldFire, "Expected solo enemy fire to create a world-fire audio event");
+    const aiWorldFire = playableWorldFireEvents(engageState).at(-1);
+    assert(aiWorldFire, "Expected solo enemy fire to create a playable world-fire audio event");
     assert(
-      aiWorldFire.distance > 1 && aiWorldFire.gain > 0.08 && aiWorldFire.gain <= 0.92,
+      aiWorldFire.distance > 1 &&
+        aiWorldFire.gain > 0.08 &&
+        aiWorldFire.gain <= 0.92 &&
+        aiWorldFire.outputGain >= aiWorldFire.gain,
       `Expected AI shot audio to carry distance-normalized gain, saw ${JSON.stringify(aiWorldFire)}`,
     );
 
@@ -1669,6 +1777,8 @@ async function main() {
     assertAlivePosture(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
     assertRemoteAim(sharedDuelStateOne.remotePlayers, "shared remote actor page one");
     assertRemoteAim(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
+    assertTeamVisual(sharedDuelStateOne.remotePlayers, "cobalt", "shared remote actor page one");
+    assertTeamVisual(sharedDuelStateTwo.remotePlayers, "amber", "shared remote actor page two");
     await captureScreenshot(sharedPageTwo, "12-two-player-multiplayer.png", capturedScreenshots);
 
     await engageControls(sharedPageOne);
@@ -1681,7 +1791,7 @@ async function main() {
 
     const sharedSentBefore = shotEvents(await getState(sharedPageOne), "shared-sent").length;
     const sharedReceivedBefore = shotEvents(await getState(sharedPageTwo), "shared-received").length;
-    const worldFireBefore = worldFireEvents(await getState(sharedPageTwo)).length;
+    const worldFireBefore = playableWorldFireEvents(await getState(sharedPageTwo)).length;
     await fire(sharedPageOne);
     await sharedPageOne.waitForExpression(
       `((window.__dustlineQa__?.getState()?.shots?.events ?? []).filter((event) => event.type === 'shared-sent').length) > ${sharedSentBefore}`,
@@ -1692,7 +1802,7 @@ async function main() {
       5_000,
     );
     await sharedPageTwo.waitForExpression(
-      `((window.__dustlineQa__?.getState()?.audio ?? []).filter((event) => event.type === 'world-fire').length) > ${worldFireBefore}`,
+      `((window.__dustlineQa__?.getState()?.audio ?? []).filter((event) => event.type === 'world-fire' && event.playable === true).length) > ${worldFireBefore}`,
       5_000,
     );
     const sharedShotAudioState = await getState(sharedPageTwo);
@@ -1702,10 +1812,14 @@ async function main() {
       sharedShotEvent.distance > 1,
       `Expected shared remote shot event to carry distance, saw ${JSON.stringify(sharedShotEvent)}`,
     );
-    const sharedWorldFire = worldFireEvents(sharedShotAudioState).at(-1);
-    assert(sharedWorldFire, "Expected shared remote shot to create a world-fire audio event");
+    const sharedWorldFire = playableWorldFireEvents(sharedShotAudioState).at(-1);
+    assert(sharedWorldFire, "Expected shared remote shot to create a playable world-fire audio event");
     assert(
-      sharedWorldFire.distance > 1 && sharedWorldFire.gain > 0.08 && sharedWorldFire.gain <= 0.92,
+      sharedWorldFire.distance > 1 &&
+        sharedWorldFire.gain > 0.08 &&
+        sharedWorldFire.gain <= 0.92 &&
+        sharedWorldFire.outputGain >= sharedWorldFire.gain &&
+        sharedWorldFire.blockedReason === null,
       `Expected shared shot audio to carry distance-normalized gain, saw ${JSON.stringify(sharedWorldFire)}`,
     );
     assert(

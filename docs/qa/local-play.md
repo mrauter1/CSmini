@@ -21,9 +21,10 @@ Targeted verification for `round-core-and-movement-foundation`, `bomb-mission-mo
 - tactical AI opening behavior split between objective hold and route patrol
 - blocked line-of-sight investigation without through-wall fire
 - live hit and miss behavior with spread and miss chance influenced by distance, movement, crouch, and visibility
-- opponent gunfire world-audio events with distance-normalized gain
+- playable opponent gunfire world-audio events with distance-normalized gain
 - bounded solo-round elimination after the AI overhaul
 - compact in-match HUD, hold-Tab operations board, and viewport-shell fullscreen control behavior
+- team-specific opponent avatar uniforms
 
 ## Commands
 
@@ -65,7 +66,7 @@ Result: every shipped map loaded a live round from the declared mission metadata
 - Standing camera height: `1.62`
 - Crouched camera height: `1.18`
 - Standing forward sample over the same timed window: `1.72` units
-- Crouched forward sample over the same timed window: `0.79` units
+- Crouched forward sample over the same timed window: `0.98` units
 - Jump sample peak camera height: `2.59`
 - Jump sample landed camera height: `1.62`
 
@@ -85,7 +86,7 @@ Result: default gameplay keeps the player out for the rest of the round. The for
 - `Sandline Foundry` was reopened in local mode as `Amber Vanguard`.
 - The harness forced the round into `active`, enabled a QA-only invulnerability flag so the current solo AI could not interrupt the objective proof, and snapped the local operator onto the declared `Kiln Yard` relay site.
 - The live debug state reported `localCanPlant: true`, proving the declared bomb-site metadata was usable from the actual browser round state rather than only from static map data.
-- The harness started the relay-charge action, observed the bomb state move through `planting` into `planted`, and read a live HUD pressure line of `11.8s to breach`.
+- The harness started the relay-charge action, observed the bomb state move through `planting` into `planted`, and read a live HUD pressure line of `11.9s to breach`.
 - The round resolved by explosion with the result text ending in `breached Kiln Yard.`
 
 Result: the solo-local path now assigns the attacking operator the relay charge, only allows arming inside the declared live site, exposes a planted countdown in the HUD, and resets cleanly after the explosion resolution.
@@ -102,7 +103,7 @@ Result: the solo-local path now assigns the attacking operator the relay charge,
   - `Central Yard`
   - `Generator Hall`
   - `Water Tower Gate`
-- Both hostage slots advanced their route progress to `2`, the debug state reported `extractedCount: 2`, the HUD exposed extraction progress (`1.4s to clear Water Tower Gate`), and the round resolved with `extracted Loading Crew.`
+- Both hostage slots advanced their route progress to `2`, the debug state reported `extractedCount: 2`, the HUD exposed extraction progress (`1.3s to clear Water Tower Gate`), and the round resolved with `extracted Loading Crew.`
 - After the rescue resolution, the normal round shell automatically reset into round `3` briefing without needing a forced-round QA shortcut.
 
 Result: the solo-local hostage flow now supports live secure, escort, route traversal, extraction, readable HUD feedback, and a clean automatic reset into the next round.
@@ -110,18 +111,19 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 ### Local tactical AI round
 
 - `Sandline Foundry` was reopened in local mode as `Amber Vanguard`, the round was forced live, and the AI fireteam opened with distinct roles: one enemy held `objective`, while the other two stayed on `patrol`.
+- The same opening enemy samples exposed Cobalt Reach blue-gray uniform colors and no domino mask through the debug state.
 - A QA-only `stageAiSightlineCase()` hook staged `enemy-0` behind the named blocker `Crate stack west`, with the player hidden on the `Generator Hall` side and a clear fallback pose at `Water Tower Court`.
 - In the blocked pose, the debug state reported `visibility: 0` and `canSeePlayer: false`.
 - Firing once from the blocked pose drew the enemy into `investigate`, but the same debug state kept `shotsFired: 0`, proving the bot reacted to sound without shooting through the crate stack.
 - Moving to the clear pose advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `4` shots and split them into `2` hits and `2` misses.
-- The live enemy shot path emitted a `world-fire` audio debug event with distance data and normalized gain in the accepted `0.08..0.92` range.
+- The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility.
 - After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then dropped into `pursue` after the player ducked back behind cover.
 - The shared shot model was sampled through the QA hook with three profiles:
   - close standing target: `hitChance 0.722`, `missChance 0.278`, `spread 3.479`
   - far moving target: `hitChance 0.262`, `missChance 0.738`, `spread 9.956`
   - crouched partial target: `hitChance 0.449`, `missChance 0.551`, `spread 6.176`
 
-Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces audible distance-normalized opponent gunfire feedback.
+Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
 
 ### Bounded solo elimination round
 

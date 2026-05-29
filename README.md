@@ -1,6 +1,6 @@
 # Dustline Protocol
 
-Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The current build ships five original arenas, two original teams, timed round flow, bomb and hostage mission variants, lightweight solo AI, and same-map shared-room sync between browser tabs with remote aim and fire feedback.
+Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The current build ships five original arenas, two original teams with distinct avatar uniforms, timed round flow, bomb and hostage mission variants, lightweight solo AI, and same-map shared-room sync between browser tabs with remote aim and fire feedback.
 
 ## Gameplay Scope
 

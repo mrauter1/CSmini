@@ -521,6 +521,7 @@ export class LocalMatch {
       },
       weaponView: this.weaponViewSnapshot(),
       audio: this.audio.debugSnapshot(),
+      audioState: this.audio.debugState(),
       sharedRoom: {
         peerCount: this.activeMode === "shared" ? (this.sharedRoom?.peersSnapshot.length ?? 0) : 0,
       },
@@ -611,10 +612,12 @@ export class LocalMatch {
       enemies: this.enemies.map((enemy) => ({
         id: enemy.id,
         name: enemy.name,
+        teamId: enemy.teamId,
         alive: enemy.alive,
         health: enemy.health,
         position: this.toPoint(enemy.avatar.group.position, 0),
         posture: this.combatantPostureSnapshot(enemy.avatar.group, enemy.alive),
+        visual: this.combatantVisualSnapshot(enemy.avatar),
         ai: {
           role: enemy.ai.role,
           behavior: enemy.ai.behavior,
@@ -659,6 +662,7 @@ export class LocalMatch {
         health: actor.health,
         position: this.toPoint(actor.displayPosition),
         posture: this.combatantPostureSnapshot(actor.avatar.group, actor.status === "alive"),
+        visual: this.combatantVisualSnapshot(actor.avatar),
         look: this.toPoint(actor.lookDirection),
         aimPitch: Number(actor.aimPitch.toFixed(4)),
         recoil: Number(actor.recoil.toFixed(3)),
@@ -1281,7 +1285,7 @@ export class LocalMatch {
 
   private spawnEnemies(): void {
     for (let index = 0; index < 3; index += 1) {
-      const avatar = createCombatantAvatar(getTeamDefinition(this.enemyTeamId).accentColor);
+      const avatar = createCombatantAvatar(this.enemyTeamId);
       const spawnPoint = this.enemySpawnPoint(index);
       avatar.group.position.copy(spawnPoint);
       this.scene.add(avatar.group);
@@ -1528,7 +1532,9 @@ export class LocalMatch {
 
   private upsertRemoteActor(presence: RoomPresenceSnapshot): void {
     const existing = this.remoteActors.get(presence.id);
-    if (existing) {
+    if (existing && existing.teamId !== presence.teamId) {
+      this.removeRemoteActor(presence.id);
+    } else if (existing) {
       existing.name = presence.name;
       existing.accentColor = presence.accentColor;
       existing.teamId = presence.teamId;
@@ -1544,7 +1550,7 @@ export class LocalMatch {
       return;
     }
 
-    const avatar = createCombatantAvatar(presence.accentColor);
+    const avatar = createCombatantAvatar(presence.teamId, presence.accentColor);
     const spawnPosition = new THREE.Vector3(presence.position[0], 0, presence.position[2]);
     const lookDirection = new THREE.Vector3(presence.look[0], presence.look[1], presence.look[2]);
     if (lookDirection.lengthSq() > 0.0001) {
@@ -3914,6 +3920,17 @@ export class LocalMatch {
       feetY,
       upright: !alive || (Math.abs(rootPitch) <= 0.01 && Math.abs(rootRoll) <= 0.08),
       aboveGround: !alive || feetY >= -0.01,
+    };
+  }
+
+  private combatantVisualSnapshot(avatar: CombatantAvatar): Record<string, unknown> {
+    return {
+      teamId: avatar.style.teamId,
+      jacketColor: avatar.style.jacketColor,
+      vestColor: avatar.style.vestColor,
+      trouserColor: avatar.style.trouserColor,
+      detailColor: avatar.style.detailColor,
+      hasDominoMask: avatar.style.hasDominoMask,
     };
   }
 

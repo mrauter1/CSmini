@@ -1,9 +1,20 @@
 import * as THREE from "three";
+import type { TeamId } from "../types";
+
+export interface CombatantAvatarStyle {
+  teamId: TeamId;
+  jacketColor: string;
+  vestColor: string;
+  trouserColor: string;
+  detailColor: string;
+  hasDominoMask: boolean;
+}
 
 export interface CombatantAvatar {
   group: THREE.Group;
   weaponAimPivot: THREE.Object3D;
   hitMeshes: THREE.Mesh[];
+  style: CombatantAvatarStyle;
   update(
     elapsed: number,
     moveBlend: number,
@@ -45,14 +56,52 @@ function makeMaterial(color: string): THREE.MeshStandardMaterial {
   });
 }
 
-export function createCombatantAvatar(accentColor: string): CombatantAvatar {
+const COMBATANT_AVATAR_STYLES: Record<TeamId, CombatantAvatarStyle> = {
+  amber: {
+    teamId: "amber",
+    jacketColor: "#735036",
+    vestColor: "#C79258",
+    trouserColor: "#4E3F30",
+    detailColor: "#252525",
+    hasDominoMask: true,
+  },
+  cobalt: {
+    teamId: "cobalt",
+    jacketColor: "#3F5863",
+    vestColor: "#6F8FAA",
+    trouserColor: "#273B45",
+    detailColor: "#2B3032",
+    hasDominoMask: false,
+  },
+};
+
+export function getCombatantAvatarStyle(teamId: TeamId): CombatantAvatarStyle {
+  return { ...COMBATANT_AVATAR_STYLES[teamId] };
+}
+
+export function createCombatantAvatar(
+  teamId: TeamId,
+  operatorAccentColor?: string,
+): CombatantAvatar {
   const group = new THREE.Group();
-  const bodyMaterial = makeMaterial("#6D6C66");
-  const accentMaterial = makeMaterial(accentColor);
-  const detailMaterial = makeMaterial("#2E3031");
+  const style = getCombatantAvatarStyle(teamId);
+  const bodyMaterial = makeMaterial(style.jacketColor);
+  const accentMaterial = makeMaterial(style.vestColor);
+  const trouserMaterial = makeMaterial(style.trouserColor);
+  const detailMaterial = makeMaterial(style.detailColor);
+  const patchMaterial = makeMaterial(operatorAccentColor ?? style.vestColor);
+  const maskMaterial = makeMaterial("#171514");
   const skinMaterial = makeMaterial("#B69C79");
 
-  const hitMaterials = [bodyMaterial, accentMaterial, detailMaterial, skinMaterial];
+  const hitMaterials = [
+    bodyMaterial,
+    accentMaterial,
+    trouserMaterial,
+    detailMaterial,
+    patchMaterial,
+    maskMaterial,
+    skinMaterial,
+  ];
 
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1, 0.48), bodyMaterial);
   torso.position.y = 1.18;
@@ -65,14 +114,42 @@ export function createCombatantAvatar(accentColor: string): CombatantAvatar {
   chestRig.castShadow = true;
   group.add(chestRig);
 
+  const shoulderPatch = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.16, 0.06), patchMaterial);
+  shoulderPatch.position.set(0.48, 1.5, 0.12);
+  shoulderPatch.castShadow = true;
+  group.add(shoulderPatch);
+
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.52, 0.52), skinMaterial);
   head.position.y = 1.95;
   head.castShadow = true;
   group.add(head);
 
-  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.16), detailMaterial);
-  visor.position.set(0, 1.97, 0.28);
-  group.add(visor);
+  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.14, 0.56), bodyMaterial);
+  helmet.position.set(0, 2.25, 0);
+  helmet.castShadow = true;
+  group.add(helmet);
+
+  const faceDetails: THREE.Mesh[] = [];
+  if (style.hasDominoMask) {
+    const leftMask = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.15, 0.08), maskMaterial);
+    leftMask.position.set(-0.13, 2, 0.29);
+    group.add(leftMask);
+
+    const rightMask = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.15, 0.08), maskMaterial);
+    rightMask.position.set(0.13, 2, 0.29);
+    group.add(rightMask);
+
+    const maskBridge = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.07, 0.09), maskMaterial);
+    maskBridge.position.set(0, 2, 0.3);
+    group.add(maskBridge);
+
+    faceDetails.push(leftMask, rightMask, maskBridge);
+  } else {
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.06, 0.08), detailMaterial);
+    brow.position.set(0, 2.06, 0.29);
+    group.add(brow);
+    faceDetails.push(brow);
+  }
 
   const leftArmPivot = new THREE.Group();
   leftArmPivot.position.set(-0.6, 1.5, 0);
@@ -100,12 +177,12 @@ export function createCombatantAvatar(accentColor: string): CombatantAvatar {
   rightArm.castShadow = true;
   rightArmPivot.add(rightArm);
 
-  const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.95, 0.28), accentMaterial);
+  const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.95, 0.28), trouserMaterial);
   leftLeg.position.y = -0.48;
   leftLeg.castShadow = true;
   leftLegPivot.add(leftLeg);
 
-  const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.95, 0.28), accentMaterial);
+  const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.95, 0.28), trouserMaterial);
   rightLeg.position.y = -0.48;
   rightLeg.castShadow = true;
   rightLegPivot.add(rightLeg);
@@ -144,12 +221,24 @@ export function createCombatantAvatar(accentColor: string): CombatantAvatar {
   muzzleFlash.visible = false;
   rifle.add(muzzleFlash);
 
-  const hitMeshes = [torso, chestRig, head, visor, leftArm, rightArm, leftLeg, rightLeg];
+  const hitMeshes = [
+    torso,
+    chestRig,
+    shoulderPatch,
+    head,
+    helmet,
+    ...faceDetails,
+    leftArm,
+    rightArm,
+    leftLeg,
+    rightLeg,
+  ];
 
   return {
     group,
     weaponAimPivot,
     hitMeshes,
+    style,
     update(elapsed, moveBlend, alive, recoil, hitFlash, aimPitch = 0) {
       const swing = Math.sin(elapsed * 7.6) * 0.75 * moveBlend;
       const pulse = Math.max(0, hitFlash);

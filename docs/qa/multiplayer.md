@@ -10,7 +10,8 @@ Targeted verification for shared-room behavior inside `round-core-and-movement-f
 - explicit team assignment sync
 - round phase sync
 - third-person remote avatar aim sync with upright body roots
-- remote-player gunfire events and distance-normalized world-fire audio
+- team-specific remote avatar uniforms, including Amber's domino mask
+- remote-player gunfire events and playable distance-normalized world-fire audio
 - different-map isolation
 - missing `BroadcastChannel` fallback
 - bomb carrier sync, planted-state sync, and defender-side defuse resolution
@@ -53,9 +54,11 @@ Observed results:
 - both pages kept the remote combatant root upright and above ground
 - remote body yaw tracked the other player horizontally while root pitch stayed near zero
 - the remote weapon aim pivot tracked the full look vector, including vertical pitch, so the gun points where the other player is looking instead of pitching the whole character
+- page 1 saw the remote Cobalt operator with the blue-gray uniform and no domino mask
+- page 2 saw the remote Amber operator with the warm rust/tan uniform and a dark domino mask
 - page 1 fired a live shared-room shot and recorded a `shared-sent` shot event
-- page 2 received the same shot as `shared-received`, marked the remote actor with a recent shot, and logged a `world-fire` audio event
-- the received world-fire event carried distance and normalized gain bounded inside the accepted `0.08..0.92` range
+- page 2 received the same shot as `shared-received`, marked the remote actor with a recent shot, and logged a playable `world-fire` audio event after its audio context was armed
+- the received world-fire event carried distance, normalized gain bounded inside the accepted `0.08..0.92` range, no blocked reason, and boosted output gain for audibility
 
 Result: shared-room combat now distinguishes body yaw from weapon pitch and gives observers audible opponent gunfire feedback for remote shots, including misses.
 
@@ -66,7 +69,7 @@ The same two pages then stayed on `Sandline Foundry` for a live relay-charge exc
 - page 1 forced the shared round into `active`, stood in the declared `Kiln Yard` site, and began the relay-charge arm action as the attacking `Amber Vanguard` operator
 - page 2 saw the same attacking operator listed as the bomb carrier before the plant
 - both pages advanced to `planted`
-- page 2 rendered the same planted-pressure HUD line (`12.0s to breach`) and then moved onto the live site as the `Cobalt Reach` defender
+- page 2 rendered the same planted-pressure HUD line (`12.1s to breach`) and then moved onto the live site as the `Cobalt Reach` defender
 - page 2 completed the disarm, and both pages resolved with matching `disarmed Kiln Yard` result text
 
 Result: the retained shared-room path now propagates bomb carrier ownership, planted-site pressure, and defuse resolution without stale mission state between peers.

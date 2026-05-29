@@ -20,6 +20,7 @@ This pass reviewed the current maps, mission content, HUD labels, geometry, UI t
 ### Teams, mission names, and labels
 
 - Team names are original: `Amber Vanguard` and `Cobalt Reach`.
+- Team avatar colors are original: Amber uses a warm rust/tan field uniform with a dark domino mask, while Cobalt uses a colder blue-gray field uniform without the mask.
 - Mission names are original: `Relay Charge` and `Evac Escort`.
 - Objective labels and route callouts are original, including `Kiln Yard`, `Water Tower Gate`, `Loading Crew`, `Generator Hall`, `Drain Underpass`, `Archive Court Relay`, and the rest of the shipped roster landmarks.
 - The project does not use `Terrorists`, `Counter-Terrorists`, `de_`, `cs_`, or copied site labels.
@@ -38,8 +39,8 @@ This pass reviewed the current maps, mission content, HUD labels, geometry, UI t
 ### HUD, UI, audio, and weapon presentation
 
 - The menu, roster, HUD, and prompt treatment are original browser-authored UI surfaces implemented in `src/ui/templates.ts`, `src/ui/app.ts`, and `src/styles.css`.
-- Weapon, character, and environment geometry are built from original primitives in the current Three.js scene blueprints.
-- Audio remains procedural browser synthesis from `src/game/audio.ts`; local fire, remote world-fire, and opponent-fire distance gain use generated oscillator voices with no imported gunshots, voice lines, or commercial sound effects.
+- Weapon, character, and environment geometry are built from original primitives in the current Three.js scene blueprints, including the team-specific avatar uniforms and Amber domino mask.
+- Audio remains procedural browser synthesis from `src/game/audio.ts`; local fire, remote world-fire, opponent-fire distance gain, and pending-fire replay after audio unlock use generated oscillator voices with no imported gunshots, voice lines, or commercial sound effects.
 - The current UI and HUD do not copy Counter-Strike branding, logos, fonts, icons, radar art, or panel layouts.
 
 ### Gameplay data and tuning

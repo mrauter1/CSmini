@@ -10,7 +10,7 @@ Final verification for the presentation and release guardrail pass covered:
 - main-map visual match against the generated reference set
 - compact match HUD, hold-Tab information panel behavior, and viewport fullscreen control
 - first-person weapon and HUD presentation
-- upright opposing-player and shared-room avatar posture with remote weapon pitch
+- upright opposing-player and shared-room avatar posture with remote weapon pitch and team-specific uniforms
 - death, respawn, and procedural opponent-fire audio feedback
 - same-map two-tab multiplayer presence, damage, death, respawn, remote fire audio, and fallback behavior
 - asset-license posture and documentation completeness
@@ -69,7 +69,7 @@ Results:
 
 Non-blocking note:
 
-- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `576.86 kB` minified. This did not block runtime verification.
+- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `579.95 kB` minified. This did not block runtime verification.
 
 ## Visual Target Summary
 
@@ -80,6 +80,7 @@ Accepted target characteristics from `docs/visual-target.md` and the reference s
 - low-poly angular geometry with readable crates, walls, lanes, shutters, and catwalks
 - dark translucent tactical menu and HUD panels with condensed typography and restrained accent color
 - boxy humanoid operators with clear facing direction and silhouette
+- distinct original team uniforms, with Amber carrying a dark domino mask and Cobalt staying unmasked
 - an original abstract low-poly first-person weapon anchored low-right with restrained recoil and muzzle flash
 - simple daylight lighting with readable shadows and light haze
 - explicit avoidance of Counter-Strike assets, copied layouts, photorealism, sci-fi styling, voxel/cartoon cues, and SaaS-like UI
