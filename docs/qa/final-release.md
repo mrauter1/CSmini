@@ -4,21 +4,24 @@ Date: `2026-05-28`
 
 ## Scope
 
-Final verification for `verification-docs-and-final-reporting` covered:
+Final verification for the current presentation and release guardrail pass covered:
 
 - browser-only architecture and dependency guardrails
 - static `dist/` build output
+- compact in-match HUD behavior, hold-Tab operations board, and viewport fullscreen control
+- first-person weapon alignment and upright above-ground combatant posture
 - final browser QA coverage for movement, rounds, missions, AI, and shared-room sync
 - originality and asset-policy confirmation
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh current-tree verifier reruns were completed on `2026-05-28T15:48:18-03:00`.
+Fresh current-tree verifier reruns were completed on `2026-05-28T22:49:34-03:00`.
 
 ## Commands Run
 
 ```bash
 npm run typecheck
+npm run build
 npm test
 npm run qa:final
 ```
@@ -26,12 +29,13 @@ npm run qa:final
 Results on the current tree:
 
 - `npm run typecheck`: passed
+- `npm run build`: passed and produced static `dist/` output
 - `npm test`: passed and returned successfully after rebuilding the app and running the full browser QA harness
 - `npm run qa:final`: passed and returned successfully while refreshing `assets/screenshots/`
 
 Non-blocking note:
 
-- The `npm test` build step repeated the existing Vite chunk-size warning for `dist/assets/localMatch-*.js` after minification. This did not block verification.
+- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for `dist/assets/localMatch-C9OukZRX.js` at `570.84 kB` after minification. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -50,10 +54,23 @@ Non-blocking note:
 
 The passing browser summaries from the fresh `npm test` and `npm run qa:final` reruns explicitly covered the required gameplay contract:
 
+- HUD and fullscreen:
+  - old `.hud-card` / `.hud-overlay` gameplay surfaces were absent from live play
+  - compact startup hints disappeared after controls were armed
+  - health stayed bottom-left, ammo stayed bottom-right, and round/mission timing stayed in the top strip
+  - hold-`Tab` opened the operations board, repeated keydown did not toggle it closed, and keyup hid it again
+  - armed `Tab` prevented browser focus navigation, while unarmed `Tab` kept browser defaults
+  - the viewport fullscreen button was icon-only, inside the match viewport shell, and exposed fullscreen label/title text for accessibility
+  - deterministic fullscreen mocking proved viewport-shell targeting, `1012 x 720` renderer/canvas resize, held-Tab usability while fullscreen, exit-state cleanup, and denied-request compact status feedback
+- Presentation:
+  - idle and firing weapon debug states reported `lowRight: true`, `forwardAligned: true`, and `muzzleAheadOfRoot: true`
+  - idle `barrelForward.z` was `-0.99`; firing `barrelForward.z` was `-0.97`
+  - firing reported `muzzleFlashRecent: true` and `flashVisible: true`
+  - live solo enemies across objective, patrol, blocked, investigate, engage, reposition, and pursue states stayed upright and above ground
+  - shared-room remote actors on both pages stayed upright and above ground
 - Movement:
   - crouch lowered the camera from `1.62` to `1.18`
-  - crouch reduced same-window travel from `1.72` to `0.98` in `npm test`
-  - the standalone `qa:final` rerun also kept crouch slower than standing at `1.03` vs `0.6`
+  - crouch reduced same-window travel from `2.4` to `1.18`
   - jump peaked at `2.59`, landed at `1.62`, and stayed airborne for `0.767s`
 - Teams and spawns:
   - all five shipped maps loaded round-one bomb metadata live
@@ -77,7 +94,7 @@ The passing browser summaries from the fresh `npm test` and `npm run qa:final` r
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-28`, with the latest current-tree timestamps between `15:44` and `15:47 -03:00`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-28`, with the latest current-tree timestamps between `22:46` and `22:48 -03:00`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`

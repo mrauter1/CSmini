@@ -4,11 +4,13 @@ Date: 2026-05-28
 
 ## Scope
 
-Final verification for the `verification-docs-and-final-reporting` subgoal covered:
+Final verification for the presentation and release guardrail pass covered:
 
 - browser launch and map selection
 - main-map visual match against the generated reference set
+- compact match HUD, hold-Tab information panel behavior, and viewport fullscreen control
 - first-person weapon and HUD presentation
+- upright opposing-player and shared-room avatar posture
 - death and respawn feedback
 - same-map two-tab multiplayer presence, damage, death, respawn, and fallback behavior
 - asset-license posture and documentation completeness
@@ -68,7 +70,7 @@ Results:
 
 Non-blocking note:
 
-- `vite build` emitted a chunk-size warning for the `localMatch` bundle at roughly 507 kB minified. This did not block runtime verification.
+- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `570.84 kB` minified. This did not block runtime verification.
 
 ## Visual Target Summary
 
@@ -100,8 +102,8 @@ Scoring rubric:
 | Central courtyard reference vs actual central area | `03-central-courtyard.png` | `04-sandline-central-yard.png` | 2 | The current map shows a readable central yard, crate cover, landmark silhouettes, and tactical space separation. It remains materially flatter than the reference. |
 | Corridor reference vs actual corridor | `04-corridor-route.png` | `05-sandline-generator-hall.png` | 1 | The implementation has a valid tight route, but the captured hall is much more austere and less corridor-like than the reference target. This is the weakest comparison. |
 | Flank reference vs actual flank route | `05-flank-route.png` | `06-sandline-drain-underpass.png` | 2 | The live underpass flank reads as a narrow side route with cover and route identity, even though the current lighting and material breakup are still sparse. |
-| Weapon/HUD reference vs actual weapon/HUD | `07-weapon-idle-hud.png` and `08-weapon-firing-hud.png` | `08-weapon-idle-hud.png` and `09-weapon-firing-hud.png` | 2 | The abstract first-person weapon, ammo readout, health, status, and muzzle-flash feedback all land in the correct retro browser-FPS direction, with a much simpler presentation. |
-| Character reference vs actual player model | `09-opposing-player.png` | `10-opposing-player.png` | 2 | The remote operator is a readable low-poly humanoid with team-accent color and a clear rifle silhouette. The implementation is much more lightweight than the painted reference. |
+| Weapon/HUD reference vs actual weapon/HUD | `07-weapon-idle-hud.png` and `08-weapon-firing-hud.png` | `08-weapon-idle-hud.png` and `09-weapon-firing-hud.png` | 2 | The abstract first-person weapon, ammo readout, health, compact status line, top round strip, and muzzle-flash feedback all land in the correct retro browser-FPS direction, with a much simpler presentation. |
+| Character reference vs actual player model | `09-opposing-player.png` | `10-opposing-player.png` | 2 | The live opposing operator is a readable upright low-poly humanoid with team-accent color and a clear rifle silhouette. The implementation is much more lightweight than the painted reference. |
 | Death/respawn reference vs actual death/respawn state | `10-death-respawn.png` | `11-death-respawn-state.png` | 3 | The live respawn state strongly matches the intended functional overlay, countdown, and tactical HUD interruption pattern. |
 | Multiplayer reference vs actual two-tab multiplayer view | `11-two-player-combat.png` | `12-two-player-multiplayer.png` | 2 | The final browser capture visibly proves a same-map shared room with a second operator present in the scene and a two-operator roster, though the shot is calmer than the reference combat painting. |
 

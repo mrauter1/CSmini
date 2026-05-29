@@ -82,9 +82,9 @@ Test surfaces used for the checklist:
 ### Checklist Results
 
 - Movement cadence: `pass`
-  Evidence: fresh same-window travel sample was `1.03` standing vs `0.79` crouched, with walk `8.6u/s` and crouch `4.82u/s`.
+  Evidence: fresh same-window travel sample was `2.4` standing vs `1.18` crouched, with walk `8.6u/s` and crouch `4.82u/s`.
 - Crouch readability: `pass`
-  Evidence: camera dropped from `1.62` to `1.18` in the live sample, crouch speed stayed at `56%` of walk pace, and recoil kick dropped from `0.8` standing to `0.58` crouched.
+  Evidence: camera dropped from `1.62` to `1.18` in the live sample, crouch speed stayed below standing pace, and recoil kick dropped from `0.8` standing to `0.58` crouched.
 - Jump readability: `pass`
   Evidence: the live jump sample peaked at `2.59`, landed back at `1.62`, and stayed airborne for `0.767s`, which reads as a committed hop rather than floaty traversal.
 - Weapon timing/readability: `pass`
@@ -92,7 +92,7 @@ Test surfaces used for the checklist:
 - Short round pacing: `pass`
   Evidence: the round shell stays at `4.5s` briefing / `72s` live / `5.5s` reset, while bomb fuse timing stays in the `11.9-12.6s` range and hostage secure/extract stays at `1.45s` / `1.8s`.
 - Objective pressure: `pass`
-  Evidence: fresh HUD samples showed solo bomb `11.1s to breach`, shared bomb `12.0s to breach`, solo hostage `1.4s to clear Water Tower Gate`, and shared hostage `1.6s to clear Water Tower Gate`.
+  Evidence: fresh HUD samples showed solo bomb `12.0s to breach`, shared bomb `12.0s to breach`, solo hostage `1.5s to clear Water Tower Gate`, and shared hostage `1.6s to clear Water Tower Gate`.
 - Cover-oriented combat: `pass`
   Evidence: the AI used `Crate stack west` as a real blocker, held fire at blocked visibility `0`, then switched through `reposition` and `pursue` after contact and broken sight.
 - HUD clarity: `pass`

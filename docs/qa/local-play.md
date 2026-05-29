@@ -61,9 +61,9 @@ Result: every shipped map loaded a live round from the declared mission metadata
 ### Movement checks
 
 - Standing camera height: `1.62`
-- Crouched camera height: `1.26`
-- Standing forward sample over the same timed window: `1.69` units
-- Crouched forward sample over the same timed window: `0.98` units
+- Crouched camera height: `1.18`
+- Standing forward sample over the same timed window: `2.4` units
+- Crouched forward sample over the same timed window: `1.18` units
 - Jump sample peak camera height: `2.59`
 - Jump sample landed camera height: `1.62`
 
