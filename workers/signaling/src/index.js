@@ -5,23 +5,39 @@ const MAX_REQUEST_URL_LENGTH = 512;
 const MAX_QUERY_LENGTH = 256;
 const MAX_ROOM_PATH_LENGTH = 128;
 
-// A host can fan out one offer plus a few dozen ICE candidates to 13 guests during room setup.
-// These caps keep that normal burst working while preventing arbitrary large-payload relay.
+// Payload caps stay above normal browser-generated signaling blobs while remaining cheap to reject.
+// 24 KiB raw leaves room for the JSON envelope, 12 KiB covers a full offer/answer body, and 2 KiB
+// covers long ICE candidate lines without letting clients turn the Worker into a large-payload relay.
 const MAX_RAW_MESSAGE_BYTES = 24 * 1024;
 const MAX_SDP_DESCRIPTION_BYTES = 12 * 1024;
 const MAX_ICE_CANDIDATE_BYTES = 2 * 1024;
+// The 10 s rate window is long enough to absorb a real room-setup burst, and 384 messages / 256 KiB
+// per socket still gives a host room for 13 targeted offers plus trickled ICE while cutting off
+// sustained spam quickly. 256 KiB also allows about twenty-one near-max SDP payloads in one window,
+// which is comfortably above one host fan-out and far below "relay arbitrary blobs all day".
 const MESSAGE_RATE_WINDOW_MS = 10_000;
 const MAX_MESSAGES_PER_WINDOW = 384;
 const MAX_BYTES_PER_WINDOW = 256 * 1024;
+// Four invalid messages lets a buggy client receive a couple of actionable errors, but prevents
+// infinite malformed-message loops from camping on a room.
 const MAX_INVALID_MESSAGES = 4;
 
+// Ready should happen immediately after a successful upgrade, so 5 s is enough grace before we treat
+// the socket as hoarded. Gameplay moves onto DataChannels after setup, so keeping an idle signaling
+// socket around for more than 10 minutes adds little value while increasing room-hoarding risk. A
+// 30 s sweep is coarse enough not to thrash timers and fine enough to clear stale sockets promptly.
 const SESSION_READY_TIMEOUT_MS = 5_000;
 const SESSION_IDLE_TIMEOUT_MS = 10 * 60 * 1_000;
 const SESSION_SWEEP_INTERVAL_MS = 30_000;
+// Two offers / answers per pair allow the initial negotiation plus one retry or ICE restart. Sixty-four
+// ICE candidates per pair leaves room for noisy browser candidate gathering across host/guest
+// links without allowing endless trickle spam to monopolize the room.
 const MAX_OFFERS_PER_PAIR = 2;
 const MAX_ANSWERS_PER_PAIR = 2;
 const MAX_ICE_CANDIDATES_PER_PAIR = 64;
 
+// 1008 is the standard policy-violation close for contract breaches, 1009 is the standard signal
+// for oversized frames, and 1011 keeps send failures and other internal faults distinct from abuse.
 const CLOSE_CODES = Object.freeze({
   normal: 1000,
   policy: 1008,

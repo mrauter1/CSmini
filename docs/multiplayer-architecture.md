@@ -32,6 +32,15 @@ The Cloudflare Worker is intentionally narrow:
 - The Durable Object keeps the room at one host plus up to 13 guests, rejects duplicate peer ids and second hosts, expires sockets that never become ready, and closes idle sessions instead of letting abandoned room metadata accumulate.
 - Relay is allowlist-based: only `offer`, `answer`, and `ice-candidate` pass through, every relay must target a specific peer, and the Worker rebuilds the forwarded payload instead of copying arbitrary client fields.
 
+Current threshold rationale:
+
+- `24 KiB` raw, `12 KiB` SDP, and `2 KiB` ICE caps stay above ordinary browser-generated signaling payloads while keeping oversize relays cheap to reject.
+- The `10 s` / `384 messages` / `256 KiB` per-socket window is sized for one host to fan out normal setup traffic to a full 14-player room, but it still cuts off sustained spam quickly instead of letting one socket monopolize the Durable Object.
+- `4` invalid messages gives a real client enough room to receive actionable `room-error` feedback, but it stops malformed-message loops before they can linger.
+- `5 s` ready timeout removes hoarded upgrades quickly because a valid socket should become ready almost immediately; `10 min` idle timeout is acceptable because gameplay moves to browser-to-browser DataChannels after setup; `30 s` sweeps keep cleanup coarse but prompt.
+- `2` offers and `2` answers per peer pair allow the initial exchange plus one retry or restart, while `64` ICE candidates per pair leaves headroom for noisy candidate gathering without permitting endless trickle spam.
+- Close codes follow the WebSocket intent: `1008` for policy and protocol breaches, `1009` for oversized frames, and `1011` for internal send failures.
+
 These controls harden signaling abuse and bandwidth amplification. They are not gameplay anti-cheat. They also do not solve tough NAT traversal or replace TURN, and they do not authenticate browser identities beyond the room protocol itself.
 
 ## Host Authority
