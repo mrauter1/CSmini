@@ -32,8 +32,10 @@ Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The cu
 - `E`: objective interaction
 - Left click: fire
 - `R`: reload
+- `Tab`: hold in-match operations board
+- Viewport corner button or `Alt+Enter`: toggle match viewport fullscreen
 - `M`: return to map select
-- `Esc`: release pointer lock
+- `Esc`: release pointer lock and use native browser fullscreen exit behavior
 
 ## Run Locally
 

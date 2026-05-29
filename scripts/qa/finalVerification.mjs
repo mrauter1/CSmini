@@ -377,6 +377,13 @@ async function readHud(page) {
         scoreboardVisible: visible('[data-ui="scoreboard-panel"]'),
         debugScoreboardVisible: Boolean(window.__dustlineQa__?.getState()?.scoreboardVisible),
         legacyHudSurfaces: document.querySelectorAll('.hud-card, .hud-overlay').length,
+        fullscreenButtonVisible: visible('[data-ui="fullscreen-toggle"]'),
+        fullscreenButtonLabel: document.querySelector('[data-ui="fullscreen-toggle"]')?.getAttribute('aria-label') ?? '',
+        fullscreenButtonTitle: document.querySelector('[data-ui="fullscreen-toggle"]')?.getAttribute('title') ?? '',
+        fullscreenButtonDisabled: Boolean(document.querySelector('[data-ui="fullscreen-toggle"]')?.disabled),
+        fullscreenButtonInsideViewport: Boolean(document.querySelector('[data-ui="fullscreen-toggle"]')?.closest('[data-world-shell]')),
+        fullscreenButtonActive: document.querySelector('[data-ui="fullscreen-toggle"]')?.dataset.fullscreenActive ?? '',
+        fullscreenButtonText: document.querySelector('[data-ui="fullscreen-toggle"]')?.textContent?.trim() ?? '',
         teamCountsText: document.querySelector('[data-ui="team-counts"]')?.textContent?.trim() ?? '',
         rosterText: document.querySelector('[data-ui="roster"]')?.textContent?.trim() ?? '',
         controlsText: document.querySelector('[data-ui="scoreboard-panel"] .scoreboard-controls')?.textContent?.trim() ?? '',
@@ -435,6 +442,149 @@ async function keyboardDefaultPrevented(page, type, code, key, repeat = false) {
       });
       window.dispatchEvent(event);
       return event.defaultPrevented;
+    })()
+  `);
+}
+
+async function exerciseMockFullscreen(page) {
+  return page.evaluate(`
+    (async () => {
+      const shell = document.querySelector('[data-world-shell]');
+      const host = document.querySelector('[data-world-host]');
+      const button = document.querySelector('[data-ui="fullscreen-toggle"]');
+      if (!shell || !host || !button) {
+        return null;
+      }
+
+      const originalRequest = shell.requestFullscreen;
+      const originalExit = document.exitFullscreen;
+      const hadOwnFullscreenElement = Object.prototype.hasOwnProperty.call(document, 'fullscreenElement');
+      const originalFullscreenElement = hadOwnFullscreenElement
+        ? Object.getOwnPropertyDescriptor(document, 'fullscreenElement')
+        : null;
+      let fullscreenElement = null;
+      let requestTargetMatchesShell = false;
+      let requestCount = 0;
+      let exitCount = 0;
+
+      const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      Object.defineProperty(document, 'fullscreenElement', {
+        configurable: true,
+        get: () => fullscreenElement,
+      });
+
+      shell.requestFullscreen = function () {
+        requestTargetMatchesShell = this === shell;
+        requestCount += 1;
+        fullscreenElement = this;
+        shell.style.width = '1012px';
+        shell.style.height = '720px';
+        shell.style.minHeight = '720px';
+        shell.style.border = '0';
+        shell.style.borderRadius = '0';
+        document.dispatchEvent(new Event('fullscreenchange'));
+        return Promise.resolve();
+      };
+
+      document.exitFullscreen = function () {
+        exitCount += 1;
+        fullscreenElement = null;
+        shell.style.width = '';
+        shell.style.height = '';
+        shell.style.minHeight = '';
+        shell.style.border = '';
+        shell.style.borderRadius = '';
+        document.dispatchEvent(new Event('fullscreenchange'));
+        return Promise.resolve();
+      };
+
+      try {
+        button.click();
+        await nextFrame();
+        const entered = window.__dustlineQa__?.getState()?.fullscreen ?? null;
+        const enteredLabel = button.getAttribute('aria-label') ?? '';
+        const enteredActive = button.dataset.fullscreenActive ?? '';
+
+        window.__dustlineQa__?.setKey('Tab', true);
+        await nextFrame();
+        const tabPanelVisible = Boolean(
+          document.querySelector('[data-ui="scoreboard-panel"]')
+            && !document.querySelector('[data-ui="scoreboard-panel"]').hidden
+        );
+        window.__dustlineQa__?.setKey('Tab', false);
+
+        button.click();
+        await nextFrame();
+        const exited = window.__dustlineQa__?.getState()?.fullscreen ?? null;
+        const exitedLabel = button.getAttribute('aria-label') ?? '';
+        const exitedActive = button.dataset.fullscreenActive ?? '';
+
+        return {
+          requestTargetMatchesShell,
+          requestCount,
+          exitCount,
+          entered,
+          enteredLabel,
+          enteredActive,
+          tabPanelVisible,
+          exited,
+          exitedLabel,
+          exitedActive,
+        };
+      } finally {
+        shell.requestFullscreen = originalRequest;
+        document.exitFullscreen = originalExit;
+        shell.style.width = '';
+        shell.style.height = '';
+        shell.style.minHeight = '';
+        shell.style.border = '';
+        shell.style.borderRadius = '';
+        if (originalFullscreenElement) {
+          Object.defineProperty(document, 'fullscreenElement', originalFullscreenElement);
+        } else if (!hadOwnFullscreenElement) {
+          delete document.fullscreenElement;
+        }
+      }
+    })()
+  `);
+}
+
+async function exerciseDeniedFullscreen(page) {
+  return page.evaluate(`
+    (async () => {
+      const shell = document.querySelector('[data-world-shell]');
+      const button = document.querySelector('[data-ui="fullscreen-toggle"]');
+      if (!shell || !button) {
+        return null;
+      }
+
+      const originalRequest = shell.requestFullscreen;
+      const hadOwnFullscreenElement = Object.prototype.hasOwnProperty.call(document, 'fullscreenElement');
+      const originalFullscreenElement = hadOwnFullscreenElement
+        ? Object.getOwnPropertyDescriptor(document, 'fullscreenElement')
+        : null;
+      Object.defineProperty(document, 'fullscreenElement', {
+        configurable: true,
+        get: () => null,
+      });
+      shell.requestFullscreen = () => Promise.reject(new Error('Denied for QA'));
+
+      try {
+        button.click();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return {
+          active: window.__dustlineQa__?.getState()?.fullscreen?.active ?? null,
+          status: document.querySelector('[data-ui="status"]')?.textContent?.trim() ?? '',
+        };
+      } finally {
+        shell.requestFullscreen = originalRequest;
+        if (originalFullscreenElement) {
+          Object.defineProperty(document, 'fullscreenElement', originalFullscreenElement);
+        } else if (!hadOwnFullscreenElement) {
+          delete document.fullscreenElement;
+        }
+      }
     })()
   `);
 }
@@ -575,6 +725,7 @@ async function main() {
       bombShared: {},
       hostageShared: {},
       shared: {},
+      fullscreen: {},
       fallback: {},
       classicFeel: {},
     };
@@ -685,6 +836,91 @@ async function main() {
     assert(compactDefaultHud.health, "Expected compact bottom-left health to be present");
     assert(compactDefaultHud.ammo, "Expected compact bottom-right ammo to be present");
     assert(compactDefaultHud.roundTimer, "Expected compact top round timer to be present");
+    assert(compactDefaultHud.fullscreenButtonVisible, "Expected viewport fullscreen control to be visible");
+    assert(
+      compactDefaultHud.fullscreenButtonInsideViewport,
+      "Expected fullscreen control to live inside the match viewport shell",
+    );
+    assert(
+      /fullscreen/i.test(compactDefaultHud.fullscreenButtonLabel),
+      "Expected fullscreen control to expose an accessible fullscreen label",
+    );
+    assert(
+      /fullscreen/i.test(compactDefaultHud.fullscreenButtonTitle),
+      "Expected fullscreen control to expose a fullscreen title",
+    );
+    assert(
+      compactDefaultHud.fullscreenButtonText.length === 0,
+      "Expected fullscreen control to use an icon-only visual treatment",
+    );
+
+    const fullscreenDebugBefore = await getState(localPage);
+    assert(
+      fullscreenDebugBefore.fullscreen?.targetIsViewportShell,
+      "Expected fullscreen target debug state to point at the viewport shell",
+    );
+    assert(
+      fullscreenDebugBefore.fullscreen?.viewportWidth > 0 &&
+        fullscreenDebugBefore.fullscreen?.viewportHeight > 0,
+      "Expected fullscreen debug state to expose viewport dimensions",
+    );
+
+    const mockedFullscreen = await exerciseMockFullscreen(localPage);
+    assert(mockedFullscreen, "Expected mocked fullscreen exercise to run");
+    assert(
+      mockedFullscreen.requestTargetMatchesShell,
+      "Expected fullscreen request to target the viewport shell",
+    );
+    assert(mockedFullscreen.requestCount === 1, "Expected one viewport fullscreen enter request");
+    assert(mockedFullscreen.exitCount === 1, "Expected one viewport fullscreen exit request");
+    assert(mockedFullscreen.entered?.active, "Expected debug state to mark viewport fullscreen active");
+    assert(
+      mockedFullscreen.entered?.viewportWidth === 1012 &&
+        mockedFullscreen.entered?.viewportHeight === 720,
+      `Expected renderer host to resize to mocked fullscreen dimensions, saw ${JSON.stringify(mockedFullscreen.entered)}`,
+    );
+    assert(
+      mockedFullscreen.entered?.canvasClientWidth === 1012 &&
+        mockedFullscreen.entered?.canvasClientHeight === 720,
+      "Expected canvas CSS size to follow fullscreen viewport dimensions",
+    );
+    assert(
+      /exit/i.test(mockedFullscreen.enteredLabel) &&
+        mockedFullscreen.enteredActive === "true",
+      "Expected fullscreen button state to switch to exit while active",
+    );
+    assert(
+      mockedFullscreen.tabPanelVisible,
+      "Expected held Tab info panel to remain visible while fullscreen is active",
+    );
+    assert(!mockedFullscreen.exited?.active, "Expected debug state to clear viewport fullscreen on exit");
+    assert(
+      /enter/i.test(mockedFullscreen.exitedLabel) &&
+        mockedFullscreen.exitedActive === "false",
+      "Expected fullscreen button state to return to enter after exit",
+    );
+
+    const deniedFullscreen = await exerciseDeniedFullscreen(localPage);
+    assert(deniedFullscreen, "Expected denied fullscreen exercise to run");
+    assert(!deniedFullscreen.active, "Expected denied fullscreen request not to leave stale active state");
+    assert(
+      /denied/i.test(deniedFullscreen.status),
+      `Expected denied fullscreen request to surface a compact status line, saw ${deniedFullscreen.status}`,
+    );
+    summary.fullscreen = {
+      buttonInsideViewport: compactDefaultHud.fullscreenButtonInsideViewport,
+      buttonLabel: compactDefaultHud.fullscreenButtonLabel,
+      targetIsViewportShell: fullscreenDebugBefore.fullscreen?.targetIsViewportShell ?? false,
+      mockedEnterActive: mockedFullscreen.entered?.active ?? false,
+      mockedResize: {
+        viewportWidth: mockedFullscreen.entered?.viewportWidth ?? null,
+        viewportHeight: mockedFullscreen.entered?.viewportHeight ?? null,
+        canvasClientWidth: mockedFullscreen.entered?.canvasClientWidth ?? null,
+        canvasClientHeight: mockedFullscreen.entered?.canvasClientHeight ?? null,
+      },
+      tabPanelVisibleDuringFullscreen: mockedFullscreen.tabPanelVisible,
+      deniedStatus: deniedFullscreen.status,
+    };
 
     const armedTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab");
     assert(armedTabPrevented, "Expected Tab to prevent browser focus navigation while controls are armed");
@@ -709,6 +945,12 @@ async function main() {
 
     const armedSpacePrevented = await keyboardDefaultPrevented(localPage, "keydown", "Space", " ", true);
     assert(armedSpacePrevented, "Expected Space to prevent browser defaults while controls are armed");
+    const armedEscapePrevented = await keyboardDefaultPrevented(localPage, "keydown", "Escape", "Escape");
+    assert(
+      !armedEscapePrevented,
+      "Expected Esc to keep native browser pointer-lock/fullscreen defaults while controls are armed",
+    );
+    await engageControls(localPage);
     await delay(180);
 
     const standingState = await getState(localPage);

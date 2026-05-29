@@ -38,6 +38,7 @@ export class TacticalShellApp {
 
   constructor(private readonly root: HTMLElement) {
     this.root.addEventListener("click", this.handleClick);
+    window.addEventListener("keydown", this.handleFullscreenShortcut);
   }
 
   mount(): void {
@@ -47,6 +48,7 @@ export class TacticalShellApp {
   dispose(): void {
     this.teardownMatch();
     this.root.removeEventListener("click", this.handleClick);
+    window.removeEventListener("keydown", this.handleFullscreenShortcut);
   }
 
   private readonly handleClick = (event: Event): void => {
@@ -81,6 +83,9 @@ export class TacticalShellApp {
       case "lock-match":
         this.match?.requestPointerLock();
         return;
+      case "toggle-fullscreen":
+        void this.match?.toggleViewportFullscreen();
+        return;
       case "toggle-classic-crouch":
         this.classicCrouchAlias = !this.classicCrouchAlias;
         writeClassicCrouchAlias(this.classicCrouchAlias);
@@ -105,6 +110,21 @@ export class TacticalShellApp {
       default:
         return;
     }
+  };
+
+  private readonly handleFullscreenShortcut = (event: KeyboardEvent): void => {
+    if (
+      this.screen !== "stage" ||
+      event.repeat ||
+      event.code !== "Enter" ||
+      !event.altKey ||
+      this.isEditableEventTarget(event.target)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    void this.match?.toggleViewportFullscreen();
   };
 
   private render(): void {
@@ -285,7 +305,30 @@ export class TacticalShellApp {
         "world-stage__viewport--scoreboard",
         snapshot.scoreboardVisible,
       );
+      worldShell.classList.toggle(
+        "world-stage__viewport--fullscreen-active",
+        snapshot.fullscreenActive,
+      );
       worldShell.dataset.team = snapshot.teamId;
+    }
+
+    const fullscreenToggle = this.root.querySelector<HTMLButtonElement>(
+      '[data-ui="fullscreen-toggle"]',
+    );
+    if (fullscreenToggle) {
+      const fullscreenLabel = snapshot.fullscreenActive
+        ? "Exit viewport fullscreen"
+        : snapshot.fullscreenAvailable
+          ? "Enter viewport fullscreen"
+          : "Viewport fullscreen unavailable";
+      fullscreenToggle.disabled = !snapshot.fullscreenAvailable;
+      fullscreenToggle.classList.toggle(
+        "hud-fullscreen-toggle--active",
+        snapshot.fullscreenActive,
+      );
+      fullscreenToggle.dataset.fullscreenActive = String(snapshot.fullscreenActive);
+      fullscreenToggle.setAttribute("aria-label", fullscreenLabel);
+      fullscreenToggle.setAttribute("title", fullscreenLabel);
     }
 
     const hitIndicator = this.root.querySelector<HTMLElement>("[data-hit-indicator]");
@@ -367,6 +410,15 @@ export class TacticalShellApp {
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;");
+  }
+
+  private isEditableEventTarget(target: EventTarget | null): boolean {
+    return (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    );
   }
 
   debugOpenMap(mapId: string, mode: MatchMode): void {

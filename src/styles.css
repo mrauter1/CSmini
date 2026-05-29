@@ -630,6 +630,17 @@ p {
   isolation: isolate;
 }
 
+.world-stage__viewport--match:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #11100d;
+  box-shadow: none;
+}
+
 .world-stage__viewport--locked {
   cursor: none;
 }
@@ -657,7 +668,7 @@ p {
   top: 14px;
   left: 50%;
   display: flex;
-  max-width: calc(100% - 28px);
+  max-width: calc(100% - 96px);
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
@@ -686,6 +697,62 @@ p {
   text-overflow: ellipsis;
   text-transform: uppercase;
   font-size: 0.68rem;
+}
+
+.hud-fullscreen-toggle {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(241, 218, 179, 0.18);
+  border-radius: 6px;
+  background: rgba(7, 8, 6, 0.52);
+  color: rgba(244, 233, 207, 0.9);
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.hud-fullscreen-toggle:hover,
+.hud-fullscreen-toggle:focus-visible,
+.hud-fullscreen-toggle--active {
+  border-color: rgba(241, 212, 161, 0.36);
+  background: rgba(37, 30, 20, 0.72);
+  color: #f1d4a1;
+}
+
+.hud-fullscreen-toggle:focus-visible {
+  outline: 2px solid rgba(241, 212, 161, 0.42);
+  outline-offset: 2px;
+}
+
+.hud-fullscreen-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.hud-fullscreen-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  background:
+    linear-gradient(currentColor, currentColor) left top / 7px 2px no-repeat,
+    linear-gradient(currentColor, currentColor) left top / 2px 7px no-repeat,
+    linear-gradient(currentColor, currentColor) right top / 7px 2px no-repeat,
+    linear-gradient(currentColor, currentColor) right top / 2px 7px no-repeat,
+    linear-gradient(currentColor, currentColor) left bottom / 7px 2px no-repeat,
+    linear-gradient(currentColor, currentColor) left bottom / 2px 7px no-repeat,
+    linear-gradient(currentColor, currentColor) right bottom / 7px 2px no-repeat,
+    linear-gradient(currentColor, currentColor) right bottom / 2px 7px no-repeat;
 }
 
 .hud-vital {
@@ -1163,8 +1230,16 @@ p {
 
   .hud-round-strip {
     top: 10px;
+    max-width: calc(100% - 74px);
     width: auto;
     white-space: normal;
+  }
+
+  .hud-fullscreen-toggle {
+    top: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
   }
 
   .hud-round-strip small {

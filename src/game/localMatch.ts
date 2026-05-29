@@ -187,6 +187,8 @@ export interface LocalMatchSnapshot {
   aliveState: string;
   teamCounts: TeamHudCount[];
   scoreboardVisible: boolean;
+  fullscreenActive: boolean;
+  fullscreenAvailable: boolean;
 }
 
 interface LocalMatchOptions {
@@ -328,6 +330,7 @@ export class LocalMatch {
   private hitIndicatorUntil = 0;
   private damageFlashUntil = 0;
   private feedMessage?: FeedMessage;
+  private fullscreenNotice?: FeedMessage;
   private fallbackLookEnabled = false;
   private scoreboardVisible = false;
   private jumpRequested = false;
@@ -447,7 +450,35 @@ export class LocalMatch {
     }
   }
 
+  async toggleViewportFullscreen(): Promise<boolean> {
+    const target = this.fullscreenTarget();
+    if (!target || !this.fullscreenAvailable()) {
+      this.pushFullscreenNotice("Viewport fullscreen is unavailable in this browser.");
+      return false;
+    }
+
+    try {
+      if (document.fullscreenElement === target) {
+        await document.exitFullscreen();
+        return true;
+      }
+
+      if (document.fullscreenElement) {
+        this.pushFullscreenNotice("Exit the current fullscreen view before changing viewport.");
+        return false;
+      }
+
+      await target.requestFullscreen({ navigationUI: "hide" });
+      return true;
+    } catch {
+      this.pushFullscreenNotice("Viewport fullscreen request was denied.");
+      return false;
+    }
+  }
+
   debugSnapshot(): Record<string, unknown> {
+    const fullscreenTarget = this.fullscreenTarget();
+
     return {
       mapId: this.map.id,
       mapName: this.map.name,
@@ -455,6 +486,18 @@ export class LocalMatch {
       activeMode: this.activeMode,
       roomId: this.activeMode === "shared" ? this.roomId : null,
       scoreboardVisible: this.scoreboardVisible,
+      fullscreen: {
+        active: document.fullscreenElement === fullscreenTarget,
+        available: this.fullscreenAvailable(),
+        targetIsViewportShell: fullscreenTarget?.matches("[data-world-shell]") ?? false,
+        targetTag: fullscreenTarget?.tagName.toLowerCase() ?? null,
+        viewportWidth: Math.round(this.host.clientWidth),
+        viewportHeight: Math.round(this.host.clientHeight),
+        canvasClientWidth: Math.round(this.renderer.domElement.clientWidth),
+        canvasClientHeight: Math.round(this.renderer.domElement.clientHeight),
+        rendererWidth: this.renderer.domElement.width,
+        rendererHeight: this.renderer.domElement.height,
+      },
       localPlayer: {
         id: this.playerIdentity.id,
         name: this.playerIdentity.name,
@@ -1515,6 +1558,8 @@ export class LocalMatch {
     window.addEventListener("mousemove", this.handleMouseMove);
     window.addEventListener("blur", this.handleBlur);
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    document.addEventListener("fullscreenchange", this.handleFullscreenChange);
+    document.addEventListener("fullscreenerror", this.handleFullscreenError);
   }
 
   private detachEvents(): void {
@@ -1526,6 +1571,8 @@ export class LocalMatch {
     window.removeEventListener("mousemove", this.handleMouseMove);
     window.removeEventListener("blur", this.handleBlur);
     document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+    document.removeEventListener("fullscreenchange", this.handleFullscreenChange);
+    document.removeEventListener("fullscreenerror", this.handleFullscreenError);
     this.controls.removeEventListener("lock", this.handlePointerLock);
     this.controls.removeEventListener("unlock", this.handlePointerLock);
   }
@@ -1546,6 +1593,19 @@ export class LocalMatch {
     }
 
     this.emitSnapshot();
+  };
+
+  private readonly handleFullscreenChange = (): void => {
+    this.handleResize();
+    requestAnimationFrame(() => {
+      this.handleResize();
+      this.emitSnapshot();
+    });
+    this.emitSnapshot();
+  };
+
+  private readonly handleFullscreenError = (): void => {
+    this.pushFullscreenNotice("Viewport fullscreen request was denied.");
   };
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -1690,7 +1750,11 @@ export class LocalMatch {
   }
 
   private preventDefaultWhenInputCaptured(event: KeyboardEvent): void {
-    if (!this.inputCaptured() || this.isEditableEventTarget(event.target)) {
+    if (
+      event.code === "Escape" ||
+      !this.inputCaptured() ||
+      this.isEditableEventTarget(event.target)
+    ) {
       return;
     }
 
@@ -3169,6 +3233,9 @@ export class LocalMatch {
     if (this.feedMessage && this.feedMessage.expiresAt <= now) {
       this.feedMessage = undefined;
     }
+    if (this.fullscreenNotice && this.fullscreenNotice.expiresAt <= now) {
+      this.fullscreenNotice = undefined;
+    }
 
     const team = getTeamDefinition(this.localTeamId);
     const teamCounts = this.teamCountsSnapshot();
@@ -3181,7 +3248,7 @@ export class LocalMatch {
         ? "Operator down."
         : this.reloadEndsAt > now
           ? `Reloading ${(this.reloadEndsAt - now).toFixed(1)}s`
-          : this.feedMessage?.text ?? this.defaultStatusLine();
+          : this.fullscreenNotice?.text ?? this.feedMessage?.text ?? this.defaultStatusLine();
 
     const firingStatus =
       this.playerDead
@@ -3229,6 +3296,8 @@ export class LocalMatch {
       aliveState: this.playerDead ? "Down" : "Alive",
       teamCounts: this.hudTeamCounts(teamCounts),
       scoreboardVisible: this.scoreboardVisible,
+      fullscreenActive: document.fullscreenElement === this.fullscreenTarget(),
+      fullscreenAvailable: this.fullscreenAvailable(),
     });
   }
 
@@ -3566,6 +3635,28 @@ export class LocalMatch {
 
   private inputCaptured(): boolean {
     return this.controls.isLocked || this.fallbackLookEnabled;
+  }
+
+  private fullscreenTarget(): HTMLElement | null {
+    return this.host.closest<HTMLElement>("[data-world-shell]");
+  }
+
+  private fullscreenAvailable(): boolean {
+    const target = this.fullscreenTarget();
+    return Boolean(
+      target?.isConnected &&
+        document.fullscreenEnabled &&
+        typeof target.requestFullscreen === "function" &&
+        typeof document.exitFullscreen === "function",
+    );
+  }
+
+  private pushFullscreenNotice(text: string): void {
+    this.fullscreenNotice = {
+      text,
+      expiresAt: this.gameNow() + 2,
+    };
+    this.emitSnapshot();
   }
 
   private crouchHeld(): boolean {

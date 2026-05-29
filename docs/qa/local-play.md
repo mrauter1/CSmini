@@ -22,6 +22,7 @@ Targeted verification for `round-core-and-movement-foundation`, `bomb-mission-mo
 - blocked line-of-sight investigation without through-wall fire
 - live hit and miss behavior with spread and miss chance influenced by distance, movement, crouch, and visibility
 - bounded solo-round elimination after the AI overhaul
+- compact in-match HUD, hold-Tab operations board, and viewport-shell fullscreen control behavior
 
 ## Commands
 
@@ -46,6 +47,16 @@ Each shipped playable map was opened twice in live local play: once as `Amber Va
 - `Ledger Annex`: spawn separation `28.16` units, live mission `Relay Charge`, objective `Archive Court Relay`
 
 Result: every shipped map loaded a live round from the declared mission metadata and used clearly distinct team spawn areas in play, not just in static data.
+
+### HUD and viewport fullscreen checks
+
+- The browser harness confirmed the old large in-match HUD card/overlay classes were absent from live play.
+- The compact startup hint disappeared after controls were armed, health stayed bottom-left, ammo stayed bottom-right, and the round timer stayed in the top strip.
+- The operations board stayed hidden by default, opened while `Tab` was held, ignored repeated `Tab` keydown as a toggle, and hid again on keyup.
+- The fullscreen icon button was visible inside the match viewport shell with an accessible fullscreen label/title and no text label in the play view.
+- A deterministic fullscreen mock proved the request target was the viewport shell, not the app root or page body; `fullscreenchange` resized the renderer host and canvas to `1012 x 720`; the held-Tab panel stayed usable while fullscreen was active; and exit returned the button to its enter state.
+- A denied fullscreen request surfaced a compact status-line message and left debug fullscreen state inactive.
+- `Esc` remained unprevented while controls were armed so the browser can release pointer lock or exit fullscreen through native behavior.
 
 ### Movement checks
 

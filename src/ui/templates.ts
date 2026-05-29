@@ -218,6 +218,17 @@ export function renderMapStage(
                 <small><span data-ui="mission-label">Relay Charge</span> / <span data-ui="objective-label">Objective</span></small>
               </div>
 
+              <button
+                class="hud-fullscreen-toggle"
+                type="button"
+                data-action="toggle-fullscreen"
+                data-ui="fullscreen-toggle"
+                aria-label="Enter viewport fullscreen"
+                title="Enter viewport fullscreen"
+              >
+                <span class="hud-fullscreen-icon" aria-hidden="true"></span>
+              </button>
+
               <div class="hud-vital hud-vital--health">
                 <span>Health</span>
                 <strong data-ui="health">100</strong>
@@ -242,7 +253,7 @@ export function renderMapStage(
 
               <div class="hud-hint" data-ui="prompt-panel">
                 <p data-ui="prompt">
-                  Click viewport or lock controls. WASD move, ${escapeHtml(crouchLabel)} crouch, Space jump, E objective, Mouse1 fire, R reload, M map, hold Tab info.
+                  Click viewport or lock controls. WASD move, ${escapeHtml(crouchLabel)} crouch, Space jump, E objective, Mouse1 fire, R reload, M map, hold Tab info, Alt+Enter fullscreen.
                 </p>
                 <div class="hud-hint__actions">
                   <button class="button button--primary" data-action="lock-match">Lock Controls</button>
@@ -310,6 +321,7 @@ export function renderMapStage(
                       ${controlHint("Fire", "Mouse1")}
                       ${controlHint("Reload", "R")}
                       ${controlHint("Info", "Hold Tab")}
+                      ${controlHint("Fullscreen", "Alt+Enter")}
                       ${controlHint("Map", "M")}
                     </div>
                   </section>
@@ -323,7 +335,7 @@ export function renderMapStage(
           <div class="match-console__copy">
             <p class="masthead__eyebrow">${modeEyebrow}</p>
             <h2>Match Options</h2>
-            <p class="panel__text">Hold Tab inside the viewport for roster, mission detail, objective state, and controls.</p>
+            <p class="panel__text">Hold Tab inside the viewport for roster, mission detail, objective state, and controls. Use the corner button or Alt+Enter for viewport fullscreen.</p>
           </div>
           <div class="match-console__actions">
             <button class="button" data-action="show-catalog">Change Map</button>
