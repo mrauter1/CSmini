@@ -6,7 +6,7 @@ Browser-native tactical FPS prototype built with Vite, TypeScript, and Three.js.
 
 - Five original tactical arenas with a menu -> roster -> match loop
 - Solo drill fallback with lightweight hostile operators
-- Browser-hosted multiplayer with Cloudflare room-code signaling and manual offer/answer fallback
+- Browser-hosted multiplayer with Cloudflare room-code signaling for rooms up to 14 players and manual offer/answer fallback
 - Host-authoritative roster, movement, snapshots, and damage resolution
 - Guest-local recoil and firing feel with host-validated shot claims
 - Same-browser `BroadcastChannel` transport retained as a dev-room fallback
@@ -32,7 +32,7 @@ npm run preview -- --host 127.0.0.1 --strictPort --port 4173
 1. Open `Open Multiplayer Setup` from the menu or map roster.
 2. Pick a map.
 3. Choose `Host Cloud Room`.
-4. Send the room code to the other player.
+4. Send the room code to the other players.
 5. Wait for the status to show `connected`, then enter the arena.
 
 ## Join A Cloud Room
@@ -45,7 +45,7 @@ npm run preview -- --host 127.0.0.1 --strictPort --port 4173
 
 ## Manual WebRTC Fallback
 
-Use `Manual Host` and `Manual Join` if the Cloudflare signaling service is unavailable. This keeps the old copy-paste offer/answer flow available without changing the match protocol.
+Use `Manual Host` and `Manual Join` if the Cloudflare signaling service is unavailable. This keeps the old copy-paste offer/answer flow available for one guest without changing the match protocol.
 
 ## How Authority Works
 
@@ -69,7 +69,7 @@ Use `Manual Host` and `Manual Join` if the Cloudflare signaling service is unava
 - Manual offer and answer exchange is still available as a fallback.
 - The current WebRTC transport uses Google STUN servers by default.
 - NAT or firewall combinations can block connection establishment.
-- The UX is polished for two players first, although the protocol is not hard-coded to stay that way.
+- Cloud Rooms support one host plus up to 13 guests; manual signaling remains a one-guest fallback.
 - Host migration is not implemented yet.
 
 ## QA Commands
@@ -81,6 +81,7 @@ npm run qa:local-flow
 npm run qa:manual-signaling
 npm run qa:signaling-worker
 npm run qa:cloud-signaling
+npm run qa:cloud-signaling-14
 npm run qa:host-room
 npm run qa:shot-validation
 npm run qa:final

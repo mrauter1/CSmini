@@ -147,7 +147,7 @@ export class WebRtcRoomTransport implements RoomTransport {
     });
   }
 
-  send(raw: string): boolean {
+  send(raw: string, _toPeerId?: string): boolean {
     if (!this.dataChannel || this.dataChannel.readyState !== "open") {
       return false;
     }
@@ -247,11 +247,8 @@ export class WebRtcRoomTransport implements RoomTransport {
   };
 
   private readonly handleIceCandidateError = (): void => {
-    if (this.status.phase === "connected") {
-      return;
-    }
-
-    this.setStatus("error", "ICE candidate gathering failed.");
+    // Candidate errors can be emitted for one STUN path while other candidates still succeed.
+    // The connection state is the authoritative failure signal.
   };
 }
 

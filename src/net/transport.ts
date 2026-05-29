@@ -27,7 +27,7 @@ export interface RoomTransport {
   readonly kind: RoomTransportKind;
   readonly localPeerId: string;
   setEvents(events: RoomTransportEvents): void;
-  send(raw: string): boolean;
+  send(raw: string, toPeerId?: string): boolean;
   close(reason?: string): void;
   getStatus(): RoomTransportStatus;
 }

@@ -26,7 +26,9 @@ import { WebRtcRoomTransport } from "./webrtcTransport";
 
 const HEARTBEAT_PULSE_MS = 900;
 const SNAPSHOT_PULSE_MS = 85;
-const STALE_PEER_MS = 2_400;
+const STALE_PEER_MS = 60_000;
+export const MAX_ROOM_PARTICIPANTS = 14;
+export const MAX_ROOM_GUESTS = MAX_ROOM_PARTICIPANTS - 1;
 const BROADCAST_HOST_KEY_PREFIX = "dustline.broadcast-host:";
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const OPERATOR_CALLSIGNS = ["Atlas", "Bishop", "Cinder", "Lancer", "Nova", "Pike", "Rivet", "Sable"];
@@ -531,7 +533,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       payload,
     } as Extract<RoomMessage, { type: Type }>;
 
-    return this.transport.send(encodeRoomMessage(message));
+    return this.transport.send(encodeRoomMessage(message), toPeerId);
   }
 
   protected rememberParticipant(participant: ParticipantRecord): void {
@@ -682,12 +684,12 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return;
     }
 
-    if (this.remoteParticipants().length >= 1) {
+    if (this.remoteParticipants().length >= MAX_ROOM_GUESTS) {
       this.sendMessage(
         "join-rejected",
         {
           reason: "room-full",
-          detail: "This browser-hosted room is currently limited to one remote operator.",
+          detail: `This browser-hosted room is limited to ${MAX_ROOM_PARTICIPANTS} total operators.`,
         },
         message.fromPeerId,
       );
@@ -710,6 +712,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       },
       message.fromPeerId,
     );
+    this.sendMessage("participant-update", {
+      participant,
+    });
     this.sendMessage(
       "participant-update",
       {

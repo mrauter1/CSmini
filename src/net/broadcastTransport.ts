@@ -39,7 +39,7 @@ export class BroadcastRoomTransport implements RoomTransport {
     this.events.onStatus?.(this.status);
   }
 
-  send(raw: string): boolean {
+  send(raw: string, _toPeerId?: string): boolean {
     if (this.status.phase === "closed") {
       return false;
     }

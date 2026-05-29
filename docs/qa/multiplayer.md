@@ -10,6 +10,7 @@ This note records the current durable evidence for the browser-hosted multiplaye
 - manual WebRTC offer and answer signaling fallback
 - room connection establishment
 - join and accept flow
+- 14-player Cloud Room capacity
 - roster materialization on both peers
 - guest input delivery to the host
 - host snapshot delivery to the guest
@@ -25,6 +26,7 @@ npm run build
 npm run qa:local-flow
 npm run qa:signaling-worker
 npm run qa:cloud-signaling
+npm run qa:cloud-signaling-14
 npm run qa:manual-signaling
 npm run qa:host-room
 npm run qa:shot-validation
@@ -66,6 +68,24 @@ Observed result on the current branch:
 - host and guest both reached `connected`
 - both peers entered `sandline-foundry`
 - both peers reported roster length `2`
+
+### `npm run qa:cloud-signaling-14`
+
+Coverage:
+
+- one Cloud Room host plus 13 guest browsers
+- targeted WebRTC offer and answer exchange for every guest
+- roster materialization across all 14 match clients
+- host-visible remote player count for all 13 guests
+- guest-visible remote player count for the other 13 operators
+
+Observed result on the current branch:
+
+- host and all 13 guests reached `connected`
+- all 14 clients entered `sandline-foundry`
+- every client reported roster length `14`
+- the host reported `13` remote players
+- every guest reported `13` remote players
 
 ### `npm run qa:manual-signaling`
 
@@ -166,7 +186,7 @@ That means the finished multiplayer branch now gates on the static build plus th
 Automated today:
 
 - local solo flow
-- Cloudflare signaling health and WebSocket relay
+- Cloudflare signaling health, WebSocket relay, and 14-player room-code coverage
 - room-code WebRTC connection establishment
 - manual signaling state
 - WebRTC connection establishment
@@ -188,5 +208,5 @@ Still manual:
 
 - The transport currently uses Google STUN by default, but direct connectivity can still fail on tougher NAT combinations without TURN.
 - Manual signaling remains available but is now a fallback, not the default user flow.
-- The UX is polished for one host plus one guest first.
+- Cloud Rooms support one host plus up to 13 guests; manual signaling remains a one-guest fallback.
 - Host migration is still a follow-up item, not part of the shipped implementation.

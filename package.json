@@ -12,6 +12,7 @@
     "qa:manual-signaling": "node scripts/qa/manualSignalingVerification.mjs",
     "qa:signaling-worker": "node scripts/qa/signalingWorkerProbe.mjs",
     "qa:cloud-signaling": "node scripts/qa/cloudSignalingVerification.mjs",
+    "qa:cloud-signaling-14": "GUEST_COUNT=13 node scripts/qa/cloudSignalingVerification.mjs",
     "qa:host-room": "node scripts/qa/hostRoomStateVerification.mjs",
     "qa:shot-validation": "node scripts/qa/shotValidationVerification.mjs",
     "qa:final": "node scripts/qa/finalVerification.mjs",

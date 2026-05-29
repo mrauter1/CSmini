@@ -2,6 +2,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const SIGNALING_URL = process.env.SIGNALING_URL ?? "https://csmini-signaling.csmini.workers.dev";
 const ROOM_ID = `probe:${Date.now().toString(36)}`;
+const MAX_ROOM_PEERS = 14;
+const GUEST_COUNT = MAX_ROOM_PEERS - 1;
 
 function assert(condition, message) {
   if (!condition) {
@@ -63,34 +65,63 @@ async function main() {
   assert(healthBody.maxPeersPerRoom === 14, "Worker room capacity is not 14.");
 
   const host = openSocket("host", "probe-host", "ProbeHost");
-  const guest = openSocket("guest", "probe-guest", "ProbeGuest");
+  const guests = Array.from({ length: GUEST_COUNT }, (_, index) =>
+    openSocket("guest", `probe-guest-${index + 1}`, `ProbeGuest${index + 1}`),
+  );
+  let overflow;
 
   try {
-    await Promise.all([waitOpen(host), waitOpen(guest)]);
+    await Promise.all([waitOpen(host), ...guests.map(waitOpen)]);
     await waitFor(host, (message) => message.type === "ready");
-    await waitFor(guest, (message) => message.type === "ready");
-    await waitFor(guest, (message) => message.type === "host-ready");
-    await waitFor(host, (message) => message.type === "peer-joined");
-
-    host.socket.send(
-      JSON.stringify({
-        type: "offer",
-        toPeerId: "probe-guest",
-        description: { type: "offer", sdp: "probe-offer" },
-      }),
+    await Promise.all(
+      guests.flatMap((guest) => [
+        waitFor(guest, (message) => message.type === "ready"),
+        waitFor(guest, (message) => message.type === "host-ready"),
+      ]),
     );
-    const offer = await waitFor(guest, (message) => message.type === "offer");
-    assert(offer.fromPeerId === "probe-host", "Offer relay did not preserve host peer id.");
-
-    guest.socket.send(
-      JSON.stringify({
-        type: "answer",
-        toPeerId: "probe-host",
-        description: { type: "answer", sdp: "probe-answer" },
-      }),
+    await Promise.all(
+      guests.map((guest, index) =>
+        waitFor(
+          host,
+          (message) =>
+            message.type === "peer-joined" && message.peerId === `probe-guest-${index + 1}`,
+        ),
+      ),
     );
-    const answer = await waitFor(host, (message) => message.type === "answer");
-    assert(answer.fromPeerId === "probe-guest", "Answer relay did not preserve guest peer id.");
+
+    overflow = openSocket("guest", "probe-overflow", "ProbeOverflow");
+    await waitOpen(overflow);
+    await waitFor(
+      overflow,
+      (message) => message.type === "room-error" && message.reason === "room-full",
+    );
+
+    for (const [index, guest] of guests.entries()) {
+      const guestPeerId = `probe-guest-${index + 1}`;
+      host.socket.send(
+        JSON.stringify({
+          type: "offer",
+          toPeerId: guestPeerId,
+          description: { type: "offer", sdp: `probe-offer-${index + 1}` },
+        }),
+      );
+      const offer = await waitFor(guest, (message) => message.type === "offer");
+      assert(offer.fromPeerId === "probe-host", "Offer relay did not preserve host peer id.");
+      assert(offer.toPeerId === guestPeerId, "Offer relay did not preserve guest peer id.");
+
+      guest.socket.send(
+        JSON.stringify({
+          type: "answer",
+          toPeerId: "probe-host",
+          description: { type: "answer", sdp: `probe-answer-${index + 1}` },
+        }),
+      );
+      const answer = await waitFor(
+        host,
+        (message) => message.type === "answer" && message.fromPeerId === guestPeerId,
+      );
+      assert(answer.fromPeerId === guestPeerId, "Answer relay did not preserve guest peer id.");
+    }
 
     console.log(
       JSON.stringify(
@@ -98,8 +129,11 @@ async function main() {
           signalingUrl: SIGNALING_URL,
           roomId: ROOM_ID,
           maxPeersPerRoom: healthBody.maxPeersPerRoom,
+          acceptedGuests: guests.length,
+          overflowRejected: true,
           hostMessages: host.messages.map((message) => message.type),
-          guestMessages: guest.messages.map((message) => message.type),
+          guestMessages: guests.map((guest) => guest.messages.map((message) => message.type)),
+          overflowMessages: overflow?.messages.map((message) => message.type) ?? [],
         },
         null,
         2,
@@ -107,7 +141,10 @@ async function main() {
     );
   } finally {
     host.socket.close();
-    guest.socket.close();
+    for (const guest of guests) {
+      guest.socket.close();
+    }
+    overflow?.socket.close();
   }
 }
 

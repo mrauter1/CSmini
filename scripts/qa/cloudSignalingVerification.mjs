@@ -10,6 +10,10 @@ const DEBUG_PORT = "9225";
 const DEBUG_ORIGIN = `http://127.0.0.1:${DEBUG_PORT}`;
 const MAP_ID = "sandline-foundry";
 const SIGNALING_URL = process.env.SIGNALING_URL ?? "";
+const GUEST_COUNT = Number.parseInt(process.env.GUEST_COUNT ?? "1", 10);
+const EXPECTED_PLAYER_COUNT = GUEST_COUNT + 1;
+
+assert(Number.isInteger(GUEST_COUNT) && GUEST_COUNT >= 1, "GUEST_COUNT must be a positive integer.");
 
 function assert(condition, message) {
   if (!condition) {
@@ -313,8 +317,11 @@ async function main() {
 
   try {
     const hostPage = await createPage(`${ROOT_URL}?qa=1`);
-    const joinPage = await createPage(`${ROOT_URL}?qa=1`);
-    pages.push(hostPage, joinPage);
+    const joinPages = [];
+    for (let index = 0; index < GUEST_COUNT; index += 1) {
+      joinPages.push(await createPage(`${ROOT_URL}?qa=1`));
+    }
+    pages.push(hostPage, ...joinPages);
 
     await hostPage.evaluate(
       `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
@@ -323,53 +330,107 @@ async function main() {
     const roomCode = await hostPage.evaluate("window.__dustlineQa__.getRoomCode()");
     assert(typeof roomCode === "string" && roomCode.length >= 6, "Host room code was not generated.");
 
-    await joinPage.evaluate(
-      `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-join")`,
-    );
-    await joinPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
-    const joined = await joinPage.evaluate(
-      `window.__dustlineQa__.joinSignalingRoom(${JSON.stringify(roomCode)})`,
-    );
-    assert(joined === true, "Guest did not start the signaling join flow.");
+    for (const [index, joinPage] of joinPages.entries()) {
+      await joinPage.evaluate(
+        `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-join")`,
+      );
+      await joinPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+      const joined = await joinPage.evaluate(
+        `window.__dustlineQa__.joinSignalingRoom(${JSON.stringify(roomCode)})`,
+      );
+      assert(joined === true, `Guest ${index + 1} did not start the signaling join flow.`);
+    }
 
     await waitForRoomPhase(hostPage, "connected");
-    await waitForRoomPhase(joinPage, "connected");
+    await Promise.all(joinPages.map((joinPage) => waitForRoomPhase(joinPage, "connected")));
+    await hostPage.waitForExpression(
+      `window.__dustlineQa__?.getState()?.roomSetup?.connection?.peerCount === ${GUEST_COUNT}`,
+      30_000,
+    );
 
     const hostEntered = await hostPage.evaluate("window.__dustlineQa__.enterArena()");
-    const joinEntered = await joinPage.evaluate("window.__dustlineQa__.enterArena()");
     assert(hostEntered === true, "Host could not enter the arena.");
-    assert(joinEntered === true, "Guest could not enter the arena.");
+    for (const [index, joinPage] of joinPages.entries()) {
+      const joinEntered = await joinPage.evaluate("window.__dustlineQa__.enterArena()");
+      assert(joinEntered === true, `Guest ${index + 1} could not enter the arena.`);
+    }
 
     await waitForMatch(hostPage, MAP_ID);
-    await waitForMatch(joinPage, MAP_ID);
+    await Promise.all(joinPages.map((joinPage) => waitForMatch(joinPage, MAP_ID)));
     await hostPage.waitForExpression(
-      "(window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0) === 2",
+      `(window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0) === ${EXPECTED_PLAYER_COUNT}`,
       10_000,
     );
-    await joinPage.waitForExpression(
-      "(window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0) === 2",
+    await Promise.all(
+      joinPages.map((joinPage) =>
+        joinPage.waitForExpression(
+          `(window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0) === ${EXPECTED_PLAYER_COUNT}`,
+          10_000,
+        ),
+      ),
+    );
+    await hostPage.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.match?.remotePlayers?.length ?? 0) === ${GUEST_COUNT}`,
       10_000,
+    );
+    await Promise.all(
+      joinPages.map((joinPage) =>
+        joinPage.waitForExpression(
+          `(window.__dustlineQa__?.getState()?.match?.remotePlayers?.length ?? 0) === ${GUEST_COUNT}`,
+          10_000,
+        ),
+      ),
     );
 
     const summary = {
       roomCode,
+      guestCount: GUEST_COUNT,
+      expectedPlayerCount: EXPECTED_PLAYER_COUNT,
       hostPhase: await hostPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase"),
-      guestPhase: await joinPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase"),
+      guestPhases: await Promise.all(
+        joinPages.map((joinPage) =>
+          joinPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase"),
+        ),
+      ),
       hostRosterCount: await hostPage.evaluate(
         "window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0",
       ),
-      guestRosterCount: await joinPage.evaluate(
-        "window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0",
+      guestRosterCounts: await Promise.all(
+        joinPages.map((joinPage) =>
+          joinPage.evaluate("window.__dustlineQa__?.getState()?.match?.roster?.length ?? 0"),
+        ),
       ),
-      hostRemote: await hostPage.evaluate(
-        "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0] ?? null",
+      hostRemoteCount: await hostPage.evaluate(
+        "window.__dustlineQa__?.getState()?.match?.remotePlayers?.length ?? 0",
       ),
-      guestRemote: await joinPage.evaluate(
-        "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0] ?? null",
+      guestRemoteCounts: await Promise.all(
+        joinPages.map((joinPage) =>
+          joinPage.evaluate("window.__dustlineQa__?.getState()?.match?.remotePlayers?.length ?? 0"),
+        ),
       ),
     };
 
     console.log(JSON.stringify(summary, null, 2));
+  } catch (error) {
+    const diagnostics = [];
+    for (const [index, page] of pages.entries()) {
+      try {
+        diagnostics.push({
+          index,
+          state: await page.evaluate("window.__dustlineQa__?.getState?.() ?? null"),
+        });
+      } catch (diagnosticError) {
+        diagnostics.push({
+          index,
+          error:
+            diagnosticError instanceof Error
+              ? diagnosticError.message
+              : String(diagnosticError),
+        });
+      }
+    }
+    console.error(JSON.stringify({ diagnostics }, null, 2));
+    throw error;
   } finally {
     await Promise.allSettled(pages.map((page) => page.close()));
     await stopProcess(chrome);
