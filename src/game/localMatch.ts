@@ -498,6 +498,7 @@ export class LocalMatch {
         rendererWidth: this.renderer.domElement.width,
         rendererHeight: this.renderer.domElement.height,
       },
+      weaponView: this.weaponViewSnapshot(),
       localPlayer: {
         id: this.playerIdentity.id,
         name: this.playerIdentity.name,
@@ -587,6 +588,7 @@ export class LocalMatch {
         alive: enemy.alive,
         health: enemy.health,
         position: this.toPoint(enemy.avatar.group.position, 0),
+        posture: this.combatantPostureSnapshot(enemy.avatar.group, enemy.alive),
         ai: {
           role: enemy.ai.role,
           behavior: enemy.ai.behavior,
@@ -630,6 +632,7 @@ export class LocalMatch {
         status: actor.status,
         health: actor.health,
         position: this.toPoint(actor.displayPosition),
+        posture: this.combatantPostureSnapshot(actor.avatar.group, actor.status === "alive"),
       })),
     };
   }
@@ -958,11 +961,7 @@ export class LocalMatch {
     }
 
     enemy.avatar.group.position.copy(caseData.enemyPosition);
-    enemy.avatar.group.lookAt(
-      caseData.blockedPlayerPosition.x,
-      this.playerEyeHeight,
-      caseData.blockedPlayerPosition.z,
-    );
+    this.faceCombatantAt(enemy.avatar.group, caseData.enemyPosition, caseData.blockedPlayerPosition);
     this.configureEnemyAi(enemy, this.enemies.indexOf(enemy));
     this.lastPlayerNoiseAt = Number.NEGATIVE_INFINITY;
     this.lastPlayerNoisePosition.copy(caseData.blockedPlayerPosition);
@@ -1401,6 +1400,7 @@ export class LocalMatch {
       actor.targetPosition.copy(spawn);
       actor.displayPosition.copy(spawn);
       actor.avatar.group.position.copy(spawn);
+      actor.avatar.group.rotation.set(0, 0, 0);
       actor.hitFlashUntil = 0;
     }
   }
@@ -1497,13 +1497,22 @@ export class LocalMatch {
       existing.deaths = presence.deaths;
       existing.status = presence.status;
       existing.targetPosition.set(presence.position[0], 0, presence.position[2]);
-      existing.forward.set(presence.look[0], 0, presence.look[2]).normalize();
+      this.tempLook.set(presence.look[0], 0, presence.look[2]);
+      if (this.tempLook.lengthSq() > 0.0001) {
+        existing.forward.copy(this.tempLook.normalize());
+      }
       existing.lastSeenAt = presence.updatedAt;
       return;
     }
 
     const avatar = createCombatantAvatar(presence.accentColor);
     const spawnPosition = new THREE.Vector3(presence.position[0], 0, presence.position[2]);
+    const forward = new THREE.Vector3(presence.look[0], 0, presence.look[2]);
+    if (forward.lengthSq() > 0.0001) {
+      forward.normalize();
+    } else {
+      forward.set(0, 0, -1);
+    }
     avatar.group.position.copy(spawnPosition);
     this.scene.add(avatar.group);
 
@@ -1525,7 +1534,7 @@ export class LocalMatch {
       status: presence.status,
       targetPosition: spawnPosition.clone(),
       displayPosition: spawnPosition.clone(),
-      forward: new THREE.Vector3(presence.look[0], 0, presence.look[2]).normalize(),
+      forward,
       moveBlend: 0,
       hitFlashUntil: 0,
       lastSeenAt: presence.updatedAt,
@@ -2728,12 +2737,8 @@ export class LocalMatch {
       actor.avatar.group.position.x = actor.displayPosition.x;
       actor.avatar.group.position.z = actor.displayPosition.z;
 
-      const facing = actor.forward.lengthSq() > 0.01 ? actor.forward : new THREE.Vector3(0, 0, 1);
-      actor.avatar.group.lookAt(
-        actor.displayPosition.x + facing.x,
-        0.9,
-        actor.displayPosition.z + facing.z,
-      );
+      const facing = actor.forward.lengthSq() > 0.01 ? actor.forward : this.tempLook.set(0, 0, -1);
+      this.setCombatantYawFromDirection(actor.avatar.group, facing.x, facing.z);
 
       const moving = actor.displayPosition.distanceTo(actor.targetPosition) > 0.06 ? 1 : 0;
       actor.moveBlend = THREE.MathUtils.damp(actor.moveBlend, moving, 9, delta);
@@ -2953,7 +2958,7 @@ export class LocalMatch {
       enemy.ai.targetPosition.copy(targetPosition);
 
       const lookTarget = canSeePlayer ? playerFeet : targetPosition;
-      enemy.avatar.group.lookAt(lookTarget.x, this.enemyEyeHeight(enemy), lookTarget.z);
+      this.faceCombatantAt(enemy.avatar.group, enemyPosition, lookTarget);
 
       if (canSeePlayer && shotProfile && !previousVisibility) {
         enemy.nextFireAt = Math.max(enemy.nextFireAt, now + shotProfile.reactionSeconds);
@@ -3666,6 +3671,71 @@ export class LocalMatch {
     );
   }
 
+  private setCombatantYawFromDirection(
+    group: THREE.Object3D,
+    directionX: number,
+    directionZ: number,
+  ): void {
+    if (directionX * directionX + directionZ * directionZ <= 0.0001) {
+      group.rotation.x = 0;
+      group.rotation.z = 0;
+      return;
+    }
+
+    // Match Object3D.lookAt's local -Z facing convention without pitching the avatar root.
+    group.rotation.set(0, Math.atan2(-directionX, -directionZ), 0);
+  }
+
+  private faceCombatantAt(
+    group: THREE.Object3D,
+    origin: THREE.Vector3,
+    target: THREE.Vector3,
+  ): void {
+    this.setCombatantYawFromDirection(group, target.x - origin.x, target.z - origin.z);
+  }
+
+  private weaponViewSnapshot(): Record<string, unknown> {
+    this.camera.updateMatrixWorld(true);
+    this.weaponRig.muzzle.updateWorldMatrix(true, false);
+
+    const muzzleCameraPosition = this.weaponRig.muzzle.getWorldPosition(new THREE.Vector3());
+    this.camera.worldToLocal(muzzleCameraPosition);
+
+    const barrelForward = new THREE.Vector3(0, 0, -1)
+      .applyEuler(this.weaponRig.group.rotation)
+      .normalize();
+    const rootPosition = this.weaponRig.group.position;
+
+    return {
+      rootPosition: this.toPoint(rootPosition),
+      rootRotation: this.toRotation(this.weaponRig.group.rotation),
+      barrelForward: this.toPoint(barrelForward),
+      muzzleCameraPosition: this.toPoint(muzzleCameraPosition),
+      lowRight: rootPosition.x > 0.28 && rootPosition.y < -0.25 && rootPosition.z < -0.35,
+      forwardAligned: barrelForward.z < -0.94,
+      muzzleAheadOfRoot: muzzleCameraPosition.z < rootPosition.z - 0.18,
+      muzzleFlashActive: this.muzzleFlashUntil > this.gameNow(),
+      muzzleFlashRecent: this.muzzleFlashUntil > 0 && this.gameNow() <= this.muzzleFlashUntil + 0.35,
+      flashVisible: this.weaponRig.flash.visible,
+    };
+  }
+
+  private combatantPostureSnapshot(
+    group: THREE.Object3D,
+    alive: boolean,
+  ): Record<string, unknown> {
+    const feetY = Number(group.position.y.toFixed(3));
+    const rootPitch = Number(group.rotation.x.toFixed(4));
+    const rootRoll = Number(group.rotation.z.toFixed(4));
+
+    return {
+      rotation: this.toRotation(group.rotation),
+      feetY,
+      upright: !alive || (Math.abs(rootPitch) <= 0.01 && Math.abs(rootRoll) <= 0.08),
+      aboveGround: !alive || feetY >= -0.01,
+    };
+  }
+
   private enemyEyeHeight(enemy: EnemyActor, stance = enemy.ai.stance): number {
     return stance === "crouched" ? ENEMY_CROUCH_EYE_HEIGHT : ENEMY_STANDING_EYE_HEIGHT;
   }
@@ -3916,6 +3986,14 @@ export class LocalMatch {
       x: Number(vector.x.toFixed(2)),
       y: Number((forcedY ?? vector.y).toFixed(2)),
       z: Number(vector.z.toFixed(2)),
+    };
+  }
+
+  private toRotation(euler: THREE.Euler): { x: number; y: number; z: number } {
+    return {
+      x: Number(euler.x.toFixed(4)),
+      y: Number(euler.y.toFixed(4)),
+      z: Number(euler.z.toFixed(4)),
     };
   }
 }

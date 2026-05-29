@@ -666,6 +666,49 @@ async function evaluateEnemyShot(page, combatantId, overrides = undefined) {
   return profile;
 }
 
+function assertWeaponViewAlignment(state, label) {
+  const weapon = state?.weaponView;
+  assert(weapon, `Expected ${label} to expose weapon view debug state`);
+  assert(weapon.lowRight === true, `Expected ${label} weapon to stay anchored low-right`);
+  assert(weapon.forwardAligned === true, `Expected ${label} weapon barrel to align with camera -Z`);
+  assert(weapon.muzzleAheadOfRoot === true, `Expected ${label} muzzle to sit forward of the receiver`);
+  assert(
+    weapon.barrelForward?.z < -0.94,
+    `Expected ${label} barrel forward Z below -0.94, saw ${weapon.barrelForward?.z}`,
+  );
+  assert(
+    weapon.muzzleCameraPosition?.z < weapon.rootPosition?.z - 0.18,
+    `Expected ${label} muzzle camera-space Z to be ahead of root`,
+  );
+}
+
+function assertAlivePosture(entries, label) {
+  const aliveEntries = (entries ?? []).filter(
+    (entry) => entry && entry.alive !== false && entry.status !== "down",
+  );
+  assert(aliveEntries.length > 0, `Expected at least one live ${label} posture sample`);
+
+  for (const entry of aliveEntries) {
+    const posture = entry.posture;
+    const actorLabel = entry.id ?? entry.name ?? "actor";
+    assert(posture, `Expected ${label} ${actorLabel} to expose posture debug state`);
+    assert(posture.upright === true, `Expected ${label} ${actorLabel} to stay upright`);
+    assert(posture.aboveGround === true, `Expected ${label} ${actorLabel} to stay above ground`);
+    assert(
+      Math.abs(posture.rotation?.x ?? 999) <= 0.01,
+      `Expected ${label} ${actorLabel} root pitch near zero, saw ${posture.rotation?.x}`,
+    );
+    assert(
+      Math.abs(posture.rotation?.z ?? 999) <= 0.08,
+      `Expected ${label} ${actorLabel} root roll near zero, saw ${posture.rotation?.z}`,
+    );
+    assert(
+      posture.feetY >= -0.01,
+      `Expected ${label} ${actorLabel} feet above ground, saw ${posture.feetY}`,
+    );
+  }
+}
+
 async function startPreview() {
   const preview = startProcess("npm", [
     "run",
@@ -725,6 +768,7 @@ async function main() {
       bombShared: {},
       hostageShared: {},
       shared: {},
+      presentation: {},
       fullscreen: {},
       fallback: {},
       classicFeel: {},
@@ -808,8 +852,20 @@ async function main() {
     await setFocusView(localPage, showcaseState, "catwalk");
     await captureScreenshot(localPage, "07-sandline-east-catwalk.png", capturedScreenshots);
     await setFocusView(localPage, showcaseState, "south-spawn");
+    const weaponIdleState = await getState(localPage);
+    assertWeaponViewAlignment(weaponIdleState, "idle viewmodel");
     await captureScreenshot(localPage, "08-weapon-idle-hud.png", capturedScreenshots);
     await fire(localPage);
+    const weaponFiringState = await getState(localPage);
+    assertWeaponViewAlignment(weaponFiringState, "firing viewmodel");
+    assert(
+      weaponFiringState.weaponView?.muzzleFlashRecent === true,
+      "Expected weapon firing debug state to expose a recent muzzle flash window",
+    );
+    summary.presentation.weapon = {
+      idle: weaponIdleState.weaponView,
+      firing: weaponFiringState.weaponView,
+    };
     await delay(40);
     await captureScreenshot(localPage, "09-weapon-firing-hud.png", capturedScreenshots);
 
@@ -1271,6 +1327,7 @@ async function main() {
 
     const aiOpeningState = await getState(localPage);
     const openingBehaviors = aiOpeningState.enemies.map((enemy) => enemy.ai.behavior);
+    assertAlivePosture(aiOpeningState.enemies, "opening solo enemy");
     const sightlineCase = await stageAiSightlineCase(localPage);
     await localPage.waitForExpression(
       `
@@ -1287,11 +1344,17 @@ async function main() {
       (enemy) => enemy.id === sightlineCase.enemyId,
     );
     assert(blockedEnemy, "Expected blocked-sight AI state for the staged enemy");
+    assertAlivePosture([blockedEnemy], "blocked solo enemy");
     assert(
       blockedEnemy.ai.canSeePlayer === false,
       "Expected the staged AI wall case to block direct detection",
     );
 
+    await setView(localPage, sightlineCase.blockedPlayerPosition, {
+      x: sightlineCase.blockedPlayerPosition.x + 2,
+      y: sightlineCase.blockedPlayerPosition.y,
+      z: sightlineCase.blockedPlayerPosition.z,
+    });
     await fire(localPage);
     await localPage.waitForExpression(
       `
@@ -1307,12 +1370,24 @@ async function main() {
     const investigateEnemy = investigateState.enemies.find(
       (enemy) => enemy.id === sightlineCase.enemyId,
     );
+    assertAlivePosture([investigateEnemy], "investigate solo enemy");
     assert(
       investigateEnemy?.ai?.shotsFired === 0,
       "Expected the blocked-sight investigate case to withhold fire through geometry",
     );
 
     await setView(localPage, sightlineCase.clearPlayerPosition, sightlineCase.enemyPosition);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.ai?.canSeePlayer === true;
+        })()
+      `,
+      4_000,
+    );
+    await captureScreenshot(localPage, "10-opposing-player.png", capturedScreenshots);
     await localPage.waitForExpression(
       `
         (() => {
@@ -1329,6 +1404,7 @@ async function main() {
     const engageState = await getState(localPage);
     const engageEnemy = engageState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
     assert(engageEnemy?.ai?.behavior === "engage", "Expected the staged AI to enter engage behavior");
+    assertAlivePosture([engageEnemy], "engage solo enemy");
 
     await aimAt(localPage, sightlineCase.enemyId);
     await fire(localPage);
@@ -1346,6 +1422,7 @@ async function main() {
     const repositionEnemy = repositionState.enemies.find(
       (enemy) => enemy.id === sightlineCase.enemyId,
     );
+    assertAlivePosture([repositionEnemy], "reposition solo enemy");
 
     await setView(localPage, sightlineCase.blockedPlayerPosition, sightlineCase.enemyPosition);
     await localPage.waitForExpression(
@@ -1360,6 +1437,7 @@ async function main() {
     );
     const pursueState = await getState(localPage);
     const pursueEnemy = pursueState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
+    assertAlivePosture([pursueEnemy], "pursue solo enemy");
 
     const closeStandingShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
       distance: 6,
@@ -1418,6 +1496,14 @@ async function main() {
       repositionBehavior: repositionEnemy?.ai?.behavior ?? null,
       repositionReason: repositionEnemy?.ai?.repositionReason ?? null,
       pursueBehavior: pursueEnemy?.ai?.behavior ?? null,
+      posture: {
+        opening: aiOpeningState.enemies.map((enemy) => enemy.posture),
+        blocked: blockedEnemy.posture,
+        investigate: investigateEnemy?.posture ?? null,
+        engage: engageEnemy.posture,
+        reposition: repositionEnemy?.posture ?? null,
+        pursue: pursueEnemy?.posture ?? null,
+      },
       shotTotals: {
         fired: engageEnemy.ai.shotsFired,
         hits: engageEnemy.ai.shotHits,
@@ -1533,7 +1619,10 @@ async function main() {
     await stageSharedDuel(sharedPageOne, 0);
     await stageSharedDuel(sharedPageTwo, 1);
     await delay(500);
-    await captureScreenshot(sharedPageOne, "10-opposing-player.png", capturedScreenshots);
+    const sharedDuelStateOne = await getState(sharedPageOne);
+    const sharedDuelStateTwo = await getState(sharedPageTwo);
+    assertAlivePosture(sharedDuelStateOne.remotePlayers, "shared remote actor page one");
+    assertAlivePosture(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
     await captureScreenshot(sharedPageTwo, "12-two-player-multiplayer.png", capturedScreenshots);
 
     await engageControls(sharedPageOne);
@@ -1672,6 +1761,8 @@ async function main() {
       roundBeforeAdvance: sharedRoundBefore,
       roundAfterAdvance: sharedAfterTwo.round.roundNumber,
       phaseAfterAdvance: sharedAfterTwo.round.phase,
+      remotePosturePageOne: sharedDuelStateOne.remotePlayers?.[0]?.posture ?? null,
+      remotePosturePageTwo: sharedDuelStateTwo.remotePlayers?.[0]?.posture ?? null,
     };
 
     assert(sharedAfterTwo.round.missionType === "hostage", "Expected shared round two to rotate into hostage mode");

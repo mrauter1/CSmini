@@ -14,6 +14,8 @@ export interface CombatantAvatar {
 
 export interface WeaponRig {
   group: THREE.Group;
+  muzzle: THREE.Object3D;
+  flash: THREE.Object3D;
   update(
     elapsed: number,
     moveBlend: number,
@@ -144,6 +146,7 @@ export function createCombatantAvatar(accentColor: string): CombatantAvatar {
       torso.rotation.z = alive ? Math.sin(elapsed * 3.2) * 0.035 * moveBlend : -0.18;
       rifle.rotation.z = alive ? -0.12 - recoil * 0.18 : -0.48;
       rifle.rotation.x = alive ? -0.08 : 0.22;
+      group.rotation.x = 0;
       group.rotation.z = alive ? 0 : 1.34;
       group.position.y = alive ? 0 : 0.08;
 
@@ -165,37 +168,43 @@ export function createWeaponRig(): WeaponRig {
     opacity: 0.92,
   });
 
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.18, 0.18), bodyMaterial);
-  receiver.position.set(0, 0.02, 0);
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.18, 0.58), bodyMaterial);
+  receiver.position.set(0.02, 0.02, -0.08);
   group.add(receiver);
 
-  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.16, 0.16), accentMaterial);
-  stock.position.set(-0.34, 0.04, 0.02);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.24), accentMaterial);
+  stock.position.set(0.04, 0.04, 0.32);
   group.add(stock);
 
-  const handguard = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.14, 0.14), detailMaterial);
-  handguard.position.set(0.34, 0.01, 0);
+  const handguard = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.14, 0.36), detailMaterial);
+  handguard.position.set(0.02, 0.01, -0.5);
   group.add(handguard);
 
   const grip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.28, 0.12), detailMaterial);
-  grip.position.set(-0.04, -0.2, 0.03);
+  grip.position.set(0.02, -0.2, -0.02);
   group.add(grip);
 
-  const sight = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.06), bodyMaterial);
-  sight.position.set(0.06, 0.14, 0);
+  const sight = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.2), bodyMaterial);
+  sight.position.set(0.02, 0.15, -0.22);
   group.add(sight);
 
-  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.08, 0.08), detailMaterial);
-  barrel.position.set(0.58, 0.03, 0);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.32), detailMaterial);
+  barrel.position.set(0.02, 0.03, -0.82);
   group.add(barrel);
 
+  const muzzle = new THREE.Object3D();
+  muzzle.position.set(0.02, 0.03, -1);
+  group.add(muzzle);
+
   const flash = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.18), flashMaterial);
-  flash.position.set(0.73, 0.03, 0);
+  flash.position.copy(muzzle.position);
   flash.visible = false;
   group.add(flash);
 
   return {
     group,
+    muzzle,
+    flash,
     update(elapsed, moveBlend, recoil, firing, crouchBlend, airborneBlend) {
       const bob = Math.sin(elapsed * 9.4) * 0.018 * moveBlend;
       const sway = Math.cos(elapsed * 4.2) * 0.01;
@@ -203,14 +212,14 @@ export function createWeaponRig(): WeaponRig {
       const airborneLift = 0.05 * airborneBlend;
 
       group.position.set(
-        0.56 + sway,
+        0.48 + sway,
         -0.48 + bob - recoil * 0.08 - crouchDrop + airborneLift,
-        -0.92 + recoil * 0.14 + crouchBlend * 0.05,
+        -0.72 + recoil * 0.14 + crouchBlend * 0.05,
       );
       group.rotation.set(
-        -0.1 + recoil * 0.08 - crouchBlend * 0.04 + airborneBlend * 0.06,
-        -0.18,
-        -0.08 - recoil * 0.12 - crouchBlend * 0.02,
+        0.04 + recoil * 0.08 - crouchBlend * 0.04 + airborneBlend * 0.06,
+        0.13 + recoil * 0.02,
+        -0.07 - recoil * 0.12 - crouchBlend * 0.02,
       );
 
       flash.visible = firing;
