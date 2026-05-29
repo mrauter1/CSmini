@@ -103,6 +103,10 @@ export interface RoomConnectionDebugSnapshot extends RoomConnectionUiSnapshot {
   peerCount: number;
   peerIds: string[];
   lastSnapshotId: number;
+  latestStateQa: {
+    inbound: LatestStateQaDebugSnapshot;
+    outbound: LatestStateQaDebugSnapshot;
+  };
 }
 
 export interface MatchRoomConnection {
@@ -124,6 +128,10 @@ export interface MatchRoomConnection {
   subscribe(listener: () => void): () => void;
   debugSnapshot(): RoomConnectionDebugSnapshot;
   debugSendRawRoomMessage?: (raw: string, toPeerId?: string) => boolean;
+  debugConfigureLatestStateQa?: (
+    direction: LatestStateQaDirection,
+    config?: LatestStateQaConfig | null,
+  ) => boolean;
   debugSendSignalingPayload?: (payload: Record<string, unknown>) => boolean;
   debugInjectSignalingMessage?: (raw: string) => boolean;
 }
@@ -147,6 +155,25 @@ interface BaseConnectionOptions {
   transport: RoomTransport;
 }
 
+export type LatestStateQaDirection = "inbound" | "outbound";
+
+export interface LatestStateQaConfig {
+  hold?: boolean;
+  dropNextCount?: number;
+  duplicateNextCount?: number;
+  delayMs?: number;
+  delayScheduleMs?: number[];
+}
+
+export interface LatestStateQaDebugSnapshot {
+  hold: boolean;
+  pending: boolean;
+  dropNextCount: number;
+  duplicateNextCount: number;
+  delayMs: number;
+  delayScheduleRemaining: number;
+}
+
 interface BroadcastHostClaim {
   peerId: string;
   updatedAt: number;
@@ -155,6 +182,58 @@ interface BroadcastHostClaim {
 type LatestStateSequenceState = Partial<
   Record<Exclude<RoomMessageSequenceScope, "reliable">, number>
 >;
+
+interface PendingLatestStateOutboundMessage {
+  raw: string;
+  toPeerId?: string;
+  transportOptions?: RoomTransportSendOptions;
+}
+
+interface LatestStateQaController {
+  hold: boolean;
+  dropNextCount: number;
+  duplicateNextCount: number;
+  delayMs: number;
+  delayScheduleMs: number[];
+  timers: Set<number>;
+  pendingOutbound?: PendingLatestStateOutboundMessage;
+}
+
+function createLatestStateQaController(): LatestStateQaController {
+  return {
+    hold: false,
+    dropNextCount: 0,
+    duplicateNextCount: 0,
+    delayMs: 0,
+    delayScheduleMs: [],
+    timers: new Set<number>(),
+  };
+}
+
+function clampLatestStateQaCount(value: number | undefined): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value ?? 0));
+}
+
+function clampLatestStateQaDelay(value: number | undefined): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value ?? 0));
+}
+
+function sanitizeLatestStateQaDelaySchedule(values: number[] | undefined): number[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return values
+    .map((value) => clampLatestStateQaDelay(value))
+    .filter((value) => value > 0)
+    .slice(0, 64);
+}
 
 export function detectSharedRoomSupport(kind: RoomConnectionKind): {
   supported: boolean;
@@ -396,6 +475,10 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   protected joined = false;
   protected roomClosed = false;
   protected uiState: RoomConnectionUiSnapshot;
+  private readonly latestStateQa = {
+    inbound: createLatestStateQaController(),
+    outbound: createLatestStateQaController(),
+  };
 
   protected constructor(
     readonly kind: RoomConnectionKind,
@@ -492,6 +575,8 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   dispose(): void {
+    this.clearLatestStateQaTimers("inbound");
+    this.clearLatestStateQaTimers("outbound");
     this.sendMessage("disconnect", {
       reason: "leave",
     });
@@ -514,6 +599,10 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       peerCount: this.remoteParticipants().length,
       peerIds: this.remoteParticipants().map((participant) => participant.id),
       lastSnapshotId: this.latestSnapshot?.snapshotId ?? 0,
+      latestStateQa: {
+        inbound: this.snapshotLatestStateQa("inbound"),
+        outbound: this.snapshotLatestStateQa("outbound"),
+      },
     };
   }
 
@@ -524,6 +613,145 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       toPeerId,
       message ? getRoomMessageLane(message.type) : "reliable",
     );
+  }
+
+  debugConfigureLatestStateQa(
+    direction: LatestStateQaDirection,
+    config?: LatestStateQaConfig | null,
+  ): boolean {
+    const controller = this.latestStateQa[direction];
+    const wasHolding = controller.hold;
+
+    controller.hold = direction === "outbound" ? Boolean(config?.hold) : false;
+    controller.dropNextCount = clampLatestStateQaCount(config?.dropNextCount);
+    controller.duplicateNextCount = clampLatestStateQaCount(config?.duplicateNextCount);
+    controller.delayMs = clampLatestStateQaDelay(config?.delayMs);
+    controller.delayScheduleMs = sanitizeLatestStateQaDelaySchedule(config?.delayScheduleMs);
+
+    if (direction === "outbound" && wasHolding && !controller.hold && controller.pendingOutbound) {
+      const pending = controller.pendingOutbound;
+      controller.pendingOutbound = undefined;
+      this.dispatchLatestStateOutbound(pending.raw, pending.toPeerId, pending.transportOptions);
+    }
+
+    this.emitStateChange();
+    return true;
+  }
+
+  private snapshotLatestStateQa(direction: LatestStateQaDirection): LatestStateQaDebugSnapshot {
+    const controller = this.latestStateQa[direction];
+    return {
+      hold: controller.hold,
+      pending: Boolean(controller.pendingOutbound),
+      dropNextCount: controller.dropNextCount,
+      duplicateNextCount: controller.duplicateNextCount,
+      delayMs: controller.delayMs,
+      delayScheduleRemaining: controller.delayScheduleMs.length,
+    };
+  }
+
+  private hasLatestStateQaRules(direction: LatestStateQaDirection): boolean {
+    const controller = this.latestStateQa[direction];
+    return (
+      controller.hold ||
+      controller.dropNextCount > 0 ||
+      controller.duplicateNextCount > 0 ||
+      controller.delayMs > 0 ||
+      controller.delayScheduleMs.length > 0 ||
+      Boolean(controller.pendingOutbound)
+    );
+  }
+
+  private clearLatestStateQaTimers(direction: LatestStateQaDirection): void {
+    const controller = this.latestStateQa[direction];
+    for (const timerId of controller.timers) {
+      clearTimeout(timerId);
+    }
+    controller.timers.clear();
+    controller.pendingOutbound = undefined;
+  }
+
+  private nextLatestStateQaDelay(direction: LatestStateQaDirection): number {
+    const controller = this.latestStateQa[direction];
+    if (controller.delayScheduleMs.length > 0) {
+      return controller.delayScheduleMs.shift() ?? 0;
+    }
+
+    return controller.delayMs;
+  }
+
+  private scheduleLatestStateQa(
+    direction: LatestStateQaDirection,
+    delayMs: number,
+    callback: () => void,
+  ): void {
+    const controller = this.latestStateQa[direction];
+    const timerId = window.setTimeout(() => {
+      controller.timers.delete(timerId);
+      callback();
+    }, delayMs);
+    controller.timers.add(timerId);
+  }
+
+  private dispatchLatestStateOutbound(
+    raw: string,
+    toPeerId?: string,
+    transportOptions?: RoomTransportSendOptions,
+  ): boolean {
+    const controller = this.latestStateQa.outbound;
+    if (!this.hasLatestStateQaRules("outbound")) {
+      return this.transport.send(raw, toPeerId, "latest-state", transportOptions);
+    }
+
+    const hasPending = Boolean(controller.pendingOutbound);
+
+    if (controller.hold) {
+      if (transportOptions?.latestStateOnlyIfBuffered && !hasPending) {
+        return false;
+      }
+
+      controller.pendingOutbound = {
+        raw,
+        toPeerId,
+        transportOptions,
+      };
+      this.emitStateChange();
+      return true;
+    }
+
+    if (controller.dropNextCount > 0) {
+      controller.dropNextCount -= 1;
+      this.emitStateChange();
+      return true;
+    }
+
+    const duplicate = controller.duplicateNextCount > 0;
+    if (duplicate) {
+      controller.duplicateNextCount -= 1;
+    }
+    const delayMs = this.nextLatestStateQaDelay("outbound");
+
+    if (delayMs > 0) {
+      this.scheduleLatestStateQa("outbound", delayMs, () => {
+        this.transport.send(raw, toPeerId, "latest-state", transportOptions);
+      });
+      if (duplicate) {
+        this.scheduleLatestStateQa("outbound", delayMs + 8, () => {
+          this.transport.send(raw, toPeerId, "latest-state", transportOptions);
+        });
+      }
+      this.emitStateChange();
+      return true;
+    }
+
+    const sent = this.transport.send(raw, toPeerId, "latest-state", transportOptions);
+    if (sent && duplicate) {
+      this.scheduleLatestStateQa("outbound", 8, () => {
+        this.transport.send(raw, toPeerId, "latest-state", transportOptions);
+      });
+    }
+    this.emitStateChange();
+    return sent;
   }
 
   protected createUiState(status: RoomTransportStatus): RoomConnectionUiSnapshot {
@@ -571,7 +799,12 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return false;
     }
 
-    return this.transport.send(raw, toPeerId, getRoomMessageLane(type), transportOptions);
+    const lane = getRoomMessageLane(type);
+    if (lane === "latest-state") {
+      return this.dispatchLatestStateOutbound(raw, toPeerId, transportOptions);
+    }
+
+    return this.transport.send(raw, toPeerId, lane, transportOptions);
   }
 
   protected rememberParticipant(participant: ParticipantRecord): void {
@@ -968,6 +1201,52 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   private readonly handleRawMessage = (event: RoomTransportMessageEvent): void => {
+    if (event.lane !== "latest-state") {
+      this.processRawMessage(event);
+      return;
+    }
+
+    if (!this.hasLatestStateQaRules("inbound")) {
+      this.processRawMessage(event);
+      return;
+    }
+
+    const controller = this.latestStateQa.inbound;
+    if (controller.dropNextCount > 0) {
+      controller.dropNextCount -= 1;
+      this.emitStateChange();
+      return;
+    }
+
+    const duplicate = controller.duplicateNextCount > 0;
+    if (duplicate) {
+      controller.duplicateNextCount -= 1;
+    }
+    const delayMs = this.nextLatestStateQaDelay("inbound");
+    const dispatch = () => {
+      this.processRawMessage({
+        ...event,
+        receivedAt: Date.now(),
+      });
+    };
+
+    if (delayMs > 0) {
+      this.scheduleLatestStateQa("inbound", delayMs, dispatch);
+      if (duplicate) {
+        this.scheduleLatestStateQa("inbound", delayMs + 8, dispatch);
+      }
+      this.emitStateChange();
+      return;
+    }
+
+    dispatch();
+    if (duplicate) {
+      this.scheduleLatestStateQa("inbound", 8, dispatch);
+    }
+    this.emitStateChange();
+  };
+
+  private processRawMessage(event: RoomTransportMessageEvent): void {
     if (measureRoomMessageBytes(event.raw) > MAX_ROOM_MESSAGE_BYTES) {
       this.noteInvalidRoomMessage(event.fromPeerId, "A peer sent an oversized room payload.");
       return;
@@ -1071,7 +1350,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       default:
         return;
     }
-  };
+  }
 
   private defaultTitle(): string {
     switch (this.kind) {

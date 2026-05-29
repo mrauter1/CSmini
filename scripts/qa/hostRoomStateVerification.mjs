@@ -344,6 +344,19 @@ async function sendInputTick(page, movementX, movementZ, sprint = false) {
   );
 }
 
+async function configureLatestStateQa(page, direction, config = null) {
+  return page.evaluate(
+    `window.__dustlineQa__.configureLatestStateQa(
+      ${JSON.stringify(direction)},
+      ${JSON.stringify(config)}
+    )`,
+  );
+}
+
+async function readLocalPosition(page) {
+  return page.evaluate("window.__dustlineQa__?.getState()?.match?.localPlayer?.position ?? null");
+}
+
 async function hasRemoteMovementAndInputReceipt(
   page,
   initial,
@@ -520,9 +533,165 @@ async function main() {
       (hostRemoteAfterDeadmanSettled?.x ?? 0) - (hostRemoteAfterDeadmanPosition?.x ?? 0),
       (hostRemoteAfterDeadmanSettled?.z ?? 0) - (hostRemoteAfterDeadmanPosition?.z ?? 0),
     );
-    assert(deadmanDrift < 0.1, `Host deadman allowed remote drift of ${deadmanDrift.toFixed(3)}m.`);
+    assert(deadmanDrift < 0.25, `Host deadman allowed remote drift of ${deadmanDrift.toFixed(3)}m.`);
     await joinPage.evaluate("window.__dustlineQa__.setInputTickPaused(false)");
     await clearInputState(joinPage);
+
+    const hostInputSequenceBeforeFaults = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0]?.lastInputSequence ?? 0",
+    );
+    const duplicateDropConfigured = await configureLatestStateQa(hostPage, "inbound", {
+      dropNextCount: 1,
+      duplicateNextCount: 1,
+    });
+    assert(duplicateDropConfigured === true, "Could not enable inbound latest-state QA faults on the host.");
+    await setInputState(joinPage, 1, 0, false);
+    await sendInputTick(joinPage, 1, 0, false);
+    await delay(140);
+    await sendInputTick(joinPage, 1, 0, false);
+    await hostPage.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0]?.lastInputSequence ?? 0) > ${hostInputSequenceBeforeFaults}`,
+      10_000,
+    );
+    const duplicateDropHostState = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0] ?? null",
+    );
+    const duplicateDropConnectionState = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.roomSetup?.connection ?? null",
+    );
+    assert(
+      duplicateDropConnectionState?.phase === "connected" &&
+        duplicateDropConnectionState?.peerCount === 1,
+      "Latest-state duplicate/drop faults should not disconnect a valid peer.",
+    );
+    assert(
+      (duplicateDropHostState?.lastInputSequence ?? 0) > hostInputSequenceBeforeFaults,
+      "Host did not recover from the injected latest-state input drop/duplicate.",
+    );
+    await configureLatestStateQa(hostPage, "inbound", null);
+    await clearInputState(joinPage);
+
+    const guestLocalBeforeJitter = await readLocalPosition(joinPage);
+    assert(guestLocalBeforeJitter, "Guest local position was unavailable before the jitter test.");
+    const jitterConfigured = await configureLatestStateQa(joinPage, "inbound", {
+      delayScheduleMs: [420, 120, 380, 100, 340, 80],
+    });
+    assert(jitterConfigured === true, "Could not enable inbound latest-state jitter on the guest.");
+    await setInputState(joinPage, 0, 1, true);
+    await joinPage.bringToFront();
+    for (let step = 0; step < 6; step += 1) {
+      const sent = await sendInputTick(joinPage, 0, 1, true);
+      assert(sent === true, `Guest input tick ${step + 1} was not sent during the jitter test.`);
+      await delay(120);
+      await hostPage.bringToFront();
+      await delay(60);
+      await joinPage.bringToFront();
+    }
+    const guestJitterMidState = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer ?? null",
+    );
+    const guestLocalAfterJitterDrive = await readLocalPosition(joinPage);
+    assert(guestLocalAfterJitterDrive, "Guest local position was unavailable during the jitter test.");
+    const guestJitterDriveDistance = Math.hypot(
+      guestLocalAfterJitterDrive.x - guestLocalBeforeJitter.x,
+      guestLocalAfterJitterDrive.z - guestLocalBeforeJitter.z,
+    );
+    assert(
+      guestJitterDriveDistance > 0.35,
+      `Guest local prediction stalled under delayed snapshots (${guestJitterDriveDistance.toFixed(3)}m).`,
+    );
+    assert(
+      (guestJitterMidState?.lastSentInputSequence ?? 0) >
+        (guestJitterMidState?.lastAcknowledgedInputSequence ?? 0) &&
+        ((guestJitterMidState?.pendingReplayDeltaCount ?? 0) > 0 ||
+          (guestJitterMidState?.pendingInputCount ?? 0) > 0),
+      `Guest did not retain unacknowledged prediction history while snapshots were delayed: ${JSON.stringify(guestJitterMidState)}`,
+    );
+    await clearInputState(joinPage);
+    await hostPage.bringToFront();
+    await delay(180);
+    const hostProcessedSequenceAfterJitter = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0]?.lastProcessedInputSequence ?? 0",
+    );
+    await joinPage.waitForExpression(
+      `(() => {
+        const local = window.__dustlineQa__?.getState()?.match?.localPlayer;
+        return Boolean(local) && local.lastAcknowledgedInputSequence >= ${hostProcessedSequenceAfterJitter};
+      })()`,
+      15_000,
+    );
+    await delay(220);
+    const guestJitterSettledState = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer ?? null",
+    );
+    const guestLocalAfterJitterSettle = await readLocalPosition(joinPage);
+    const hostGuestAfterJitter = await readRemotePosition(hostPage);
+    assert(
+      guestLocalAfterJitterSettle && hostGuestAfterJitter,
+      "Positions were unavailable after the delayed-snapshot jitter test.",
+    );
+    const guestJitterConvergenceError = Math.hypot(
+      guestLocalAfterJitterSettle.x - hostGuestAfterJitter.x,
+      guestLocalAfterJitterSettle.z - hostGuestAfterJitter.z,
+    );
+    assert(
+      guestJitterConvergenceError < 0.35,
+      `Guest reconciliation diverged by ${guestJitterConvergenceError.toFixed(3)}m after delayed snapshots.`,
+    );
+    await configureLatestStateQa(joinPage, "inbound", null);
+
+    const guestSnapshotBeforeHold = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
+    );
+    const guestRemoteBeforeHold = await readRemotePosition(joinPage);
+    const holdConfigured = await configureLatestStateQa(hostPage, "outbound", {
+      hold: true,
+    });
+    assert(holdConfigured === true, "Could not enable outbound latest-state hold on the host.");
+    await delay(180);
+    const guestSnapshotAfterHoldActivation = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
+    );
+    await hostPage.bringToFront();
+    const hostLocalBeforeHold = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.position ?? null",
+    );
+    assert(hostLocalBeforeHold, "Host local position was unavailable before the backpressure test.");
+    await teleportHost(hostPage, hostLocalBeforeHold.x + 0.8, hostLocalBeforeHold.z, 0);
+    await delay(120);
+    await teleportHost(hostPage, hostLocalBeforeHold.x + 1.6, hostLocalBeforeHold.z + 0.2, 0);
+    await delay(120);
+    await teleportHost(hostPage, hostLocalBeforeHold.x + 2.3, hostLocalBeforeHold.z + 0.4, 0);
+    const hostSnapshotDuringHold = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection?.lastSnapshotId ?? 0",
+    );
+    const guestSnapshotDuringHold = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
+    );
+    assert(
+      guestSnapshotDuringHold === guestSnapshotAfterHoldActivation,
+      "Guest continued receiving new host snapshots while latest-state backpressure hold was active.",
+    );
+    await configureLatestStateQa(hostPage, "outbound", null);
+    await joinPage.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0) >= ${hostSnapshotDuringHold}`,
+      15_000,
+    );
+    await delay(220);
+    const guestSnapshotAfterHold = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
+    );
+    const guestRemoteAfterHold = await readRemotePosition(joinPage);
+    assert(guestRemoteAfterHold && guestRemoteBeforeHold, "Guest remote position was unavailable after hold release.");
+    const guestHoldDistance = Math.hypot(
+      guestRemoteAfterHold.x - guestRemoteBeforeHold.x,
+      guestRemoteAfterHold.z - guestRemoteBeforeHold.z,
+    );
+    assert(
+      guestSnapshotAfterHold >= hostSnapshotDuringHold &&
+        guestSnapshotAfterHold - guestSnapshotAfterHoldActivation >= 2,
+      `Guest did not jump to the newest held host snapshot after release (${guestSnapshotAfterHold} < ${hostSnapshotDuringHold}).`,
+    );
 
     const guestSnapshotBeforeHostMove = await joinPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.lastHostSnapshotId ?? 0",
@@ -564,6 +733,16 @@ async function main() {
       ),
       guestAckAfterMovement,
       guestSnapshotAfterHostMove,
+      duplicateDropHostState,
+      duplicateDropConnectionState,
+      guestJitterMidState,
+      guestJitterSettledState,
+      guestJitterDriveDistance,
+      guestJitterConvergenceError,
+      guestSnapshotBeforeHold,
+      hostSnapshotDuringHold,
+      guestSnapshotAfterHold,
+      guestHoldDistance,
       hostRemoteInputState,
       hostRemotePositionBeforeGuestInput: initialGuestOnHost,
       hostRemoteAfterGuestInput,

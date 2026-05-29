@@ -1,6 +1,6 @@
 # Multiplayer QA
 
-Date: 2026-05-28
+Date: 2026-05-29
 
 ## Scope
 
@@ -36,19 +36,21 @@ npm run qa:final
 npm test
 ```
 
+When `SIGNALING_URL` is unset, `qa:signaling-worker`, `qa:cloud-signaling`, and `qa:cloud-signaling-14` now launch a local `wrangler dev --local` signaling Worker automatically and point the browser QA harness at `http://127.0.0.1:8787`. Setting `SIGNALING_URL` still overrides that default when a verifier intentionally wants the deployed service or another custom endpoint.
+
 ## Current Hardened-Path Verification Run
 
-The current abuse-hardening evidence was refreshed against a local Worker built from this repo so the verifier does not depend on the currently deployed service state:
+The current abuse-hardening evidence was refreshed against a local Worker built from this repo so the verifier does not depend on the deployed service state:
 
 ```bash
-env HOME=/tmp/wrangler-home XDG_CONFIG_HOME=/tmp/wrangler-config npm_config_cache=/tmp/npm-cache CI=1 \
-  npx --yes wrangler dev --local --port 8787 --persist-to /tmp/cs-webrtc-wrangler-state
-curl -sS -D - http://127.0.0.1:8787/health
 npm run typecheck
 npm run build
-SIGNALING_URL=http://127.0.0.1:8787 npm run qa:signaling-worker
-SIGNALING_URL=http://127.0.0.1:8787 npm run qa:cloud-signaling
-SIGNALING_URL=http://127.0.0.1:8787 npm run qa:cloud-signaling-14
+npm run qa:signaling-worker
+npm run qa:cloud-signaling
+npm run qa:cloud-signaling-14
+npm run qa:manual-signaling
+npm run qa:host-room
+npm run qa:shot-validation
 npm run qa:final
 rg -n -i "account_id|api[_-]?key|client_secret|turnstile|credential|secret_access|workers_dev_token|cloudflare_api" \
   workers/signaling/wrangler.jsonc workers/signaling/src docs/multiplayer-architecture.md package.json
@@ -98,8 +100,7 @@ Coverage:
 
 Observed result on the current branch:
 
-- `curl -sS -D - http://127.0.0.1:8787/health` returned `200 OK` with `{"ok":true,"service":"csmini-signaling","maxPeersPerRoom":14}`
-- `SIGNALING_URL=http://127.0.0.1:8787 npm run qa:signaling-worker` passed with:
+- `npm run qa:signaling-worker` passed against `signalingUrl = "http://127.0.0.1:8787"` with:
   - `postHealthStatus = 405`
   - `badRouteStatus = 404`
   - `oversizeQueryStatus = 414`
@@ -133,7 +134,7 @@ Coverage:
 
 Observed result on the current branch:
 
-- `SIGNALING_URL=http://127.0.0.1:8787 npm run qa:cloud-signaling` passed with:
+- `npm run qa:cloud-signaling` passed with:
   - `roomCode` was non-empty
   - `hostPhase = "connected"`
   - `guestPhases = ["connected"]`
@@ -149,7 +150,7 @@ Observed result on the current branch:
   - `guardrails.malformedRoomPeerFailure.hostPeerCount = 0`
   - `guardrails.malformedRoomPeerFailure.hostDetail = "A peer sent repeated malformed room messages."`
   - `guardrails.malformedRoomPeerFailure.guestPhase = "idle"`
-  - `guardrails.malformedRoomPeerFailure.guestDetail` surfaced a bounded host-disconnect message. Fresh reruns have produced both `"The host connection failed."` and `"The host ended the room."`, depending on whether the joiner resolves through the transport-close path or the explicit host-ended path first.
+  - `guardrails.malformedRoomPeerFailure.guestDetail = "The host ended the room."`
 
 ### `npm run qa:cloud-signaling-14`
 
@@ -163,7 +164,7 @@ Coverage:
 
 Observed result on the current branch:
 
-- `SIGNALING_URL=http://127.0.0.1:8787 npm run qa:cloud-signaling-14` passed with:
+- `npm run qa:cloud-signaling-14` passed with:
   - `guestCount = 13`
   - `expectedPlayerCount = 14`
   - host and all 13 guests reached `connected`
@@ -196,7 +197,11 @@ Coverage:
 - two-browser room join
 - guest input tick delivery
 - host-side receipt of guest input sequencing
+- quiet latest-state duplicate/drop handling without disconnecting the peer
+- delayed snapshot jitter while guest local prediction keeps moving
+- latest-wins snapshot release after artificial latest-state backpressure
 - host snapshot delivery to the guest
+- host deadman clearing after paused guest input
 - guest recovery after host disconnect
 
 Observed result on the current branch:
@@ -204,6 +209,11 @@ Observed result on the current branch:
 - both peers entered the room and saw roster length `2`
 - the host recorded guest input sequences greater than `0`
 - the guest received authoritative snapshot ids greater than `0`
+- pausing guest input still cleared the host-side remote movement state with `deadmanDrift = 0.086`
+- injecting one dropped and one duplicated latest-state input tick still left the room `connected` with `peerCount = 1`, and the host continued advancing to `lastInputSequence = 8`
+- delayed-snapshot jitter still let the guest move `1.764 m` locally while `lastSentInputSequence = 27` temporarily stayed ahead of `lastAcknowledgedInputSequence = 26`
+- after delayed snapshots drained, guest reconciliation converged back to host authority with only `0.010 m` of position error
+- artificial latest-state hold on host snapshots kept the guest pinned during the hold window and then advanced the guest from snapshot `29` to at least the newest held host snapshot `40` immediately after release
 - closing the host returned the guest to the room setup screen with a recoverable error message
 - host movement still changed the guest-side replicated remote position through later snapshots
 
@@ -261,7 +271,7 @@ Observed result on the current branch:
 - the returned suite id was `dustline-multiplayer-final`
 - all four step ids were present and passed: `local-flow`, `manual-signaling`, `host-room`, `shot-validation`
 - the embedded `manual-signaling` summary still reported `hostPhase = "connected"`, `guestPhase = "connected"`, `hostRosterCount = 2`, and `guestRosterCount = 2`
-- the embedded `host-room` summary still reported guest recovery with `guestRecoveryScreen = "room"` and `guestRecoveryError = "The host ended the room."`
+- the embedded `host-room` summary still reported guest recovery with `guestRecoveryScreen = "room"` and `guestRecoveryError = "The host ended the room."`, plus the latest-state resilience probes above
 - the embedded `shot-validation` summary still reported `blockedResult.reason = "blocked-by-cover"`, `acceptedResult.reason = "hit-confirmed"`, and `fireRateResult.reason = "fire-rate"`
 
 ### `npm test`
@@ -288,6 +298,9 @@ Automated today:
 - join and accept flow
 - roster replication
 - guest input -> host movement
+- quiet latest-state drop / duplicate handling
+- delayed-snapshot guest prediction and reconciliation
+- latest-wins host snapshot release after artificial backpressure
 - host snapshot -> guest replication
 - disconnect cleanup
 - blocked and accepted shot validation
@@ -302,7 +315,7 @@ Still manual:
 ## Signaling Abuse Hardening Vs Gameplay Anti-Cheat
 
 - `qa:signaling-worker` and the guardrail probes inside `qa:cloud-signaling` prove signaling abuse controls: route gating, size caps, rate caps, relay allowlisting, peer-target validation, and bounded failure for malformed traffic.
-- `qa:host-room` and `qa:shot-validation` prove gameplay authority and message validation inside the browser host. They are separate from signaling hardening and do not turn this branch into an anti-cheat service.
+- `qa:host-room` and `qa:shot-validation` prove gameplay authority, latest-state resilience, and message validation inside the browser host. They are separate from signaling hardening and do not turn this branch into an anti-cheat service.
 - A malicious host can still cheat because the host owns the canonical gameplay state.
 - Browser-generated identities are still protocol-level labels, not authenticated accounts, so browser-spoofed identity remains out of scope for this hardening pass.
 

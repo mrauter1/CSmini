@@ -24,7 +24,7 @@ Dustline keeps the frontend deployable as a plain static site while still allowi
 
 ## Room Transport Lanes
 
-Room protocol `v2` splits browser-to-browser traffic into two explicit lanes per peer:
+Room protocol `v3` splits browser-to-browser traffic into two explicit lanes per peer:
 
 - Reliable ordered lane:
   - join, accept, reject
@@ -46,6 +46,16 @@ Inbound sequencing is also type-aware instead of peer-global:
 - reliable control/combat traffic must still advance monotonically per peer
 - late or duplicate `input-tick`, `host-snapshot`, and `heartbeat` frames are dropped quietly
 - malformed, oversized, wrong-room, wrong-target, wrong-lane, role-forbidden, or out-of-order reliable traffic still counts as invalid room traffic
+
+The signaling path never becomes a gameplay relay. Cloudflare only helps the peers discover each other and exchange SDP / ICE; all room messages above still travel directly on browser DataChannels.
+
+## Input Timeout And Reconciliation
+
+- The host records when each guest's latest accepted `input-tick` was received and clears only movement plus sprint if no fresh tick arrives for `320 ms`.
+- That timeout is intentionally conservative relative to the normal guest resend cadence, so held movement continues normally while the network is healthy but a lost key-release does not leave a guest running forever.
+- Host snapshots now include `lastProcessedInputSequence` for every player. Guests use that acknowledgement to drop already-processed local history, keep only a bounded replay window, and rebuild their authoritative local target from host position plus unacknowledged predicted deltas.
+- Large divergence, first sync, death, respawn, and room-reset transitions still hard-snap so the branch does not try to replay across lifecycle boundaries.
+- Local prediction is still pragmatic rather than full rollback: it smooths ordinary jitter and delayed snapshots, but the host remains authoritative.
 
 ## Signaling Abuse Controls
 
@@ -84,6 +94,8 @@ Guests stay responsive locally, but they only send intent:
 - room join and leave events
 - shot claims with weapon state and sequencing data
 
+Combat stays on the reliable lane even after the latest-state split. Guests may show cosmetic recoil or provisional hit feedback immediately, but health, eliminations, respawns, score, and accepted shot outcomes only change after the host sends a reliable `shot-result`.
+
 ## What The Host Validates
 
 Movement and session validation:
@@ -112,6 +124,7 @@ This is a hobby-scale host-authoritative design, not an anti-cheat service.
 - Browser-generated identities are not authenticated accounts.
 - Room codes are unauthenticated, so anyone with the code can attempt to join.
 - Google STUN servers are configured by default, but no TURN relay is bundled yet.
+- A browser can still spoof its chosen display name and accent color because the room protocol has no account or device attestation layer.
 
 ## Known Limits
 
@@ -119,6 +132,7 @@ This is a hobby-scale host-authoritative design, not an anti-cheat service.
 - NAT and firewall combinations can prevent the browser-to-browser connection from forming.
 - Manual offer and answer exchange is still available for one guest if Cloudflare signaling is unavailable.
 - There is no host migration in the current implementation.
+- There is still no dedicated authoritative server, so the host can cheat and can intentionally publish false state.
 
 ## Follow-Up Path
 

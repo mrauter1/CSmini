@@ -12,6 +12,8 @@ import {
   createSignaledJoinMatchRoomConnection,
   detectSharedRoomSupport,
   normalizeRoomCode,
+  type LatestStateQaConfig,
+  type LatestStateQaDirection,
   type HostMatchRoomConnection,
   type JoinMatchRoomConnection,
   type MatchMode,
@@ -707,6 +709,13 @@ export class TacticalShellApp {
 
   debugSendRawRoomMessage(raw: string, toPeerId?: string): boolean {
     return this.roomSetup?.connection?.debugSendRawRoomMessage?.(raw, toPeerId) ?? false;
+  }
+
+  debugConfigureLatestStateQa(
+    direction: LatestStateQaDirection,
+    config?: LatestStateQaConfig | null,
+  ): boolean {
+    return this.roomSetup?.connection?.debugConfigureLatestStateQa?.(direction, config) ?? false;
   }
 
   debugSendSignalingPayload(payload: Record<string, unknown>): boolean {

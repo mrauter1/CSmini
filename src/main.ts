@@ -11,6 +11,16 @@ declare global {
       getRoomCode: () => string | null;
       joinSignalingRoom: (roomCode: string) => boolean;
       sendRawRoomMessage: (raw: string, toPeerId?: string) => boolean;
+      configureLatestStateQa: (
+        direction: "inbound" | "outbound",
+        config?: {
+          hold?: boolean;
+          dropNextCount?: number;
+          duplicateNextCount?: number;
+          delayMs?: number;
+          delayScheduleMs?: number[];
+        } | null,
+      ) => boolean;
       sendSignalingPayload: (payload: Record<string, unknown>) => boolean;
       injectSignalingMessage: (raw: string) => boolean;
       createRoomOffer: () => Promise<string | null>;
@@ -105,6 +115,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     getRoomCode: () => app.debugGetRoomCode(),
     joinSignalingRoom: (roomCode) => app.debugJoinSignalingRoom(roomCode),
     sendRawRoomMessage: (raw, toPeerId) => app.debugSendRawRoomMessage(raw, toPeerId),
+    configureLatestStateQa: (direction, config) => app.debugConfigureLatestStateQa(direction, config),
     sendSignalingPayload: (payload) => app.debugSendSignalingPayload(payload),
     injectSignalingMessage: (raw) => app.debugInjectSignalingMessage(raw),
     createRoomOffer: () => app.debugCreateRoomOffer(),
