@@ -9,6 +9,9 @@ import {
   decodeRoomMessage,
   encodeRoomMessage,
   type HostRoomSnapshot,
+  MAX_ROOM_INVALID_MESSAGES,
+  MAX_ROOM_MESSAGE_BYTES,
+  measureRoomMessageBytes,
   type ParticipantIdentity,
   type ParticipantRecord,
   type RoomInputTick,
@@ -21,7 +24,12 @@ import {
   type TeamAssignment,
   isFreshRoomMessage,
 } from "./protocol";
-import type { RoomTransport, RoomTransportPhase, RoomTransportStatus } from "./transport";
+import type {
+  RoomTransport,
+  RoomTransportMessageEvent,
+  RoomTransportPhase,
+  RoomTransportStatus,
+} from "./transport";
 import { WebRtcRoomTransport } from "./webrtcTransport";
 
 const HEARTBEAT_PULSE_MS = 900;
@@ -110,6 +118,9 @@ export interface MatchRoomConnection {
   dispose(): void;
   subscribe(listener: () => void): () => void;
   debugSnapshot(): RoomConnectionDebugSnapshot;
+  debugSendRawRoomMessage?: (raw: string, toPeerId?: string) => boolean;
+  debugSendSignalingPayload?: (payload: Record<string, unknown>) => boolean;
+  debugInjectSignalingMessage?: (raw: string) => boolean;
 }
 
 export interface HostMatchRoomConnection extends MatchRoomConnection {
@@ -360,6 +371,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   readonly participants = new Map<string, ParticipantRecord>();
   readonly lastSeqByPeer = new Map<string, number>();
   readonly lastSeenByPeer = new Map<string, number>();
+  readonly invalidRoomMessagesByPeer = new Map<string, number>();
   readonly listeners = new Set<() => void>();
 
   hostPeerId?: string;
@@ -494,6 +506,10 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     };
   }
 
+  debugSendRawRoomMessage(raw: string, toPeerId?: string): boolean {
+    return this.transport.send(raw, toPeerId);
+  }
+
   protected createUiState(status: RoomTransportStatus): RoomConnectionUiSnapshot {
     return {
       kind: this.kind,
@@ -533,7 +549,12 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       payload,
     } as Extract<RoomMessage, { type: Type }>;
 
-    return this.transport.send(encodeRoomMessage(message), toPeerId);
+    const raw = encodeRoomMessage(message);
+    if (measureRoomMessageBytes(raw) > MAX_ROOM_MESSAGE_BYTES) {
+      return false;
+    }
+
+    return this.transport.send(raw, toPeerId);
   }
 
   protected rememberParticipant(participant: ParticipantRecord): void {
@@ -551,11 +572,16 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     });
   }
 
-  protected removePeer(peerId: string, reason: "leave" | "stale"): void {
+  protected removePeer(
+    peerId: string,
+    reason: "leave" | "stale",
+    closedDetail?: string,
+  ): void {
     const removedParticipant = this.participants.get(peerId);
     this.participants.delete(peerId);
     this.lastSeenByPeer.delete(peerId);
     this.lastSeqByPeer.delete(peerId);
+    this.invalidRoomMessagesByPeer.delete(peerId);
 
     if (removedParticipant) {
       this.handlers.onLeave(peerId, reason);
@@ -564,7 +590,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     const hostRemoved = peerId === this.hostPeerId && peerId !== this.identity.id;
     if (hostRemoved && this.role === "guest") {
       this.notifyRoomClosed(
-        reason === "stale" ? "Host room timed out." : "The host ended the room.",
+        closedDetail ?? (reason === "stale" ? "Host room timed out." : "The host ended the room."),
       );
       return;
     }
@@ -765,7 +791,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   protected bindTransport(): void {
     this.transport.setEvents({
       onMessage: (event) => {
-        this.handleRawMessage(event.raw);
+        this.handleRawMessage(event);
       },
       onStatus: (status) => {
         this.onTransportStatus(status);
@@ -789,6 +815,31 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     return this.remoteParticipants().length > 0 ? "active" : "waiting";
   }
 
+  private noteInvalidRoomMessage(peerId: string | undefined, detail: string): void {
+    if (!peerId || peerId === this.identity.id) {
+      return;
+    }
+
+    const nextCount = (this.invalidRoomMessagesByPeer.get(peerId) ?? 0) + 1;
+    this.invalidRoomMessagesByPeer.set(peerId, nextCount);
+    if (nextCount < MAX_ROOM_INVALID_MESSAGES) {
+      return;
+    }
+
+    this.invalidRoomMessagesByPeer.delete(peerId);
+    this.transport.disconnectPeer?.(peerId, "invalid-room-message");
+    this.removePeer(peerId, "leave", detail);
+
+    if (this.role === "guest" && peerId === this.hostPeerId) {
+      return;
+    }
+
+    this.updateUiState({
+      detail,
+      remoteName: this.remoteParticipants()[0]?.name,
+    });
+  }
+
   private flushSnapshot(now: number): void {
     if (!this.latestSnapshot) {
       return;
@@ -798,26 +849,36 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     this.sendMessage("host-snapshot", this.latestSnapshot);
   }
 
-  private readonly handleRawMessage = (raw: string): void => {
-    const message = decodeRoomMessage(raw);
+  private readonly handleRawMessage = (event: RoomTransportMessageEvent): void => {
+    if (measureRoomMessageBytes(event.raw) > MAX_ROOM_MESSAGE_BYTES) {
+      this.noteInvalidRoomMessage(event.fromPeerId, "A peer sent an oversized room payload.");
+      return;
+    }
+
+    const message = decodeRoomMessage(event.raw);
     if (!message) {
+      this.noteInvalidRoomMessage(event.fromPeerId, "A peer sent repeated malformed room messages.");
       return;
     }
 
     if (message.roomId !== this.roomId || message.fromPeerId === this.identity.id) {
+      this.noteInvalidRoomMessage(message.fromPeerId, "A peer sent a room message for the wrong room.");
       return;
     }
 
     if (message.toPeerId && message.toPeerId !== this.identity.id) {
+      this.noteInvalidRoomMessage(message.fromPeerId, "A peer sent a room message to the wrong target.");
       return;
     }
 
     if (!isFreshRoomMessage(message)) {
+      this.noteInvalidRoomMessage(message.fromPeerId, "A peer sent stale room traffic.");
       return;
     }
 
     const lastSeq = this.lastSeqByPeer.get(message.fromPeerId) ?? 0;
     if (message.seq <= lastSeq) {
+      this.noteInvalidRoomMessage(message.fromPeerId, "A peer replayed room traffic out of order.");
       return;
     }
     this.lastSeqByPeer.set(message.fromPeerId, message.seq);
@@ -825,12 +886,33 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
 
     switch (message.type) {
       case "join-request":
+        if (this.role !== "host") {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Guests must not receive join requests from another peer.",
+          );
+          return;
+        }
         this.onJoinRequest(message);
         return;
       case "join-accepted":
+        if (this.role !== "guest") {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Hosts must not receive join-accepted room messages.",
+          );
+          return;
+        }
         this.onJoinAccepted(message);
         return;
       case "join-rejected":
+        if (this.role !== "guest") {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Hosts must not receive join-rejected room messages.",
+          );
+          return;
+        }
         this.onJoinRejected(message);
         return;
       case "participant-update":
@@ -843,14 +925,27 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
             sentAt: message.sentAt,
             ...message.payload,
           });
+        } else {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Guests must not receive input ticks from another peer.",
+          );
         }
         return;
       case "host-snapshot":
         if (this.role !== "guest") {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Hosts must not receive host snapshots from another peer.",
+          );
           return;
         }
 
         if (this.hostPeerId && message.fromPeerId !== this.hostPeerId) {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Only the active host may send room snapshots to a guest.",
+          );
           return;
         }
 
@@ -864,6 +959,11 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
             sentAt: message.sentAt,
             ...message.payload,
           });
+        } else {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Guests must not receive shot claims from another peer.",
+          );
         }
         return;
       case "shot-result":
@@ -873,6 +973,11 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
             sentAt: message.sentAt,
             ...message.payload,
           });
+        } else {
+          this.noteInvalidRoomMessage(
+            message.fromPeerId,
+            "Hosts must not receive shot results from another peer.",
+          );
         }
         return;
       case "objective-event":
@@ -976,6 +1081,8 @@ class HostWebRtcMatchRoomConnection
 }
 
 class SignaledWebRtcMatchRoomConnection extends BaseMatchRoomConnection {
+  private readonly signaledTransport: SignaledWebRtcRoomTransport;
+
   constructor(
     kind: Extract<RoomConnectionKind, "signal-host" | "signal-join">,
     options: BaseConnectionOptions,
@@ -983,10 +1090,20 @@ class SignaledWebRtcMatchRoomConnection extends BaseMatchRoomConnection {
     signalingUrl: string,
   ) {
     super(kind, options);
+    this.signaledTransport = options.transport as SignaledWebRtcRoomTransport;
     this.updateUiState({
       roomCode,
       signalingUrl,
     });
+  }
+
+  debugSendSignalingPayload(payload: Record<string, unknown>): boolean {
+    return this.signaledTransport.debugSendSignalingPayload(payload);
+  }
+
+  debugInjectSignalingMessage(raw: string): boolean {
+    this.signaledTransport.debugInjectSignalingMessage(raw);
+    return true;
   }
 }
 

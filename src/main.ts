@@ -10,6 +10,9 @@ declare global {
       openRoomSetup: (mapId: string, kind?: RoomConnectionKind) => void;
       getRoomCode: () => string | null;
       joinSignalingRoom: (roomCode: string) => boolean;
+      sendRawRoomMessage: (raw: string, toPeerId?: string) => boolean;
+      sendSignalingPayload: (payload: Record<string, unknown>) => boolean;
+      injectSignalingMessage: (raw: string) => boolean;
       createRoomOffer: () => Promise<string | null>;
       applyRoomAnswer: (answer: string) => Promise<boolean>;
       generateRoomAnswer: (offer: string) => Promise<string | null>;
@@ -100,6 +103,9 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     openRoomSetup: (mapId, kind) => app.debugOpenRoomSetup(mapId, kind),
     getRoomCode: () => app.debugGetRoomCode(),
     joinSignalingRoom: (roomCode) => app.debugJoinSignalingRoom(roomCode),
+    sendRawRoomMessage: (raw, toPeerId) => app.debugSendRawRoomMessage(raw, toPeerId),
+    sendSignalingPayload: (payload) => app.debugSendSignalingPayload(payload),
+    injectSignalingMessage: (raw) => app.debugInjectSignalingMessage(raw),
     createRoomOffer: () => app.debugCreateRoomOffer(),
     applyRoomAnswer: (answer) => app.debugApplyRoomAnswer(answer),
     generateRoomAnswer: (offer) => app.debugGenerateRoomAnswer(offer),

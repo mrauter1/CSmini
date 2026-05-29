@@ -310,12 +310,126 @@ async function waitForMatch(page, mapId, timeoutMs = 15_000) {
   );
 }
 
+async function probeOutboundSignalingGuardrail(page) {
+  await page.evaluate(
+    `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
+  );
+  await page.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+  await waitForRoomPhase(page, "waiting");
+
+  const sent = await page.evaluate(
+    `window.__dustlineQa__.sendSignalingPayload(${JSON.stringify({
+      type: "offer",
+      toPeerId: "guardrail-guest",
+      description: {
+        type: "offer",
+        sdp: "x".repeat(12 * 1024 + 128),
+      },
+    })})`,
+  );
+  assert(sent === false, "Oversized signaling offer should be rejected client-side before send.");
+
+  await waitForRoomPhase(page, "error");
+  const detail = await page.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.connection?.detail ?? ''");
+  assert(
+    typeof detail === "string" && detail.includes("oversized or invalid offer"),
+    "Client should surface the rejected oversized signaling offer.",
+  );
+
+  return {
+    sent,
+    phase: await page.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
+    detail,
+  };
+}
+
+async function probeInboundSignalingGuardrail(page) {
+  await page.evaluate(
+    `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
+  );
+  await page.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+  await waitForRoomPhase(page, "waiting");
+
+  for (let index = 0; index < 4; index += 1) {
+    const injected = await page.evaluate(
+      `window.__dustlineQa__.injectSignalingMessage(${JSON.stringify("{not-json}")})`,
+    );
+    assert(injected === true, "QA hook should inject malformed signaling frames.");
+  }
+
+  await waitForRoomPhase(page, "error");
+  const detail = await page.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.connection?.detail ?? ''");
+  assert(
+    typeof detail === "string" && detail.includes("invalid signaling message"),
+    "Repeated malformed signaling should fail the client transport cleanly.",
+  );
+
+  return {
+    phase: await page.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
+    detail,
+  };
+}
+
+async function probeMalformedRoomPeerFailure(hostPage, joinPage) {
+  const hostPeerId = await joinPage.evaluate(
+    "window.__dustlineQa__?.getState()?.roomSetup?.connection?.hostPeerId ?? null",
+  );
+  assert(typeof hostPeerId === "string" && hostPeerId.length > 0, "Guest did not learn the host peer id.");
+
+  for (let index = 0; index < 4; index += 1) {
+    const sent = await joinPage.evaluate(
+      `window.__dustlineQa__.sendRawRoomMessage(${JSON.stringify("{not-json}")}, ${JSON.stringify(hostPeerId)})`,
+    );
+    assert(sent === true, "Malformed room payload probe should still traverse the open data channel.");
+  }
+
+  await hostPage.waitForExpression(
+    "(window.__dustlineQa__?.getState()?.roomSetup?.connection?.peerCount ?? -1) === 0",
+    10_000,
+  );
+  await joinPage.waitForExpression(
+    `(window.__dustlineQa__?.getState()?.roomSetup?.supportError ?? "").length > 0`,
+    10_000,
+  );
+
+  return {
+    hostPeerCount: await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.roomSetup?.connection?.peerCount ?? null",
+    ),
+    hostDetail: await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.roomSetup?.connection?.detail ?? ''",
+    ),
+    guestPhase: await joinPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
+    guestDetail: await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.roomSetup?.supportError ?? ''",
+    ),
+  };
+}
+
 async function main() {
   const preview = await startPreview();
   const chrome = await startChrome();
   const pages = [];
 
   try {
+    let guardrails = null;
+    if (GUEST_COUNT === 1) {
+      const outboundProbePage = await createPage(`${ROOT_URL}?qa=1`);
+      pages.push(outboundProbePage);
+      const outboundOfferRejected = await probeOutboundSignalingGuardrail(outboundProbePage);
+      await outboundProbePage.close();
+
+      const inboundProbePage = await createPage(`${ROOT_URL}?qa=1`);
+      pages.push(inboundProbePage);
+      const repeatedInvalidSignaling = await probeInboundSignalingGuardrail(inboundProbePage);
+      await inboundProbePage.close();
+
+      guardrails = {
+        outboundOfferRejected,
+        repeatedInvalidSignaling,
+      };
+    }
+
     const hostPage = await createPage(`${ROOT_URL}?qa=1`);
     const joinPages = [];
     for (let index = 0; index < GUEST_COUNT; index += 1) {
@@ -409,6 +523,14 @@ async function main() {
         ),
       ),
     };
+
+    if (guardrails && joinPages[0]) {
+      guardrails.malformedRoomPeerFailure = await probeMalformedRoomPeerFailure(hostPage, joinPages[0]);
+    }
+
+    if (guardrails) {
+      summary.guardrails = guardrails;
+    }
 
     console.log(JSON.stringify(summary, null, 2));
   } catch (error) {

@@ -6,6 +6,8 @@ import {
   type HostOfferSignal,
 } from "./manualSignaling";
 import type { ParticipantIdentity } from "./protocol";
+import { MAX_ROOM_MESSAGE_BYTES, measureRoomMessageBytes } from "./protocol";
+import { MAX_TRANSPORT_BUFFERED_BYTES } from "./signalingConfig";
 import type { RoomTransport, RoomTransportEvents, RoomTransportStatus } from "./transport";
 
 export const DATA_CHANNEL_LABEL = "dustline-room";
@@ -152,8 +154,20 @@ export class WebRtcRoomTransport implements RoomTransport {
       return false;
     }
 
+    const rawBytes = measureRoomMessageBytes(raw);
+    if (
+      rawBytes > MAX_ROOM_MESSAGE_BYTES ||
+      this.dataChannel.bufferedAmount + rawBytes > MAX_TRANSPORT_BUFFERED_BYTES
+    ) {
+      return false;
+    }
+
     this.dataChannel.send(raw);
     return true;
+  }
+
+  disconnectPeer(_peerId: string, reason = "closed"): void {
+    this.close(reason);
   }
 
   close(reason = "closed"): void {
@@ -217,6 +231,7 @@ export class WebRtcRoomTransport implements RoomTransport {
     this.events.onMessage({
       raw: event.data,
       receivedAt: Date.now(),
+      fromPeerId: this.remoteParticipant?.id,
     });
   };
 

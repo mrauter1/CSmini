@@ -705,6 +705,18 @@ export class TacticalShellApp {
     return Boolean(this.roomSetup.connection);
   }
 
+  debugSendRawRoomMessage(raw: string, toPeerId?: string): boolean {
+    return this.roomSetup?.connection?.debugSendRawRoomMessage?.(raw, toPeerId) ?? false;
+  }
+
+  debugSendSignalingPayload(payload: Record<string, unknown>): boolean {
+    return this.roomSetup?.connection?.debugSendSignalingPayload?.(payload) ?? false;
+  }
+
+  debugInjectSignalingMessage(raw: string): boolean {
+    return this.roomSetup?.connection?.debugInjectSignalingMessage?.(raw) ?? false;
+  }
+
   async debugCreateRoomOffer(): Promise<string | null> {
     const connection = this.roomSetup?.connection;
     if (!connection || connection.kind !== "webrtc-host") {

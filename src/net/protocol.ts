@@ -2,6 +2,11 @@ export const ROOM_PROTOCOL = "dustline-room";
 export const ROOM_PROTOCOL_VERSION = 1 as const;
 export const ROOM_MESSAGE_STALE_MS = 12_000;
 export const ROOM_MESSAGE_FUTURE_SKEW_MS = 2_500;
+// Shared gameplay payloads stay comfortably below this in normal play, so 64 KiB prevents one
+// peer from turning a data channel into an unbounded blob sink without clipping snapshots.
+export const MAX_ROOM_MESSAGE_BYTES = 64 * 1024;
+export const MAX_ROOM_INVALID_MESSAGES = 4;
+const UTF8 = new TextEncoder();
 
 export type CombatantStatus = "alive" | "down" | "respawning";
 export type TeamAssignment = "alpha" | "bravo" | "observer";
@@ -206,6 +211,10 @@ export type RoomShotResult = ShotResultMessage["payload"];
 
 export function encodeRoomMessage(message: RoomMessage): string {
   return JSON.stringify(message);
+}
+
+export function measureRoomMessageBytes(raw: string): number {
+  return UTF8.encode(raw).byteLength;
 }
 
 export function decodeRoomMessage(raw: string): RoomMessage | null {

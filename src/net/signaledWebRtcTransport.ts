@@ -1,5 +1,22 @@
-import { ROOM_PROTOCOL, ROOM_PROTOCOL_VERSION, type ParticipantIdentity } from "./protocol";
-import { toSignalingSocketUrl } from "./signalingConfig";
+import {
+  MAX_ROOM_MESSAGE_BYTES,
+  ROOM_PROTOCOL,
+  ROOM_PROTOCOL_VERSION,
+  measureRoomMessageBytes,
+  type ParticipantIdentity,
+} from "./protocol";
+import {
+  MAX_SIGNALING_INVALID_MESSAGES,
+  MAX_SIGNALING_RAW_MESSAGE_BYTES,
+  MAX_TRANSPORT_BUFFERED_BYTES,
+  isValidSignalingParticipant,
+  isValidSignalingPeerId,
+  sanitizeSignalingDescription,
+  sanitizeSignalingIceCandidate,
+  toSignalingSocketUrl,
+  utf8ByteLength,
+  validateSignalingClientContext,
+} from "./signalingConfig";
 import { DATA_CHANNEL_LABEL, DEFAULT_ICE_SERVERS } from "./webrtcTransport";
 import type { RoomTransport, RoomTransportEvents, RoomTransportStatus } from "./transport";
 
@@ -68,6 +85,13 @@ type SignalingMessage =
 
 type PeerPhase = "new" | "signaling" | "connecting" | "connected" | "closed" | "error";
 
+interface PeerChannelListeners {
+  open: () => void;
+  close: () => void;
+  message: (event: MessageEvent<unknown>) => void;
+  error: () => void;
+}
+
 interface PeerConnectionState {
   peerId: string;
   participant?: ParticipantIdentity;
@@ -75,7 +99,30 @@ interface PeerConnectionState {
   dataChannel?: RTCDataChannel;
   pendingRemoteCandidates: RTCIceCandidateInit[];
   phase: PeerPhase;
+  channelListeners?: PeerChannelListeners;
 }
+
+type OutboundSignalingMessage =
+  | {
+      type: "ping";
+    }
+  | {
+      type: "offer";
+      toPeerId: string;
+      description: RTCSessionDescriptionInit;
+    }
+  | {
+      type: "answer";
+      toPeerId: string;
+      description: RTCSessionDescriptionInit;
+    }
+  | {
+      type: "ice-candidate";
+      toPeerId: string;
+      candidate: RTCIceCandidateInit;
+    };
+
+const MAX_PENDING_REMOTE_ICE_CANDIDATES = 64;
 
 export function detectSignaledWebRtcSupport(): { supported: boolean; reason: string } {
   if (typeof WebSocket === "undefined") {
@@ -114,6 +161,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   private status: RoomTransportStatus;
   private events: RoomTransportEvents;
   private closed = false;
+  private signalingInvalidMessages = 0;
 
   constructor(
     private readonly options: SignaledWebRtcTransportOptions,
@@ -156,13 +204,17 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   }
 
   close(reason = "closed"): void {
-    this.closed = true;
-    for (const peer of [...this.peers.values()]) {
-      this.closePeer(peer, reason, false);
+    this.shutdown("closed", reason, reason);
+  }
+
+  disconnectPeer(peerId: string, reason = "closed"): void {
+    const peer = this.peers.get(peerId);
+    if (!peer) {
+      return;
     }
-    this.peers.clear();
-    this.socket?.close(1000, reason);
-    this.setStatus("closed", reason);
+
+    this.closePeer(peer, reason, false);
+    this.updateAggregateStatus();
   }
 
   getStatus(): RoomTransportStatus {
@@ -173,8 +225,37 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     return this.firstPeer()?.participant;
   }
 
+  debugSendSignalingPayload(payload: Record<string, unknown>): boolean {
+    if (!isRecord(payload)) {
+      return false;
+    }
+
+    return this.sendSignal(payload as OutboundSignalingMessage);
+  }
+
+  debugInjectSignalingMessage(raw: string): void {
+    this.handleSocketMessage(new MessageEvent("message", { data: raw }));
+  }
+
   private openSocket(): void {
-    const url = new URL(toSignalingSocketUrl(this.options.signalingUrl, this.options.roomId));
+    const validationError = validateSignalingClientContext({
+      roomId: this.options.roomId,
+      mapId: this.options.mapId,
+      participant: this.options.localParticipant,
+    });
+    if (validationError) {
+      this.setStatus("error", validationError);
+      return;
+    }
+
+    let url: URL;
+    try {
+      url = new URL(toSignalingSocketUrl(this.options.signalingUrl, this.options.roomId));
+    } catch {
+      this.setStatus("error", "Cloud signaling URL is invalid.");
+      return;
+    }
+
     url.searchParams.set("peerId", this.options.localParticipant.id);
     url.searchParams.set("role", this.options.role);
     url.searchParams.set("mapId", this.options.mapId);
@@ -186,6 +267,43 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.socket.addEventListener("message", this.handleSocketMessage);
     this.socket.addEventListener("close", this.handleSocketClose);
     this.socket.addEventListener("error", this.handleSocketError);
+  }
+
+  private shutdown(
+    phase: RoomTransportStatus["phase"],
+    detail: string,
+    reason: string,
+  ): void {
+    if (this.closed) {
+      this.setStatus(phase, detail);
+      return;
+    }
+
+    this.closed = true;
+    for (const peer of [...this.peers.values()]) {
+      this.closePeer(peer, reason, false);
+    }
+    this.peers.clear();
+
+    const socket = this.socket;
+    if (socket) {
+      socket.removeEventListener("open", this.handleSocketOpen);
+      socket.removeEventListener("message", this.handleSocketMessage);
+      socket.removeEventListener("close", this.handleSocketClose);
+      socket.removeEventListener("error", this.handleSocketError);
+      try {
+        socket.close(phase === "closed" ? 1000 : 1008, reason.slice(0, 123));
+      } catch {
+        // Ignore close failures while tearing the client transport down.
+      }
+    }
+
+    this.socket = undefined;
+    this.setStatus(phase, detail);
+  }
+
+  private failTransport(detail: string, reason = "invalid-signaling"): void {
+    this.shutdown("error", detail, reason);
   }
 
   private ensurePeer(peerId: string, participant?: ParticipantIdentity): PeerConnectionState {
@@ -251,22 +369,24 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     const offer = await peer.connection.createOffer();
     await peer.connection.setLocalDescription(offer);
     const description = peer.connection.localDescription?.toJSON() ?? offer;
-    this.sendSignal({
-      type: "offer",
-      toPeerId: peerId,
-      description,
-    });
+    if (!this.sendSignal({ type: "offer", toPeerId: peerId, description })) {
+      peer.phase = "error";
+      this.updateAggregateStatus("Client-side signaling guard rejected the offer.");
+      return;
+    }
     peer.phase = "connecting";
     this.updateAggregateStatus(`Offer sent to ${participant.name}. Waiting for answer.`);
   }
 
   private async acceptOffer(message: Extract<SignalingMessage, { type: "offer" }>): Promise<void> {
     if (this.options.role !== "guest") {
+      this.noteInvalidSignalingMessage("Hosts must not receive offers.");
       return;
     }
 
     const existingHost = this.firstPeer();
     if (existingHost && existingHost.peerId !== message.fromPeerId) {
+      this.noteInvalidSignalingMessage("Only one host may negotiate with a guest room client.");
       return;
     }
 
@@ -279,22 +399,24 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     const answer = await peer.connection.createAnswer();
     await peer.connection.setLocalDescription(answer);
     const description = peer.connection.localDescription?.toJSON() ?? answer;
-    this.sendSignal({
-      type: "answer",
-      toPeerId: message.fromPeerId,
-      description,
-    });
+    if (!this.sendSignal({ type: "answer", toPeerId: message.fromPeerId, description })) {
+      peer.phase = "error";
+      this.updateAggregateStatus("Client-side signaling guard rejected the answer.");
+      return;
+    }
     peer.phase = "connecting";
     this.updateAggregateStatus("Answer sent. Establishing the data channel.");
   }
 
   private async acceptAnswer(message: Extract<SignalingMessage, { type: "answer" }>): Promise<void> {
     if (this.options.role !== "host") {
+      this.noteInvalidSignalingMessage("Guests must not receive answers.");
       return;
     }
 
     const peer = this.peers.get(message.fromPeerId);
     if (!peer) {
+      this.noteInvalidSignalingMessage("Received an answer for an unknown guest.");
       return;
     }
 
@@ -310,10 +432,15 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   ): Promise<void> {
     const peer = this.peers.get(message.fromPeerId);
     if (!peer) {
+      this.noteInvalidSignalingMessage("Received an ICE candidate for an unknown peer.");
       return;
     }
 
     if (!peer.connection.remoteDescription) {
+      if (peer.pendingRemoteCandidates.length >= MAX_PENDING_REMOTE_ICE_CANDIDATES) {
+        this.noteInvalidSignalingMessage("Received too many pending ICE candidates for one peer.");
+        return;
+      }
       peer.pendingRemoteCandidates.push(message.candidate);
       return;
     }
@@ -337,20 +464,37 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   private bindChannel(peer: PeerConnectionState, channel: RTCDataChannel): void {
     this.unbindChannel(peer);
     peer.dataChannel = channel;
-    channel.addEventListener("open", () => {
-      this.handleChannelOpen(peer);
-    });
-    channel.addEventListener("close", () => {
-      this.handleChannelClose(peer);
-    });
-    channel.addEventListener("message", this.handleChannelMessage);
-    channel.addEventListener("error", () => {
-      this.handleChannelError(peer);
-    });
+    peer.channelListeners = {
+      open: () => {
+        this.handleChannelOpen(peer);
+      },
+      close: () => {
+        this.handleChannelClose(peer);
+      },
+      message: (event) => {
+        this.handleChannelMessage(peer, event);
+      },
+      error: () => {
+        this.handleChannelError(peer);
+      },
+    };
+    channel.addEventListener("open", peer.channelListeners.open);
+    channel.addEventListener("close", peer.channelListeners.close);
+    channel.addEventListener("message", peer.channelListeners.message);
+    channel.addEventListener("error", peer.channelListeners.error);
   }
 
   private unbindChannel(peer: PeerConnectionState): void {
-    peer.dataChannel?.removeEventListener("message", this.handleChannelMessage);
+    if (!peer.dataChannel || !peer.channelListeners) {
+      peer.channelListeners = undefined;
+      return;
+    }
+
+    peer.dataChannel.removeEventListener("open", peer.channelListeners.open);
+    peer.dataChannel.removeEventListener("close", peer.channelListeners.close);
+    peer.dataChannel.removeEventListener("message", peer.channelListeners.message);
+    peer.dataChannel.removeEventListener("error", peer.channelListeners.error);
+    peer.channelListeners = undefined;
   }
 
   private sendToPeer(peerId: string, raw: string): boolean {
@@ -359,8 +503,22 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
       return false;
     }
 
-    peer.dataChannel.send(raw);
-    return true;
+    const rawBytes = measureRoomMessageBytes(raw);
+    if (
+      rawBytes > MAX_ROOM_MESSAGE_BYTES ||
+      peer.dataChannel.bufferedAmount + rawBytes > MAX_TRANSPORT_BUFFERED_BYTES
+    ) {
+      return false;
+    }
+
+    try {
+      peer.dataChannel.send(raw);
+      return true;
+    } catch {
+      peer.phase = "error";
+      this.updateAggregateStatus("DataChannel send failed.");
+      return false;
+    }
   }
 
   private firstPeer(): PeerConnectionState | undefined {
@@ -466,14 +624,101 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.setStatus("closed", "Host connection closed.");
   }
 
-  private sendSignal(message: Record<string, unknown>): boolean {
+  private sendSignal(message: OutboundSignalingMessage): boolean {
+    const payload = this.serializeSignalingMessage(message);
+    if (!payload) {
+      return false;
+    }
+
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       this.setStatus("error", "Signaling socket is not connected.");
       return false;
     }
 
-    this.socket.send(JSON.stringify(message));
-    return true;
+    if (this.socket.bufferedAmount + utf8ByteLength(payload) > MAX_TRANSPORT_BUFFERED_BYTES) {
+      this.failTransport("Cloud signaling send buffering exceeded the client budget.", "buffer-limit");
+      return false;
+    }
+
+    try {
+      this.socket.send(payload);
+      return true;
+    } catch {
+      this.failTransport("Cloud signaling send failed.", "send-failed");
+      return false;
+    }
+  }
+
+  private serializeSignalingMessage(message: OutboundSignalingMessage): string | null {
+    let sanitized: OutboundSignalingMessage | null = null;
+
+    switch (message.type) {
+      case "ping":
+        sanitized = message;
+        break;
+      case "offer": {
+        if (!isValidSignalingPeerId(message.toPeerId)) {
+          this.failTransport("Cloud signaling rejected an offer with an invalid target peer id.");
+          return null;
+        }
+        const description = sanitizeSignalingDescription(message.description, "offer");
+        if (!description) {
+          this.failTransport("Cloud signaling rejected an oversized or invalid offer payload.");
+          return null;
+        }
+        sanitized = {
+          type: "offer",
+          toPeerId: message.toPeerId,
+          description,
+        };
+        break;
+      }
+      case "answer": {
+        if (!isValidSignalingPeerId(message.toPeerId)) {
+          this.failTransport("Cloud signaling rejected an answer with an invalid target peer id.");
+          return null;
+        }
+        const description = sanitizeSignalingDescription(message.description, "answer");
+        if (!description) {
+          this.failTransport("Cloud signaling rejected an oversized or invalid answer payload.");
+          return null;
+        }
+        sanitized = {
+          type: "answer",
+          toPeerId: message.toPeerId,
+          description,
+        };
+        break;
+      }
+      case "ice-candidate": {
+        if (!isValidSignalingPeerId(message.toPeerId)) {
+          this.failTransport("Cloud signaling rejected an ICE candidate with an invalid target peer id.");
+          return null;
+        }
+        const candidate = sanitizeSignalingIceCandidate(message.candidate);
+        if (!candidate) {
+          this.failTransport("Cloud signaling rejected an oversized or invalid ICE candidate.");
+          return null;
+        }
+        sanitized = {
+          type: "ice-candidate",
+          toPeerId: message.toPeerId,
+          candidate,
+        };
+        break;
+      }
+      default:
+        this.failTransport("Cloud signaling rejected an unsupported client message type.");
+        return null;
+    }
+
+    const raw = JSON.stringify(sanitized);
+    if (utf8ByteLength(raw) > MAX_SIGNALING_RAW_MESSAGE_BYTES) {
+      this.failTransport("Cloud signaling payload exceeded the client-side size budget.", "message-too-large");
+      return null;
+    }
+
+    return raw;
   }
 
   private setStatus(phase: RoomTransportStatus["phase"], detail: string): void {
@@ -497,22 +742,68 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
 
   private readonly handleSocketMessage = (event: MessageEvent<unknown>): void => {
     if (typeof event.data !== "string") {
+      this.noteInvalidSignalingMessage("Received a non-text signaling frame.");
       return;
     }
 
     const message = parseSignalingMessage(event.data);
     if (!message) {
-      this.setStatus("error", "Received an invalid signaling message.");
+      this.noteInvalidSignalingMessage("Received an invalid signaling message.");
+      return;
+    }
+
+    const contractError = this.validateInboundSignalingMessage(message);
+    if (contractError) {
+      this.noteInvalidSignalingMessage(contractError);
       return;
     }
 
     void this.handleSignalingMessage(message).catch((error) => {
-      this.setStatus(
-        "error",
+      this.failTransport(
         error instanceof Error ? error.message : "Signaling negotiation failed.",
+        "negotiation-failed",
       );
     });
   };
+
+  private validateInboundSignalingMessage(message: SignalingMessage): string | null {
+    switch (message.type) {
+      case "ready":
+        return message.peerId === this.localPeerId
+          ? null
+          : "Received a ready message for the wrong peer.";
+      case "waiting-for-host":
+        return this.options.role === "guest" ? null : "Hosts must not receive waiting-for-host.";
+      case "host-ready":
+        if (this.options.role !== "guest") {
+          return "Hosts must not receive host-ready.";
+        }
+        return message.peerId === this.localPeerId
+          ? "host-ready echoed the guest peer id instead of the host."
+          : null;
+      case "peer-joined":
+        return this.options.role === "host" ? null : "Guests must not receive peer-joined.";
+      case "offer":
+        return message.toPeerId === this.localPeerId
+          ? null
+          : "Offer targeted the wrong local peer.";
+      case "answer":
+        return message.toPeerId === this.localPeerId
+          ? null
+          : "Answer targeted the wrong local peer.";
+      case "ice-candidate":
+        return message.toPeerId === this.localPeerId
+          ? null
+          : "ICE candidate targeted the wrong local peer.";
+      case "peer-left":
+        return message.peerId === this.localPeerId
+          ? "peer-left should not target the local peer id."
+          : null;
+      case "room-error":
+      case "pong":
+        return null;
+    }
+  }
 
   private async handleSignalingMessage(message: SignalingMessage): Promise<void> {
     switch (message.type) {
@@ -558,6 +849,13 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
   }
 
+  private noteInvalidSignalingMessage(detail: string): void {
+    this.signalingInvalidMessages += 1;
+    if (this.signalingInvalidMessages >= MAX_SIGNALING_INVALID_MESSAGES) {
+      this.failTransport(detail, "too-many-invalid-messages");
+    }
+  }
+
   private readonly handleSocketClose = (): void => {
     if (this.closed) {
       return;
@@ -582,11 +880,16 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
       return;
     }
 
-    this.sendSignal({
-      type: "ice-candidate",
-      toPeerId: peer.peerId,
-      candidate: event.candidate.toJSON(),
-    });
+    if (
+      !this.sendSignal({
+        type: "ice-candidate",
+        toPeerId: peer.peerId,
+        candidate: event.candidate.toJSON(),
+      })
+    ) {
+      peer.phase = "error";
+      this.updateAggregateStatus("Client-side signaling guard rejected the ICE candidate.");
+    }
   }
 
   private handleChannelOpen(peer: PeerConnectionState): void {
@@ -603,7 +906,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.updateAggregateStatus();
   }
 
-  private readonly handleChannelMessage = (event: MessageEvent<unknown>): void => {
+  private handleChannelMessage(peer: PeerConnectionState, event: MessageEvent<unknown>): void {
     if (typeof event.data !== "string") {
       return;
     }
@@ -611,8 +914,9 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.events.onMessage({
       raw: event.data,
       receivedAt: Date.now(),
+      fromPeerId: peer.peerId,
     });
-  };
+  }
 
   private handleChannelError(peer: PeerConnectionState): void {
     peer.phase = "error";
@@ -660,6 +964,10 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
 }
 
 function parseSignalingMessage(raw: string): SignalingMessage | null {
+  if (utf8ByteLength(raw) > MAX_SIGNALING_RAW_MESSAGE_BYTES) {
+    return null;
+  }
+
   try {
     const value = JSON.parse(raw) as unknown;
     return isSignalingMessage(value) ? value : null;
@@ -675,29 +983,50 @@ function isSignalingMessage(value: unknown): value is SignalingMessage {
 
   switch (value.type) {
     case "ready":
-      return typeof value.peerId === "string" && (value.role === "host" || value.role === "guest");
+      return (
+        typeof value.peerId === "string" &&
+        isValidSignalingPeerId(value.peerId) &&
+        (value.role === "host" || value.role === "guest")
+      );
     case "waiting-for-host":
       return typeof value.detail === "string";
     case "host-ready":
     case "peer-joined":
-      return typeof value.peerId === "string" && isParticipant(value.participant);
+      return (
+        typeof value.peerId === "string" &&
+        isValidSignalingPeerId(value.peerId) &&
+        isParticipant(value.participant)
+      );
     case "offer":
+      return (
+        typeof value.fromPeerId === "string" &&
+        isValidSignalingPeerId(value.fromPeerId) &&
+        typeof value.toPeerId === "string" &&
+        isValidSignalingPeerId(value.toPeerId) &&
+        isParticipant(value.participant) &&
+        sanitizeSignalingDescription(value.description, "offer") !== null
+      );
     case "answer":
       return (
         typeof value.fromPeerId === "string" &&
+        isValidSignalingPeerId(value.fromPeerId) &&
         typeof value.toPeerId === "string" &&
+        isValidSignalingPeerId(value.toPeerId) &&
         isParticipant(value.participant) &&
-        isSessionDescription(value.description)
+        sanitizeSignalingDescription(value.description, "answer") !== null
       );
     case "ice-candidate":
       return (
         typeof value.fromPeerId === "string" &&
+        isValidSignalingPeerId(value.fromPeerId) &&
         typeof value.toPeerId === "string" &&
-        isRecord(value.candidate)
+        isValidSignalingPeerId(value.toPeerId) &&
+        sanitizeSignalingIceCandidate(value.candidate) !== null
       );
     case "peer-left":
       return (
         typeof value.peerId === "string" &&
+        isValidSignalingPeerId(value.peerId) &&
         (value.role === "host" || value.role === "guest") &&
         typeof value.reason === "string"
       );
@@ -715,15 +1044,12 @@ function isParticipant(value: unknown): value is ParticipantIdentity {
     isRecord(value) &&
     typeof value.id === "string" &&
     typeof value.name === "string" &&
-    typeof value.accentColor === "string"
-  );
-}
-
-function isSessionDescription(value: unknown): value is RTCSessionDescriptionInit {
-  return (
-    isRecord(value) &&
-    (value.type === "offer" || value.type === "answer" || value.type === "pranswer") &&
-    typeof value.sdp === "string"
+    typeof value.accentColor === "string" &&
+    isValidSignalingParticipant({
+      id: value.id,
+      name: value.name,
+      accentColor: value.accentColor,
+    })
   );
 }
 

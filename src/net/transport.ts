@@ -16,6 +16,7 @@ export interface RoomTransportStatus {
 export interface RoomTransportMessageEvent {
   raw: string;
   receivedAt: number;
+  fromPeerId?: string;
 }
 
 export interface RoomTransportEvents {
@@ -28,6 +29,7 @@ export interface RoomTransport {
   readonly localPeerId: string;
   setEvents(events: RoomTransportEvents): void;
   send(raw: string, toPeerId?: string): boolean;
+  disconnectPeer?(peerId: string, reason?: string): void;
   close(reason?: string): void;
   getStatus(): RoomTransportStatus;
 }
