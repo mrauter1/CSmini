@@ -140,6 +140,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - Firing once from the blocked pose drew the enemy into `investigate`, but the same debug state kept `shotsFired: 0`, proving the bot reacted to sound without shooting through the crate stack.
 - Moving to the clear pose advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `4` shots and split them into `2` hits and `2` misses.
 - A deterministic bot jump sample for that same enemy started grounded, entered an airborne phase, peaked at feet `0.97` / eye `2.59`, then landed safely back at eye `1.62` after `0.767s`.
+- A staged blocked-traversal recovery case triggered a live `stuck-recovery` jump before repath, lifting the same enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract.
 - A QA-only live jump request lifted the same engaged enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract, then landed back at `feetY 0` without breaking posture or aim separation.
 - The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility after the user-gesture unlock pulse armed the audio context.
 - Stale opponent-fire audio is not replayed after a late browser audio unlock; blocked shots are dropped rather than played out of time.
@@ -157,7 +158,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
   - far moving target: `hitChance 0.262`, `missChance 0.738`, `spread 9.956`
   - crouched partial target: `hitChance 0.449`, `missChance 0.551`, `spread 6.176`
 
-Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; moves, crouches, jumps, and lands through the same locomotion contract as the player; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
+Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; moves, crouches, jumps, lands, and triggers a constrained live recovery hop through the same locomotion contract as the player; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
 
 ### Bounded solo resolution round
 
@@ -171,7 +172,7 @@ Result: at least one upgraded solo round now progresses from live objective pres
 
 - The movement and round verification stayed inside the browser build; no extra engine or non-browser runtime was introduced.
 - The jump sample in the QA harness uses the live movement integrator through a dedicated QA hook to avoid headless browser timing noise while still validating the same movement code path.
-- The shared bot-movement proof uses QA-only `enemyMovementSample()` and `requestEnemyJump()` hooks so the harness can verify crouch, stride, jump, airborne posture, and aim separation deterministically without weakening the shipped locomotion rules.
+- The shared bot-movement proof uses QA-only `enemyMovementSample()` and `requestEnemyJump()` hooks for deterministic sampling, while the staged recovery case separately proves that a shipped solo bot can trigger a normal `stuck-recovery` jump through live AI intent before fallback repathing.
 - The bomb proof uses QA-only hooks for `forceRoundActive`, `setInvulnerable`, and `startObjectiveAction` so the test can isolate the mission flow from headless timing while still exercising the shipped plant, fuse, and round-resolution code paths.
 - The hostage proof also uses `forceNextRound`, `forceRoundActive`, `setInvulnerable`, `setCameraPose`, and `startObjectiveAction` so the harness can deterministically enter the round-2 evac mission, stage the escort path, and verify the real rescue timers and round-reset behavior without relying on manual headless navigation.
 - The AI proof uses QA-only hooks for `stageAiSightlineCase()` and `evaluateEnemyShot()` so the harness can reproduce the same blocked-cover case and shot-profile comparisons on every run without weakening the live line-of-sight or combat code.

@@ -209,6 +209,8 @@ interface LocalMatchOptions {
   onSnapshot: (snapshot: LocalMatchSnapshot) => void;
 }
 
+type EnemyJumpReason = "qa" | "stuck-recovery";
+
 interface EnemyActor {
   id: string;
   name: string;
@@ -251,6 +253,9 @@ interface EnemyActor {
     repositionReason: "cover" | "angle" | null;
     lastRecoveryReason: "repath" | null;
     recoveryCount: number;
+    lastJumpReason: EnemyJumpReason | null;
+    jumpCount: number;
+    lastJumpAt: number;
     behaviorEnteredAt: number;
     behaviorHoldUntil: number;
     burstShotsRemaining: number;
@@ -741,6 +746,12 @@ export class LocalMatch {
           ),
           lastRecoveryReason: enemy.ai.lastRecoveryReason,
           recoveryCount: enemy.ai.recoveryCount,
+          lastJumpReason: enemy.ai.lastJumpReason,
+          jumpCount: enemy.ai.jumpCount,
+          lastJumpAgo:
+            enemy.ai.lastJumpAt > Number.NEGATIVE_INFINITY
+              ? Number((this.gameNow() - enemy.ai.lastJumpAt).toFixed(2))
+              : null,
           forcedTargetLabel:
             enemy.ai.forcedUntil > this.gameNow() ? enemy.ai.forcedTargetLabel : null,
           shotsFired: enemy.ai.shotsFired,
@@ -1831,6 +1842,9 @@ export class LocalMatch {
           repositionReason: null,
           lastRecoveryReason: null,
           recoveryCount: 0,
+          lastJumpReason: null,
+          jumpCount: 0,
+          lastJumpAt: Number.NEGATIVE_INFINITY,
           behaviorEnteredAt: this.gameNow(),
           behaviorHoldUntil: this.gameNow(),
           burstShotsRemaining: 0,
@@ -1943,6 +1957,9 @@ export class LocalMatch {
     enemy.ai.repositionReason = null;
     enemy.ai.lastRecoveryReason = null;
     enemy.ai.recoveryCount = 0;
+    enemy.ai.lastJumpReason = null;
+    enemy.ai.jumpCount = 0;
+    enemy.ai.lastJumpAt = Number.NEGATIVE_INFINITY;
     enemy.ai.behaviorEnteredAt = this.gameNow();
     enemy.ai.behaviorHoldUntil = this.gameNow();
     enemy.ai.burstShotsRemaining = 0;
@@ -3611,6 +3628,49 @@ export class LocalMatch {
     );
   }
 
+  private chooseEnemyJumpReason(
+    enemy: EnemyActor,
+    behavior: EnemyBehavior,
+    stance: EnemyStance,
+    shouldMove: boolean,
+    targetDistance: number,
+    now: number,
+    tuning: BotDifficultyTuning,
+  ): EnemyJumpReason | null {
+    if (enemy.qaJumpRequested) {
+      return "qa";
+    }
+
+    if (!shouldMove || stance === "crouched" || !enemy.movementState.grounded) {
+      return null;
+    }
+
+    if (
+      behavior !== "patrol" &&
+      behavior !== "investigate" &&
+      behavior !== "pursue" &&
+      behavior !== "reposition"
+    ) {
+      return null;
+    }
+
+    if (targetDistance <= 1.4 || enemy.speed > 0.16) {
+      return null;
+    }
+
+    if (now - enemy.ai.lastJumpAt < 1.15) {
+      return null;
+    }
+
+    const stalledFor = now - enemy.ai.lastProgressAt;
+    const jumpStallSeconds = Math.min(0.46, tuning.stuckSeconds * 0.6);
+    if (stalledFor < jumpStallSeconds || stalledFor >= tuning.stuckSeconds) {
+      return null;
+    }
+
+    return "stuck-recovery";
+  }
+
   private updateEnemies(delta: number, now: number): void {
     const tuning = this.botTuning();
     const playerFeet = new THREE.Vector3(this.camera.position.x, 0, this.camera.position.z);
@@ -3882,6 +3942,15 @@ export class LocalMatch {
         }
       }
 
+      const jumpReason = this.chooseEnemyJumpReason(
+        enemy,
+        behavior,
+        stance,
+        shouldMove,
+        targetDistance,
+        now,
+        tuning,
+      );
       const previousX = enemyPosition.x;
       const previousZ = enemyPosition.z;
       this.tempQuaternion
@@ -3900,7 +3969,7 @@ export class LocalMatch {
           moveX,
           moveZ,
           crouching: stance === "crouched",
-          jumpRequested: enemy.qaJumpRequested,
+          jumpRequested: jumpReason !== null,
         },
         this.tempForward,
         this.tempRight,
@@ -3913,6 +3982,16 @@ export class LocalMatch {
           ? Math.hypot(enemyPosition.x - previousX, enemyPosition.z - previousZ) / delta
           : 0;
       const movedEnemyFeet = new THREE.Vector3(enemyPosition.x, 0, enemyPosition.z);
+
+      if (movement.jumped && jumpReason) {
+        enemy.ai.lastJumpReason = jumpReason;
+        enemy.ai.jumpCount += 1;
+        enemy.ai.lastJumpAt = now;
+        if (jumpReason === "stuck-recovery") {
+          enemy.ai.lastProgressAt = now;
+          enemy.ai.lastProgressPosition.copy(movedEnemyFeet);
+        }
+      }
 
       const movedEnough =
         movedEnemyFeet.distanceToSquared(enemy.ai.lastProgressPosition) > 0.08 ||

@@ -2083,6 +2083,25 @@ async function main() {
         (() => {
           const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
             .find((entry) => entry.id === ${JSON.stringify(recoveryCase.enemyId)});
+          return enemy?.ai?.lastJumpReason === 'stuck-recovery'
+            && (enemy?.ai?.jumpCount ?? 0) >= 1
+            && enemy?.movement?.airborne === true
+            && (enemy?.posture?.feetY ?? 0) > 0.05;
+        })()
+      `,
+      6_000,
+    );
+    const recoveryJumpState = await getState(localPage);
+    const recoveryJumpEnemy = recoveryJumpState.enemies.find(
+      (enemy) => enemy.id === recoveryCase.enemyId,
+    );
+    assertAlivePosture([recoveryJumpEnemy], "live recovery-jump solo enemy");
+    assertAimContract([recoveryJumpEnemy], "live recovery-jump solo enemy");
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(recoveryCase.enemyId)});
           return enemy?.ai?.lastRecoveryReason === 'repath' && (enemy?.ai?.recoveryCount ?? 0) >= 1;
         })()
       `,
@@ -2185,6 +2204,9 @@ async function main() {
       recovery: {
         enemyId: recoveryCase.enemyId,
         blockerName: recoveryCase.blockerName,
+        liveJumpReason: recoveryJumpEnemy?.ai?.lastJumpReason ?? null,
+        liveJumpCount: recoveryJumpEnemy?.ai?.jumpCount ?? 0,
+        liveJumpFeetY: recoveryJumpEnemy?.posture?.feetY ?? null,
         reason: recoveryEnemy?.ai?.lastRecoveryReason ?? null,
         count: recoveryEnemy?.ai?.recoveryCount ?? 0,
         heldTarget: recoveryEnemy?.ai?.forcedTargetLabel ?? null,
@@ -2196,6 +2218,7 @@ async function main() {
         engage: engageEnemy.posture,
         airborne: airborneEnemy?.posture ?? null,
         landed: landedEnemy?.posture ?? null,
+        recoveryJump: recoveryJumpEnemy?.posture ?? null,
         reposition: repositionEnemy?.posture ?? null,
         pursue: pursueEnemy?.posture ?? null,
       },

@@ -62,6 +62,7 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 - Standing bot stride sample: `8.6u/s`
 - Crouched bot stride sample: `4.816u/s`
 - Bot jump sample: feet peak `0.97`, eye peak `2.59`, landed eye `1.62`, airtime `0.767s`
+- Live recovery hop sample: `stuck-recovery` reached feet `0.355` before the same bot repathed
 - Enemy fire interval: `0.92s`
 - Engage distance: `20u`
 - Medium investigation window: `3.8s`
@@ -79,7 +80,7 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
   - `medium`: `0.377s` reaction, `6.037` spread, `0.537` hit chance
   - `hard`: `0.317s` reaction, `5.434` spread, `0.617` hit chance
 
-Rationale: the solo fireteam now closes space, crouches, hops, and lands through the same grounded movement rules as the player, so the threat comes from angle choice, timing, delayed communication, burst discipline, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, recover, reposition, and pressure objectives without snapping instantly into perfect hits.
+Rationale: the solo fireteam now closes space, crouches, jumps, lands, and triggers a constrained stuck-recovery hop through the same grounded movement rules as the player, so the threat comes from angle choice, timing, delayed communication, burst discipline, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, recover, reposition, and pressure objectives without snapping instantly into perfect hits.
 
 ## Classic-Feel Checklist
 
@@ -97,7 +98,7 @@ Test surfaces used for the checklist:
 - Crouch readability: `pass`
   Evidence: camera dropped from `1.62` to `1.18` in the live sample, crouch speed stayed below standing pace, and recoil kick dropped from `0.8` standing to `0.58` crouched.
 - Jump readability: `pass`
-  Evidence: the live jump sample peaked at `2.59`, landed back at `1.62`, and stayed airborne for `0.767s`, which reads as a committed hop rather than floaty traversal.
+  Evidence: the live jump sample peaked at `2.59`, landed back at `1.62`, stayed airborne for `0.767s`, and a real stuck-recovery hop lifted live bot feet to `0.355` before repath, which reads as a committed hop rather than floaty traversal.
 - Weapon timing/readability: `pass`
   Evidence: player fire interval stayed at `0.18s`, reload at `1.05s`, clip at `24`, and the live HUD kept `24 / 120` ammo plus `Ready` status visible during the round.
 - Short round pacing: `pass`
@@ -115,4 +116,4 @@ Test surfaces used for the checklist:
 
 ## Outcome
 
-No player movement constant changes were required in this pass. The current values already land inside the intended feel target, and the solo fireteam now uses those same locomotion values instead of a separate slow-bot path. This note locks in that shared contract plus fresh pass/fail evidence so later verification can audit the homage target directly instead of relying on vague feel claims.
+No player movement constant changes were required in this pass. The current values already land inside the intended feel target, and the solo fireteam now uses those same locomotion values instead of a separate slow-bot path while also exposing a real live recovery hop before fallback repathing. This note locks in that shared contract plus fresh pass/fail evidence so later verification can audit the homage target directly instead of relying on vague feel claims.
