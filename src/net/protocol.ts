@@ -1,5 +1,7 @@
+import type { RoomTransportLane } from "./transport";
+
 export const ROOM_PROTOCOL = "dustline-room";
-export const ROOM_PROTOCOL_VERSION = 1 as const;
+export const ROOM_PROTOCOL_VERSION = 2 as const;
 export const ROOM_MESSAGE_STALE_MS = 12_000;
 export const ROOM_MESSAGE_FUTURE_SKEW_MS = 2_500;
 // Shared gameplay payloads stay comfortably below this in normal play, so 64 KiB prevents one
@@ -204,10 +206,38 @@ export type RoomMessage =
   | DisconnectMessage;
 
 export type RoomMessageType = RoomMessage["type"];
+export type RoomLatestStateMessageType = Extract<
+  RoomMessageType,
+  "heartbeat" | "host-snapshot" | "input-tick"
+>;
+export type RoomReliableMessageType = Exclude<RoomMessageType, RoomLatestStateMessageType>;
+export type RoomMessageSequenceScope = "reliable" | RoomLatestStateMessageType;
 export type RoomInputTick = InputTickMessage["payload"];
 export type HostRoomSnapshot = HostSnapshotMessage["payload"];
 export type RoomShotClaim = ShotClaimMessage["payload"];
 export type RoomShotResult = ShotResultMessage["payload"];
+
+export function getRoomMessageLane(type: RoomMessageType): RoomTransportLane {
+  switch (type) {
+    case "heartbeat":
+    case "host-snapshot":
+    case "input-tick":
+      return "latest-state";
+    default:
+      return "reliable";
+  }
+}
+
+export function getRoomMessageSequenceScope(type: RoomMessageType): RoomMessageSequenceScope {
+  switch (type) {
+    case "heartbeat":
+    case "host-snapshot":
+    case "input-tick":
+      return type;
+    default:
+      return "reliable";
+  }
+}
 
 export function encodeRoomMessage(message: RoomMessage): string {
   return JSON.stringify(message);

@@ -17,8 +17,18 @@ import {
   utf8ByteLength,
   validateSignalingClientContext,
 } from "./signalingConfig";
-import { DATA_CHANNEL_LABEL, DEFAULT_ICE_SERVERS } from "./webrtcTransport";
-import type { RoomTransport, RoomTransportEvents, RoomTransportStatus } from "./transport";
+import {
+  DEFAULT_ICE_SERVERS,
+  getRoomDataChannelLane,
+  LATEST_STATE_DATA_CHANNEL_LABEL,
+  RELIABLE_DATA_CHANNEL_LABEL,
+} from "./webrtcTransport";
+import type {
+  RoomTransport,
+  RoomTransportEvents,
+  RoomTransportLane,
+  RoomTransportStatus,
+} from "./transport";
 
 interface SignaledWebRtcTransportOptions {
   signalingUrl: string;
@@ -90,16 +100,20 @@ interface PeerChannelListeners {
   close: () => void;
   message: (event: MessageEvent<unknown>) => void;
   error: () => void;
+  bufferedamountlow?: () => void;
 }
 
 interface PeerConnectionState {
   peerId: string;
   participant?: ParticipantIdentity;
   connection: RTCPeerConnection;
-  dataChannel?: RTCDataChannel;
   pendingRemoteCandidates: RTCIceCandidateInit[];
+  pendingLatestStateRaw?: string;
   phase: PeerPhase;
-  channelListeners?: PeerChannelListeners;
+  reliableChannel?: RTCDataChannel;
+  reliableChannelListeners?: PeerChannelListeners;
+  latestStateChannel?: RTCDataChannel;
+  latestStateChannelListeners?: PeerChannelListeners;
 }
 
 type OutboundSignalingMessage =
@@ -186,19 +200,19 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.events.onStatus?.(this.status);
   }
 
-  send(raw: string, toPeerId?: string): boolean {
+  send(raw: string, toPeerId?: string, lane: RoomTransportLane = "reliable"): boolean {
     if (toPeerId) {
-      return this.sendToPeer(toPeerId, raw);
+      return this.sendToPeer(toPeerId, raw, lane);
     }
 
     if (this.options.role === "guest") {
       const hostPeer = this.firstOpenPeer();
-      return hostPeer ? this.sendToPeer(hostPeer.peerId, raw) : false;
+      return hostPeer ? this.sendToPeer(hostPeer.peerId, raw, lane) : false;
     }
 
     let sent = false;
     for (const peer of this.peers.values()) {
-      sent = this.sendToPeer(peer.peerId, raw) || sent;
+      sent = this.sendToPeer(peer.peerId, raw, lane) || sent;
     }
     return sent;
   }
@@ -339,13 +353,28 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     if (this.options.role === "host") {
       this.bindChannel(
         peer,
-        peer.connection.createDataChannel(DATA_CHANNEL_LABEL, {
+        "reliable",
+        peer.connection.createDataChannel(RELIABLE_DATA_CHANNEL_LABEL, {
           ordered: true,
+        }),
+      );
+      this.bindChannel(
+        peer,
+        "latest-state",
+        peer.connection.createDataChannel(LATEST_STATE_DATA_CHANNEL_LABEL, {
+          ordered: false,
+          maxRetransmits: 0,
         }),
       );
     } else {
       peer.connection.addEventListener("datachannel", (event) => {
-        this.bindChannel(peer, event.channel);
+        const lane = getRoomDataChannelLane(event.channel.label);
+        if (!lane) {
+          event.channel.close();
+          return;
+        }
+
+        this.bindChannel(peer, lane, event.channel);
       });
     }
 
@@ -461,63 +490,146 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
   }
 
-  private bindChannel(peer: PeerConnectionState, channel: RTCDataChannel): void {
-    this.unbindChannel(peer);
-    peer.dataChannel = channel;
-    peer.channelListeners = {
+  private bindChannel(
+    peer: PeerConnectionState,
+    lane: RoomTransportLane,
+    channel: RTCDataChannel,
+  ): void {
+    this.unbindChannel(peer, lane);
+    if (lane === "latest-state") {
+      channel.bufferedAmountLowThreshold = 0;
+    }
+
+    const listeners: PeerChannelListeners = {
       open: () => {
-        this.handleChannelOpen(peer);
+        this.handleChannelOpen(peer, lane);
       },
       close: () => {
-        this.handleChannelClose(peer);
+        this.handleChannelClose(peer, lane);
       },
       message: (event) => {
-        this.handleChannelMessage(peer, event);
+        this.handleChannelMessage(peer, lane, event);
       },
       error: () => {
-        this.handleChannelError(peer);
+        this.handleChannelError(peer, lane);
       },
+      bufferedamountlow:
+        lane === "latest-state"
+          ? () => {
+              this.flushLatestStateChannel(peer);
+            }
+          : undefined,
     };
-    channel.addEventListener("open", peer.channelListeners.open);
-    channel.addEventListener("close", peer.channelListeners.close);
-    channel.addEventListener("message", peer.channelListeners.message);
-    channel.addEventListener("error", peer.channelListeners.error);
+
+    if (lane === "reliable") {
+      peer.reliableChannel = channel;
+      peer.reliableChannelListeners = listeners;
+    } else {
+      peer.latestStateChannel = channel;
+      peer.latestStateChannelListeners = listeners;
+    }
+
+    channel.addEventListener("open", listeners.open);
+    channel.addEventListener("close", listeners.close);
+    channel.addEventListener("message", listeners.message);
+    channel.addEventListener("error", listeners.error);
+    if (listeners.bufferedamountlow) {
+      channel.addEventListener("bufferedamountlow", listeners.bufferedamountlow);
+    }
   }
 
-  private unbindChannel(peer: PeerConnectionState): void {
-    if (!peer.dataChannel || !peer.channelListeners) {
-      peer.channelListeners = undefined;
+  private unbindChannel(peer: PeerConnectionState, lane: RoomTransportLane): void {
+    const channel = lane === "reliable" ? peer.reliableChannel : peer.latestStateChannel;
+    const listeners =
+      lane === "reliable" ? peer.reliableChannelListeners : peer.latestStateChannelListeners;
+    if (!channel || !listeners) {
+      if (lane === "reliable") {
+        peer.reliableChannelListeners = undefined;
+        peer.reliableChannel = undefined;
+      } else {
+        peer.latestStateChannelListeners = undefined;
+        peer.latestStateChannel = undefined;
+      }
       return;
     }
 
-    peer.dataChannel.removeEventListener("open", peer.channelListeners.open);
-    peer.dataChannel.removeEventListener("close", peer.channelListeners.close);
-    peer.dataChannel.removeEventListener("message", peer.channelListeners.message);
-    peer.dataChannel.removeEventListener("error", peer.channelListeners.error);
-    peer.channelListeners = undefined;
+    channel.removeEventListener("open", listeners.open);
+    channel.removeEventListener("close", listeners.close);
+    channel.removeEventListener("message", listeners.message);
+    channel.removeEventListener("error", listeners.error);
+    if (listeners.bufferedamountlow) {
+      channel.removeEventListener("bufferedamountlow", listeners.bufferedamountlow);
+    }
+
+    if (lane === "reliable") {
+      peer.reliableChannelListeners = undefined;
+      peer.reliableChannel = undefined;
+    } else {
+      peer.latestStateChannelListeners = undefined;
+      peer.latestStateChannel = undefined;
+    }
   }
 
-  private sendToPeer(peerId: string, raw: string): boolean {
+  private sendToPeer(peerId: string, raw: string, lane: RoomTransportLane): boolean {
     const peer = this.peers.get(peerId);
-    if (!peer?.dataChannel || peer.dataChannel.readyState !== "open") {
+    if (!peer) {
       return false;
     }
 
     const rawBytes = measureRoomMessageBytes(raw);
-    if (
-      rawBytes > MAX_ROOM_MESSAGE_BYTES ||
-      peer.dataChannel.bufferedAmount + rawBytes > MAX_TRANSPORT_BUFFERED_BYTES
-    ) {
+    if (rawBytes > MAX_ROOM_MESSAGE_BYTES) {
+      return false;
+    }
+
+    if (lane === "latest-state") {
+      const channel = peer.latestStateChannel;
+      if (!channel || channel.readyState !== "open") {
+        return false;
+      }
+
+      peer.pendingLatestStateRaw = raw;
+      this.flushLatestStateChannel(peer);
+      return true;
+    }
+
+    const channel = peer.reliableChannel;
+    if (!channel || channel.readyState !== "open") {
+      return false;
+    }
+
+    if (channel.bufferedAmount + rawBytes > MAX_TRANSPORT_BUFFERED_BYTES) {
       return false;
     }
 
     try {
-      peer.dataChannel.send(raw);
+      channel.send(raw);
       return true;
     } catch {
       peer.phase = "error";
-      this.updateAggregateStatus("DataChannel send failed.");
+      this.updateAggregateStatus("Reliable DataChannel send failed.");
       return false;
+    }
+  }
+
+  private flushLatestStateChannel(peer: PeerConnectionState): void {
+    const channel = peer.latestStateChannel;
+    const raw = peer.pendingLatestStateRaw;
+    if (!channel || channel.readyState !== "open" || !raw) {
+      return;
+    }
+
+    const rawBytes = measureRoomMessageBytes(raw);
+    if (channel.bufferedAmount > 0 || channel.bufferedAmount + rawBytes > MAX_TRANSPORT_BUFFERED_BYTES) {
+      return;
+    }
+
+    peer.pendingLatestStateRaw = undefined;
+    try {
+      channel.send(raw);
+    } catch {
+      peer.pendingLatestStateRaw = raw;
+      peer.phase = "error";
+      this.updateAggregateStatus("Latest-state DataChannel send failed.");
     }
   }
 
@@ -526,14 +638,18 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   }
 
   private firstOpenPeer(): PeerConnectionState | undefined {
-    return [...this.peers.values()].find((peer) => peer.dataChannel?.readyState === "open");
+    return [...this.peers.values()].find((peer) => this.isPeerConnected(peer));
   }
 
   private closePeer(peer: PeerConnectionState, reason: string, emitDisconnect: boolean): void {
     const wasTracked = this.peers.has(peer.peerId);
-    this.unbindChannel(peer);
+    const reliableChannel = peer.reliableChannel;
+    const latestStateChannel = peer.latestStateChannel;
+    this.unbindChannel(peer, "reliable");
+    this.unbindChannel(peer, "latest-state");
     peer.phase = "closed";
-    peer.dataChannel?.close();
+    reliableChannel?.close();
+    latestStateChannel?.close();
     peer.connection.close();
     this.peers.delete(peer.peerId);
 
@@ -545,6 +661,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   private emitSyntheticDisconnect(peerId: string, reason: string): void {
     const now = Date.now();
     this.events.onMessage({
+      lane: "reliable",
       raw: JSON.stringify({
         protocol: ROOM_PROTOCOL,
         version: ROOM_PROTOCOL_VERSION,
@@ -559,7 +676,15 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
         },
       }),
       receivedAt: now,
+      fromPeerId: peerId,
     });
+  }
+
+  private isPeerConnected(peer: PeerConnectionState): boolean {
+    return (
+      peer.reliableChannel?.readyState === "open" &&
+      peer.latestStateChannel?.readyState === "open"
+    );
   }
 
   private updateAggregateStatus(preferredDetail?: string): void {
@@ -568,7 +693,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
 
     const peers = [...this.peers.values()];
-    const connected = peers.filter((peer) => peer.dataChannel?.readyState === "open").length;
+    const connected = peers.filter((peer) => this.isPeerConnected(peer)).length;
     const failed = peers.filter((peer) => peer.phase === "error").length;
     const negotiating = Math.max(0, peers.length - connected - failed);
 
@@ -601,7 +726,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
       return;
     }
 
-    const peer = this.firstPeer();
+    const peer = this.firstOpenPeer() ?? this.firstPeer();
     if (connected > 0) {
       const remoteName = peer?.participant?.name;
       this.setStatus(
@@ -612,7 +737,10 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
 
     if (negotiating > 0) {
-      this.setStatus("connecting", preferredDetail ?? "Establishing the host data channel.");
+      this.setStatus(
+        "connecting",
+        preferredDetail ?? "Establishing the host room lanes.",
+      );
       return;
     }
 
@@ -892,12 +1020,15 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
   }
 
-  private handleChannelOpen(peer: PeerConnectionState): void {
-    peer.phase = "connected";
+  private handleChannelOpen(peer: PeerConnectionState, lane: RoomTransportLane): void {
+    if (lane === "latest-state") {
+      this.flushLatestStateChannel(peer);
+    }
+    peer.phase = this.isPeerConnected(peer) ? "connected" : "connecting";
     this.updateAggregateStatus();
   }
 
-  private handleChannelClose(peer: PeerConnectionState): void {
+  private handleChannelClose(peer: PeerConnectionState, _lane: RoomTransportLane): void {
     if (this.closed || peer.phase === "closed") {
       return;
     }
@@ -906,32 +1037,39 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.updateAggregateStatus();
   }
 
-  private handleChannelMessage(peer: PeerConnectionState, event: MessageEvent<unknown>): void {
+  private handleChannelMessage(
+    peer: PeerConnectionState,
+    lane: RoomTransportLane,
+    event: MessageEvent<unknown>,
+  ): void {
     if (typeof event.data !== "string") {
       return;
     }
 
     this.events.onMessage({
+      lane,
       raw: event.data,
       receivedAt: Date.now(),
       fromPeerId: peer.peerId,
     });
   }
 
-  private handleChannelError(peer: PeerConnectionState): void {
+  private handleChannelError(peer: PeerConnectionState, lane: RoomTransportLane): void {
     peer.phase = "error";
-    this.updateAggregateStatus("DataChannel error.");
+    this.updateAggregateStatus(
+      lane === "reliable" ? "Reliable DataChannel error." : "Latest-state DataChannel error.",
+    );
   }
 
   private handleConnectionState(peer: PeerConnectionState): void {
     switch (peer.connection.connectionState) {
       case "connected":
-        peer.phase = "connected";
+        peer.phase = this.isPeerConnected(peer) ? "connected" : "connecting";
         this.updateAggregateStatus();
         return;
       case "connecting":
         peer.phase = "connecting";
-        this.updateAggregateStatus("Negotiation complete. Establishing the data channel.");
+        this.updateAggregateStatus("Negotiation complete. Establishing the room data channels.");
         return;
       case "failed":
         peer.phase = "error";

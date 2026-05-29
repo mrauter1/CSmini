@@ -1,4 +1,5 @@
 export type RoomTransportKind = "broadcast" | "webrtc";
+export type RoomTransportLane = "reliable" | "latest-state";
 export type RoomTransportPhase =
   | "idle"
   | "signaling"
@@ -14,6 +15,7 @@ export interface RoomTransportStatus {
 }
 
 export interface RoomTransportMessageEvent {
+  lane: RoomTransportLane;
   raw: string;
   receivedAt: number;
   fromPeerId?: string;
@@ -28,7 +30,7 @@ export interface RoomTransport {
   readonly kind: RoomTransportKind;
   readonly localPeerId: string;
   setEvents(events: RoomTransportEvents): void;
-  send(raw: string, toPeerId?: string): boolean;
+  send(raw: string, toPeerId?: string, lane?: RoomTransportLane): boolean;
   disconnectPeer?(peerId: string, reason?: string): void;
   close(reason?: string): void;
   getStatus(): RoomTransportStatus;

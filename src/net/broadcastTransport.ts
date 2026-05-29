@@ -1,4 +1,9 @@
-import type { RoomTransport, RoomTransportEvents, RoomTransportStatus } from "./transport";
+import type {
+  RoomTransport,
+  RoomTransportEvents,
+  RoomTransportLane,
+  RoomTransportStatus,
+} from "./transport";
 
 export function detectBroadcastTransportSupport(): { supported: boolean; reason: string } {
   if (typeof BroadcastChannel === "undefined") {
@@ -39,12 +44,12 @@ export class BroadcastRoomTransport implements RoomTransport {
     this.events.onStatus?.(this.status);
   }
 
-  send(raw: string, _toPeerId?: string): boolean {
+  send(raw: string, _toPeerId?: string, lane: RoomTransportLane = "reliable"): boolean {
     if (this.status.phase === "closed") {
       return false;
     }
 
-    this.channel.postMessage(raw);
+    this.channel.postMessage({ lane, raw });
     return true;
   }
 
@@ -67,12 +72,29 @@ export class BroadcastRoomTransport implements RoomTransport {
   }
 
   private readonly handleMessage = (event: MessageEvent<unknown>): void => {
-    if (typeof event.data !== "string") {
+    if (typeof event.data === "string") {
+      this.events.onMessage({
+        lane: "reliable",
+        raw: event.data,
+        receivedAt: Date.now(),
+      });
+      return;
+    }
+
+    if (
+      typeof event.data !== "object" ||
+      event.data === null ||
+      !("raw" in event.data) ||
+      !("lane" in event.data) ||
+      typeof event.data.raw !== "string" ||
+      (event.data.lane !== "reliable" && event.data.lane !== "latest-state")
+    ) {
       return;
     }
 
     this.events.onMessage({
-      raw: event.data,
+      lane: event.data.lane,
+      raw: event.data.raw,
       receivedAt: Date.now(),
     });
   };

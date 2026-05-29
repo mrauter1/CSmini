@@ -22,6 +22,31 @@ Dustline keeps the frontend deployable as a plain static site while still allowi
 - `Same-Browser Dev Room`: the older `BroadcastChannel` transport still exists for local tab-to-tab development and debugging.
 - The room/session protocol lives under `src/net/` and is versioned so malformed or stale messages can be rejected.
 
+## Room Transport Lanes
+
+Room protocol `v2` splits browser-to-browser traffic into two explicit lanes per peer:
+
+- Reliable ordered lane:
+  - join, accept, reject
+  - participant updates
+  - disconnects
+  - shot claims and shot results
+  - objective or round events
+- Latest-state lane:
+  - guest input ticks
+  - host snapshots
+  - heartbeats
+
+The reliable lane stays ordered and loss-intolerant so room control and combat events keep strict host-authoritative behavior. The latest-state lane is unordered with zero retransmits so old movement or snapshot traffic does not block fresher state behind it.
+
+On top of the unreliable lane, the client transport keeps only the newest unsent latest-state payload per peer. If the browser DataChannel is still buffering an older state frame, the transport replaces the pending unsent frame instead of queueing a backlog. When the lane becomes writable again, the newest pending snapshot or input frame is what gets sent.
+
+Inbound sequencing is also type-aware instead of peer-global:
+
+- reliable control/combat traffic must still advance monotonically per peer
+- late or duplicate `input-tick`, `host-snapshot`, and `heartbeat` frames are dropped quietly
+- malformed, oversized, wrong-room, wrong-target, wrong-lane, role-forbidden, or out-of-order reliable traffic still counts as invalid room traffic
+
 ## Signaling Abuse Controls
 
 The Cloudflare Worker is intentionally narrow:
