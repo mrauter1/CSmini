@@ -51,7 +51,7 @@ SIGNALING_URL=http://127.0.0.1:8787 npm run qa:cloud-signaling
 SIGNALING_URL=http://127.0.0.1:8787 npm run qa:cloud-signaling-14
 npm run qa:final
 rg -n -i "account_id|api[_-]?key|client_secret|turnstile|credential|secret_access|workers_dev_token|cloudflare_api" \
-  workers/signaling/wrangler.jsonc workers/signaling/src docs/multiplayer-architecture.md docs/qa/multiplayer.md package.json
+  workers/signaling/wrangler.jsonc workers/signaling/src docs/multiplayer-architecture.md package.json
 rg -n '"vars"|"env"|account_id|route|routes|kv_namespaces|r2_buckets|d1_databases|services' \
   workers/signaling/wrangler.jsonc
 ```
@@ -149,7 +149,7 @@ Observed result on the current branch:
   - `guardrails.malformedRoomPeerFailure.hostPeerCount = 0`
   - `guardrails.malformedRoomPeerFailure.hostDetail = "A peer sent repeated malformed room messages."`
   - `guardrails.malformedRoomPeerFailure.guestPhase = "idle"`
-  - `guardrails.malformedRoomPeerFailure.guestDetail = "The host connection failed."`
+  - `guardrails.malformedRoomPeerFailure.guestDetail` surfaced a bounded host-disconnect message. Fresh reruns have produced both `"The host connection failed."` and `"The host ended the room."`, depending on whether the joiner resolves through the transport-close path or the explicit host-ended path first.
 
 ### `npm run qa:cloud-signaling-14`
 
@@ -316,5 +316,6 @@ Still manual:
 ## Config Hygiene
 
 - `workers/signaling/wrangler.jsonc` only declares the Worker name, entrypoint, compatibility date, observability toggle, Durable Object binding, and migration. It does not declare `account_id`, `vars`, `routes`, or other secret-bearing runtime configuration.
-- `rg -n -i "account_id|api[_-]?key|client_secret|turnstile|credential|secret_access|workers_dev_token|cloudflare_api" workers/signaling/wrangler.jsonc workers/signaling/src docs/multiplayer-architecture.md docs/qa/multiplayer.md package.json` returned no matches.
-- `rg -n '"vars"|"env"|account_id|route|routes|kv_namespaces|r2_buckets|d1_databases|services' workers/signaling/wrangler.jsonc` returned no matches.
+- The targeted secret scan intentionally excludes this QA note itself so the search strings embedded below do not self-match the evidence surface.
+- `rg -n -i "account_id|api[_-]?key|client_secret|turnstile|credential|secret_access|workers_dev_token|cloudflare_api" workers/signaling/wrangler.jsonc workers/signaling/src docs/multiplayer-architecture.md package.json` produced no output and exited with the expected `rg` status `1` for no matches.
+- `rg -n '"vars"|"env"|account_id|route|routes|kv_namespaces|r2_buckets|d1_databases|services' workers/signaling/wrangler.jsonc` produced no output and exited with the expected `rg` status `1` for no matches.
