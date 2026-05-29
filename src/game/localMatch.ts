@@ -1676,6 +1676,9 @@ export class LocalMatch {
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     this.preventDefaultWhenInputCaptured(event);
+    if (this.inputCaptured()) {
+      this.audio.prime();
+    }
 
     if (event.code === "Tab") {
       if (this.inputCaptured()) {

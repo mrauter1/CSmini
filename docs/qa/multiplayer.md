@@ -59,6 +59,7 @@ Observed results:
 - page 1 fired a live shared-room shot and recorded a `shared-sent` shot event
 - page 2 received the same shot as `shared-received`, marked the remote actor with a recent shot, and logged a playable `world-fire` audio event after its audio context was armed
 - the received world-fire event carried distance, normalized gain bounded inside the accepted `0.08..0.92` range, no blocked reason, and boosted output gain for audibility
+- stale remote-fire audio is dropped if the receiving browser cannot resume audio immediately, avoiding delayed shots after a later unlock
 
 Result: shared-room combat now distinguishes body yaw from weapon pitch and gives observers audible opponent gunfire feedback for remote shots, including misses.
 
@@ -69,7 +70,7 @@ The same two pages then stayed on `Sandline Foundry` for a live relay-charge exc
 - page 1 forced the shared round into `active`, stood in the declared `Kiln Yard` site, and began the relay-charge arm action as the attacking `Amber Vanguard` operator
 - page 2 saw the same attacking operator listed as the bomb carrier before the plant
 - both pages advanced to `planted`
-- page 2 rendered the same planted-pressure HUD line (`12.1s to breach`) and then moved onto the live site as the `Cobalt Reach` defender
+- page 2 rendered the same planted-pressure HUD line (`12.0s to breach`) and then moved onto the live site as the `Cobalt Reach` defender
 - page 2 completed the disarm, and both pages resolved with matching `disarmed Kiln Yard` result text
 
 Result: the retained shared-room path now propagates bomb carrier ownership, planted-site pressure, and defuse resolution without stale mission state between peers.

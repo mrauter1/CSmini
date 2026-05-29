@@ -69,7 +69,7 @@ Results:
 
 Non-blocking note:
 
-- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `579.95 kB` minified. This did not block runtime verification.
+- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `579.64 kB` minified. This did not block runtime verification.
 
 ## Visual Target Summary
 

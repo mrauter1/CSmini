@@ -16,7 +16,7 @@ Final verification for the current presentation and release guardrail pass cover
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh current-tree verifier reruns were completed on `2026-05-29T10:49-03:00`.
+Fresh current-tree verifier reruns were completed on `2026-05-29T11:07-03:00`.
 
 ## Commands Run
 
@@ -34,7 +34,7 @@ Results on the current tree:
 
 Non-blocking note:
 
-- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for `dist/assets/localMatch-kbn7yNiC.js` at `579.95 kB` after minification. This did not block verification.
+- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for `dist/assets/localMatch-CaNrCm17.js` at `579.64 kB` after minification. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -85,6 +85,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 - Shared combat:
   - page 1 firing in shared mode recorded a sent shot event, page 2 received it, and page 2 logged playable distance-normalized world-fire audio with no blocked reason while marking the remote actor's recent shot state
   - the browser QA uses a trusted match-control click and asserts page 2's audio context is `running` before counting remote-fire audio as audible
+  - stale remote-fire audio is not queued for delayed replay; blocked shots are dropped unless the audio context resumes inside the short freshness window
 - Hostage mode:
   - local play proved secure, escort, route traversal, extraction, and automatic reset into round `3`
   - shared-room play proved rescuer sync, route progress sync, extraction progress, and matching rescue resolution on both pages
@@ -99,7 +100,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-29`, with the latest current-tree timestamps between `10:46` and `10:48 -03:00`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-29`, with the latest current-tree timestamps between `11:04` and `11:07 -03:00`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`

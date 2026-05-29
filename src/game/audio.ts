@@ -23,20 +23,12 @@ export interface AudioDebugState {
   lastBlockedWorldFireAt: number | null;
 }
 
-interface PendingWorldFire {
-  distance: number;
-  pan: number;
-  requestedAt: number;
-}
-
-const WORLD_FIRE_OUTPUT_BOOST = 1.35;
-const PENDING_WORLD_FIRE_MAX_AGE = 1.8;
-const MAX_PENDING_WORLD_FIRES = 4;
+const WORLD_FIRE_OUTPUT_BOOST = 1.75;
+const WORLD_FIRE_RESUME_GRACE_SECONDS = 0.16;
 
 export class RetroAudio {
   private context?: AudioContext;
   private readonly debugEvents: AudioDebugEvent[] = [];
-  private readonly pendingWorldFires: PendingWorldFire[] = [];
   private lastResumeAttemptAt: number | null = null;
   private lastPlayableWorldFireAt: number | null = null;
   private lastBlockedWorldFireAt: number | null = null;
@@ -46,17 +38,12 @@ export class RetroAudio {
     this.lastResumeAttemptAt = this.debugNow();
 
     if (context.state === "running") {
-      this.flushPendingWorldFires(context);
       return;
     }
 
     void context
       .resume()
-      .then(() => {
-        if (context.state === "running") {
-          this.flushPendingWorldFires(context);
-        }
-      })
+      .then(() => undefined)
       .catch(() => undefined);
   }
 
@@ -76,8 +63,7 @@ export class RetroAudio {
     const state = context.state;
 
     if (state !== "running") {
-      this.queueWorldFire(distance, pan);
-      const debugTime = this.debugNow();
+      const debugTime = performance.now() / 1000;
       this.lastBlockedWorldFireAt = debugTime;
       this.record(
         "world-fire",
@@ -90,6 +76,7 @@ export class RetroAudio {
         state,
         "context-suspended",
       );
+      this.playAfterFreshResume(context, debugTime, distance, pan);
       return;
     }
 
@@ -138,7 +125,7 @@ export class RetroAudio {
   debugState(): AudioDebugState {
     return {
       contextState: this.contextState(),
-      pendingWorldFireCount: this.pendingWorldFires.length,
+      pendingWorldFireCount: 0,
       lastResumeAttemptAt: this.lastResumeAttemptAt,
       lastPlayableWorldFireAt: this.lastPlayableWorldFireAt,
       lastBlockedWorldFireAt: this.lastBlockedWorldFireAt,
@@ -153,7 +140,6 @@ export class RetroAudio {
       return;
     }
 
-    this.pendingWorldFires.length = 0;
     void context.close().catch(() => undefined);
   }
 
@@ -199,35 +185,28 @@ export class RetroAudio {
     const now = context.currentTime;
     const output = this.worldOutput(context, pan, outputGain);
 
-    this.voice("square", 174, 78, 0.11, 0.072, now, output);
-    this.voice("triangle", 116, 58, 0.16, 0.044, now + 0.012, output);
+    this.voice("square", 174, 78, 0.11, 0.095, now, output);
+    this.voice("triangle", 116, 58, 0.16, 0.058, now + 0.012, output);
     this.lastPlayableWorldFireAt = this.debugNow();
     this.record("world-fire", now, distance, gainScale, outputGain, pan, true, context.state);
   }
 
-  private flushPendingWorldFires(context: AudioContext): void {
-    const now = this.debugNow();
-    const pending = this.pendingWorldFires.splice(0);
-
-    for (const event of pending) {
-      if (now - event.requestedAt > PENDING_WORLD_FIRE_MAX_AGE) {
-        continue;
-      }
-
-      this.playWorldFireNow(context, event.distance, event.pan);
-    }
-  }
-
-  private queueWorldFire(distance: number, pan: number): void {
-    this.pendingWorldFires.push({
-      distance,
-      pan,
-      requestedAt: this.debugNow(),
-    });
-
-    if (this.pendingWorldFires.length > MAX_PENDING_WORLD_FIRES) {
-      this.pendingWorldFires.splice(0, this.pendingWorldFires.length - MAX_PENDING_WORLD_FIRES);
-    }
+  private playAfterFreshResume(
+    context: AudioContext,
+    requestedAt: number,
+    distance: number,
+    pan: number,
+  ): void {
+    this.lastResumeAttemptAt = requestedAt;
+    void context
+      .resume()
+      .then(() => {
+        const age = performance.now() / 1000 - requestedAt;
+        if (context.state === "running" && age <= WORLD_FIRE_RESUME_GRACE_SECONDS) {
+          this.playWorldFireNow(context, distance, pan);
+        }
+      })
+      .catch(() => undefined);
   }
 
   private worldOutput(context: AudioContext, pan: number, gainScale: number): AudioNode {

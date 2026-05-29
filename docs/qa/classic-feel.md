@@ -92,7 +92,7 @@ Test surfaces used for the checklist:
 - Short round pacing: `pass`
   Evidence: the round shell stays at `4.5s` briefing / `72s` live / `5.5s` reset, while bomb fuse timing stays in the `11.9-12.6s` range and hostage secure/extract stays at `1.45s` / `1.8s`.
 - Objective pressure: `pass`
-  Evidence: fresh HUD samples showed solo bomb `11.9s to breach`, shared bomb `12.1s to breach`, solo hostage `1.3s to clear Water Tower Gate`, and shared hostage `1.6s to clear Water Tower Gate`.
+  Evidence: fresh HUD samples showed solo bomb `11.8s to breach`, shared bomb `12.0s to breach`, solo hostage `1.3s to clear Water Tower Gate`, and shared hostage `1.6s to clear Water Tower Gate`.
 - Cover-oriented combat: `pass`
   Evidence: the AI used `Crate stack west` as a real blocker, held fire at blocked visibility `0`, then switched through `reposition` and `pursue` after contact and broken sight.
 - HUD clarity: `pass`
