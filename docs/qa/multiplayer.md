@@ -7,6 +7,7 @@ Date: 2026-05-29
 Targeted verification for shared-room behavior inside `round-core-and-movement-foundation`, `bomb-mission-mode`, and `hostage-mission-mode`:
 
 - same-map roster membership
+- shared-room remains human-only; solo bot difficulty does not apply in this mode
 - explicit team assignment sync
 - round phase sync
 - third-person remote avatar aim sync with upright body roots
@@ -127,4 +128,5 @@ Result: missing shared-room support fell back to the local path without crashing
 ## Notes
 
 - The forced next-round advance used in the harness is a QA-only control path used to deterministically rotate from the round-one relay-charge mission into the round-two hostage mission; the shipped gameplay still advances rounds through live resolution and reset.
-- Tactical-AI multiplayer behavior remains outside this QA note and will be covered in the later AI-focused subgoal.
+- Shared-room sessions remain human-only across tabs. The `easy` / `medium` / `hard` solo bot selector and smarter-bot tuning do not apply to this mode.
+- Tactical-AI verification remains centered on solo-local rounds rather than shared-room bot opponents.

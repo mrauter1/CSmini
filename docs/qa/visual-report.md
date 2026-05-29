@@ -7,6 +7,7 @@ Date: 2026-05-29
 Final verification for the presentation and release guardrail pass covered:
 
 - browser launch and map selection
+- compact solo bot difficulty selector consistency across the briefing and roster views
 - main-map visual match against the generated reference set
 - compact match HUD, hold-Tab information panel behavior, and viewport fullscreen control
 - first-person weapon and HUD presentation
@@ -59,6 +60,7 @@ Captured from the current browser build in `assets/screenshots/`:
 npm run typecheck
 npm run build
 npm test
+npm run qa:final
 ```
 
 Results:
@@ -66,10 +68,11 @@ Results:
 - `npm run typecheck`: passed
 - `npm run build`: passed
 - `npm test`: passed; rebuilt the app and completed the final browser QA harness
+- `npm run qa:final`: passed; reran the browser QA harness against `dist/` and refreshed `assets/screenshots/`
 
 Non-blocking note:
 
-- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `579.64 kB` minified. This did not block runtime verification.
+- `vite build` emitted a chunk-size warning for the minified `localMatch` bundle at `602.06 kB`. This did not block runtime verification.
 
 ## Visual Target Summary
 
@@ -96,8 +99,8 @@ Scoring rubric:
 
 | Comparison | Reference | Actual | Score | Notes |
 | --- | --- | --- | --- | --- |
-| Menu reference vs actual menu | `01-menu-map-select.png` | `01-menu-briefing.png` | 3 | The final menu preserves the dark tactical panel treatment, restrained gold accent, and game-like information hierarchy even though it is intentionally simpler than the painted reference. |
-| Map-select reference vs actual map select | `01-menu-map-select.png` | `02-map-select-roster.png` | 3 | The roster, preview-heavy layout, and five-card tactical catalog match the intended browser-map-select direction strongly, with flatter implementation rendering. |
+| Menu reference vs actual menu | `01-menu-map-select.png` | `01-menu-briefing.png` | 3 | The final menu preserves the dark tactical panel treatment, restrained gold accent, compact solo bot difficulty selector, and game-like information hierarchy even though it is intentionally simpler than the painted reference. |
+| Map-select reference vs actual map select | `01-menu-map-select.png` | `02-map-select-roster.png` | 3 | The roster, preview-heavy layout, five-card tactical catalog, and repeated solo bot difficulty selector keep the browser map-select flow aligned with the intended direction, with flatter implementation rendering. |
 | Spawn-view reference vs actual spawn view | `02-spawn-view.png` | `03-sandline-spawn-view.png` | 2 | The live scene clearly reads as a dusty spawn court with shutters, crates, a water-tower landmark, a crosshair, and the abstract weapon, but uses much simpler materials and geometry. |
 | Central courtyard reference vs actual central area | `03-central-courtyard.png` | `04-sandline-central-yard.png` | 2 | The current map shows a readable central yard, crate cover, landmark silhouettes, and tactical space separation. It remains materially flatter than the reference. |
 | Corridor reference vs actual corridor | `04-corridor-route.png` | `05-sandline-generator-hall.png` | 1 | The implementation has a valid tight route, but the captured hall is much more austere and less corridor-like than the reference target. This is the weakest comparison. |
