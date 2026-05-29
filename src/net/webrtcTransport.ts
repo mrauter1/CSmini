@@ -12,6 +12,7 @@ import type {
   RoomTransport,
   RoomTransportEvents,
   RoomTransportLane,
+  RoomTransportSendOptions,
   RoomTransportStatus,
 } from "./transport";
 
@@ -185,14 +186,19 @@ export class WebRtcRoomTransport implements RoomTransport {
     });
   }
 
-  send(raw: string, _toPeerId?: string, lane: RoomTransportLane = "reliable"): boolean {
+  send(
+    raw: string,
+    _toPeerId?: string,
+    lane: RoomTransportLane = "reliable",
+    options?: RoomTransportSendOptions,
+  ): boolean {
     const rawBytes = measureRoomMessageBytes(raw);
     if (rawBytes > MAX_ROOM_MESSAGE_BYTES) {
       return false;
     }
 
     if (lane === "latest-state") {
-      return this.queueLatestState(raw);
+      return this.queueLatestState(raw, options);
     }
 
     const channel = this.channels.reliable;
@@ -232,9 +238,14 @@ export class WebRtcRoomTransport implements RoomTransport {
     return this.remoteParticipant;
   }
 
-  private queueLatestState(raw: string): boolean {
+  private queueLatestState(raw: string, options?: RoomTransportSendOptions): boolean {
     const channel = this.channels["latest-state"];
     if (!channel || channel.readyState !== "open") {
+      return false;
+    }
+
+    const hasBufferedLatestState = channel.bufferedAmount > 0 || this.pendingLatestStateRaw !== undefined;
+    if (options?.latestStateOnlyIfBuffered && !hasBufferedLatestState) {
       return false;
     }
 

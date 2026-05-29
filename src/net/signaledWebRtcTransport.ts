@@ -27,6 +27,7 @@ import type {
   RoomTransport,
   RoomTransportEvents,
   RoomTransportLane,
+  RoomTransportSendOptions,
   RoomTransportStatus,
 } from "./transport";
 
@@ -200,19 +201,24 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.events.onStatus?.(this.status);
   }
 
-  send(raw: string, toPeerId?: string, lane: RoomTransportLane = "reliable"): boolean {
+  send(
+    raw: string,
+    toPeerId?: string,
+    lane: RoomTransportLane = "reliable",
+    options?: RoomTransportSendOptions,
+  ): boolean {
     if (toPeerId) {
-      return this.sendToPeer(toPeerId, raw, lane);
+      return this.sendToPeer(toPeerId, raw, lane, options);
     }
 
     if (this.options.role === "guest") {
       const hostPeer = this.firstOpenPeer();
-      return hostPeer ? this.sendToPeer(hostPeer.peerId, raw, lane) : false;
+      return hostPeer ? this.sendToPeer(hostPeer.peerId, raw, lane, options) : false;
     }
 
     let sent = false;
     for (const peer of this.peers.values()) {
-      sent = this.sendToPeer(peer.peerId, raw, lane) || sent;
+      sent = this.sendToPeer(peer.peerId, raw, lane, options) || sent;
     }
     return sent;
   }
@@ -570,7 +576,12 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
   }
 
-  private sendToPeer(peerId: string, raw: string, lane: RoomTransportLane): boolean {
+  private sendToPeer(
+    peerId: string,
+    raw: string,
+    lane: RoomTransportLane,
+    options?: RoomTransportSendOptions,
+  ): boolean {
     const peer = this.peers.get(peerId);
     if (!peer) {
       return false;
@@ -584,6 +595,12 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     if (lane === "latest-state") {
       const channel = peer.latestStateChannel;
       if (!channel || channel.readyState !== "open") {
+        return false;
+      }
+
+      const hasBufferedLatestState =
+        channel.bufferedAmount > 0 || peer.pendingLatestStateRaw !== undefined;
+      if (options?.latestStateOnlyIfBuffered && !hasBufferedLatestState) {
         return false;
       }
 

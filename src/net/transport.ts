@@ -26,11 +26,20 @@ export interface RoomTransportEvents {
   onStatus?: (status: RoomTransportStatus) => void;
 }
 
+export interface RoomTransportSendOptions {
+  latestStateOnlyIfBuffered?: boolean;
+}
+
 export interface RoomTransport {
   readonly kind: RoomTransportKind;
   readonly localPeerId: string;
   setEvents(events: RoomTransportEvents): void;
-  send(raw: string, toPeerId?: string, lane?: RoomTransportLane): boolean;
+  send(
+    raw: string,
+    toPeerId?: string,
+    lane?: RoomTransportLane,
+    options?: RoomTransportSendOptions,
+  ): boolean;
   disconnectPeer?(peerId: string, reason?: string): void;
   close(reason?: string): void;
   getStatus(): RoomTransportStatus;

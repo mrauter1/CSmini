@@ -31,6 +31,7 @@ import type {
   RoomTransport,
   RoomTransportMessageEvent,
   RoomTransportPhase,
+  RoomTransportSendOptions,
   RoomTransportStatus,
 } from "./transport";
 import { WebRtcRoomTransport } from "./webrtcTransport";
@@ -437,6 +438,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
 
     const now = Date.now();
     if (!force && now - this.lastSnapshotSentAt < SNAPSHOT_PULSE_MS) {
+      this.refreshBufferedSnapshot();
       return;
     }
 
@@ -516,7 +518,11 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
 
   debugSendRawRoomMessage(raw: string, toPeerId?: string): boolean {
     const message = decodeRoomMessage(raw);
-    return this.transport.send(raw, toPeerId, message ? getRoomMessageLane(message.type) : "reliable");
+    return this.transport.send(
+      raw,
+      toPeerId,
+      message ? getRoomMessageLane(message.type) : "reliable",
+    );
   }
 
   protected createUiState(status: RoomTransportStatus): RoomConnectionUiSnapshot {
@@ -545,6 +551,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     type: Type,
     payload: Extract<RoomMessage, { type: Type }>["payload"],
     toPeerId?: string,
+    transportOptions?: RoomTransportSendOptions,
   ): boolean {
     const message = {
       protocol: ROOM_PROTOCOL,
@@ -563,7 +570,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return false;
     }
 
-    return this.transport.send(raw, toPeerId, getRoomMessageLane(type));
+    return this.transport.send(raw, toPeerId, getRoomMessageLane(type), transportOptions);
   }
 
   protected rememberParticipant(participant: ParticipantRecord): void {
@@ -665,10 +672,6 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     if (this.role === "host") {
       this.hostPeerId = this.identity.id;
     }
-
-    this.sendMessage("participant-update", {
-      participant: this.buildParticipantRecord(),
-    });
   }
 
   protected onTransportStatus(status: RoomTransportStatus): void {
@@ -883,6 +886,66 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     return "accept";
   }
 
+  private validateInboundOwnership(message: RoomMessage): string | null {
+    switch (message.type) {
+      case "join-request":
+        return this.role === "host"
+          ? null
+          : "Guests must not receive join requests from another peer.";
+      case "join-accepted":
+        return this.role === "guest"
+          ? null
+          : "Hosts must not receive join-accepted room messages.";
+      case "join-rejected":
+        return this.role === "guest"
+          ? null
+          : "Hosts must not receive join-rejected room messages.";
+      case "participant-update":
+        if (this.role !== "guest") {
+          return "Hosts must not receive participant updates from another peer.";
+        }
+
+        if (!this.hostPeerId) {
+          return "Guests must not receive participant updates before the host accepts them.";
+        }
+
+        return message.fromPeerId === this.hostPeerId
+          ? null
+          : "Only the active host may publish participant updates to a guest.";
+      case "input-tick":
+        return this.role === "host"
+          ? null
+          : "Guests must not receive input ticks from another peer.";
+      case "host-snapshot":
+        if (this.role !== "guest") {
+          return "Hosts must not receive host snapshots from another peer.";
+        }
+
+        if (this.hostPeerId && message.fromPeerId !== this.hostPeerId) {
+          return "Only the active host may send room snapshots to a guest.";
+        }
+
+        return null;
+      case "shot-claim":
+        return this.role === "host"
+          ? null
+          : "Guests must not receive shot claims from another peer.";
+      case "shot-result":
+        return this.role === "guest"
+          ? null
+          : "Hosts must not receive shot results from another peer.";
+      case "objective-event":
+        return this.role === "guest"
+          ? null
+          : "Hosts must not receive objective events from another peer.";
+      case "heartbeat":
+      case "disconnect":
+        return null;
+      default:
+        return null;
+    }
+  }
+
   private flushSnapshot(now: number): void {
     if (!this.latestSnapshot) {
       return;
@@ -891,6 +954,16 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     if (this.sendMessage("host-snapshot", this.latestSnapshot)) {
       this.lastSnapshotSentAt = now;
     }
+  }
+
+  private refreshBufferedSnapshot(): void {
+    if (!this.latestSnapshot) {
+      return;
+    }
+
+    this.sendMessage("host-snapshot", this.latestSnapshot, undefined, {
+      latestStateOnlyIfBuffered: true,
+    });
   }
 
   private readonly handleRawMessage = (event: RoomTransportMessageEvent): void => {
@@ -915,16 +988,26 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return;
     }
 
-    if (!isFreshRoomMessage(message)) {
-      this.noteInvalidRoomMessage(message.fromPeerId, "A peer sent stale room traffic.");
-      return;
-    }
-
     if (event.lane !== getRoomMessageLane(message.type)) {
       this.noteInvalidRoomMessage(
         message.fromPeerId,
         "A peer sent room traffic on the wrong delivery lane.",
       );
+      return;
+    }
+
+    const ownershipError = this.validateInboundOwnership(message);
+    if (ownershipError) {
+      this.noteInvalidRoomMessage(message.fromPeerId, ownershipError);
+      return;
+    }
+
+    if (!isFreshRoomMessage(message)) {
+      if (event.lane === "latest-state") {
+        return;
+      }
+
+      this.noteInvalidRoomMessage(message.fromPeerId, "A peer sent stale room traffic.");
       return;
     }
 
@@ -940,107 +1023,43 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
 
     switch (message.type) {
       case "join-request":
-        if (this.role !== "host") {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Guests must not receive join requests from another peer.",
-          );
-          return;
-        }
         this.onJoinRequest(message);
         return;
       case "join-accepted":
-        if (this.role !== "guest") {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Hosts must not receive join-accepted room messages.",
-          );
-          return;
-        }
         this.onJoinAccepted(message);
         return;
       case "join-rejected":
-        if (this.role !== "guest") {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Hosts must not receive join-rejected room messages.",
-          );
-          return;
-        }
         this.onJoinRejected(message);
         return;
       case "participant-update":
         this.rememberParticipant(message.payload.participant);
         return;
       case "input-tick":
-        if (this.role === "host") {
-          this.handlers.onInput({
-            peerId: message.fromPeerId,
-            sentAt: message.sentAt,
-            ...message.payload,
-          });
-        } else {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Guests must not receive input ticks from another peer.",
-          );
-        }
+        this.handlers.onInput({
+          peerId: message.fromPeerId,
+          sentAt: message.sentAt,
+          ...message.payload,
+        });
         return;
       case "host-snapshot":
-        if (this.role !== "guest") {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Hosts must not receive host snapshots from another peer.",
-          );
-          return;
-        }
-
-        if (this.hostPeerId && message.fromPeerId !== this.hostPeerId) {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Only the active host may send room snapshots to a guest.",
-          );
-          return;
-        }
-
         this.latestSnapshot = message.payload;
         this.handlers.onSnapshot(message.payload);
         return;
       case "shot-claim":
-        if (this.role === "host") {
-          this.handlers.onShotClaim({
-            peerId: message.fromPeerId,
-            sentAt: message.sentAt,
-            ...message.payload,
-          });
-        } else {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Guests must not receive shot claims from another peer.",
-          );
-        }
+        this.handlers.onShotClaim({
+          peerId: message.fromPeerId,
+          sentAt: message.sentAt,
+          ...message.payload,
+        });
         return;
       case "shot-result":
-        if (this.role === "guest") {
-          this.handlers.onShotResult({
-            peerId: message.fromPeerId,
-            sentAt: message.sentAt,
-            ...message.payload,
-          });
-        } else {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Hosts must not receive shot results from another peer.",
-          );
-        }
+        this.handlers.onShotResult({
+          peerId: message.fromPeerId,
+          sentAt: message.sentAt,
+          ...message.payload,
+        });
         return;
       case "objective-event":
-        if (this.role !== "guest") {
-          this.noteInvalidRoomMessage(
-            message.fromPeerId,
-            "Hosts must not receive objective events from another peer.",
-          );
-        }
         return;
       case "heartbeat":
         return;

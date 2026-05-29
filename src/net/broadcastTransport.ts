@@ -2,6 +2,7 @@ import type {
   RoomTransport,
   RoomTransportEvents,
   RoomTransportLane,
+  RoomTransportSendOptions,
   RoomTransportStatus,
 } from "./transport";
 
@@ -44,8 +45,17 @@ export class BroadcastRoomTransport implements RoomTransport {
     this.events.onStatus?.(this.status);
   }
 
-  send(raw: string, _toPeerId?: string, lane: RoomTransportLane = "reliable"): boolean {
+  send(
+    raw: string,
+    _toPeerId?: string,
+    lane: RoomTransportLane = "reliable",
+    options?: RoomTransportSendOptions,
+  ): boolean {
     if (this.status.phase === "closed") {
+      return false;
+    }
+
+    if (lane === "latest-state" && options?.latestStateOnlyIfBuffered) {
       return false;
     }
 
