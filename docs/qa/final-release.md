@@ -15,7 +15,7 @@ Final verification for the current presentation and release guardrail pass cover
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh current-tree verifier reruns were completed on `2026-05-28T22:49:34-03:00`.
+Fresh current-tree verifier reruns were completed on `2026-05-28T23:24:13-03:00`.
 
 ## Commands Run
 
@@ -94,7 +94,7 @@ The passing browser summaries from the fresh `npm test` and `npm run qa:final` r
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-28`, with the latest current-tree timestamps between `22:46` and `22:48 -03:00`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-28`, with the latest current-tree timestamps between `23:21` and `23:23 -03:00`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`
@@ -107,6 +107,7 @@ The passing browser summaries from the fresh `npm test` and `npm run qa:final` r
   - `10-opposing-player.png`
   - `11-death-respawn-state.png`
   - `12-two-player-multiplayer.png`
+  - `13-held-tab-operations-board.png`
 
 ## Remaining Limitations
 

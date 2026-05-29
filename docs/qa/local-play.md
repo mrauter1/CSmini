@@ -53,6 +53,7 @@ Result: every shipped map loaded a live round from the declared mission metadata
 - The browser harness confirmed the old large in-match HUD card/overlay classes were absent from live play.
 - The compact startup hint disappeared after controls were armed, health stayed bottom-left, ammo stayed bottom-right, and the round timer stayed in the top strip.
 - The operations board stayed hidden by default, opened while `Tab` was held, ignored repeated `Tab` keydown as a toggle, and hid again on keyup.
+- The final screenshot set includes `13-held-tab-operations-board.png`, captured by the browser harness while `Tab` was held, to preserve visual evidence of the detailed info panel.
 - The fullscreen icon button was visible inside the match viewport shell with an accessible fullscreen label/title and no text label in the play view.
 - A deterministic fullscreen mock proved the request target was the viewport shell, not the app root or page body; `fullscreenchange` resized the renderer host and canvas to `1012 x 720`; the held-Tab panel stayed usable while fullscreen was active; and exit returned the button to its enter state.
 - A denied fullscreen request surfaced a compact status-line message and left debug fullscreen state inactive.

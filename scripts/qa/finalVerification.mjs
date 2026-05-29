@@ -25,6 +25,7 @@ const SCREENSHOTS = [
   "10-opposing-player.png",
   "11-death-respawn-state.png",
   "12-two-player-multiplayer.png",
+  "13-held-tab-operations-board.png",
 ];
 
 function assert(condition, message) {
@@ -910,6 +911,29 @@ async function main() {
       "Expected fullscreen control to use an icon-only visual treatment",
     );
 
+    const armedTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab");
+    assert(armedTabPrevented, "Expected Tab to prevent browser focus navigation while controls are armed");
+    const tabOpenHud = await readHud(localPage);
+    assert(tabOpenHud.scoreboardVisible, "Expected held Tab to show the info panel");
+    assert(tabOpenHud.debugScoreboardVisible, "Expected debug snapshot to expose scoreboardVisible=true");
+    assert(tabOpenHud.teamCountsText, "Expected Tab panel to include team counts");
+    assert(tabOpenHud.rosterText, "Expected Tab panel to include roster rows");
+    assert(tabOpenHud.missionSummary, "Expected Tab panel to include detailed mission text");
+    assert(tabOpenHud.controlsText.includes("WASD"), "Expected Tab panel to include controls");
+    await delay(80);
+    await captureScreenshot(localPage, "13-held-tab-operations-board.png", capturedScreenshots);
+
+    const repeatTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab", true);
+    assert(repeatTabPrevented, "Expected repeated Tab keydown to stay browser-safe while armed");
+    const repeatedTabHud = await readHud(localPage);
+    assert(repeatedTabHud.scoreboardVisible, "Expected repeated Tab keydown not to toggle the panel closed");
+
+    const tabKeyUpPrevented = await keyboardDefaultPrevented(localPage, "keyup", "Tab", "Tab");
+    assert(tabKeyUpPrevented, "Expected Tab keyup to prevent focus navigation while controls are armed");
+    const tabClosedHud = await readHud(localPage);
+    assert(!tabClosedHud.scoreboardVisible, "Expected Tab panel to hide after keyup");
+    assert(!tabClosedHud.debugScoreboardVisible, "Expected debug snapshot to expose scoreboardVisible=false after keyup");
+
     const fullscreenDebugBefore = await getState(localPage);
     assert(
       fullscreenDebugBefore.fullscreen?.targetIsViewportShell,
@@ -977,27 +1001,6 @@ async function main() {
       tabPanelVisibleDuringFullscreen: mockedFullscreen.tabPanelVisible,
       deniedStatus: deniedFullscreen.status,
     };
-
-    const armedTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab");
-    assert(armedTabPrevented, "Expected Tab to prevent browser focus navigation while controls are armed");
-    const tabOpenHud = await readHud(localPage);
-    assert(tabOpenHud.scoreboardVisible, "Expected held Tab to show the info panel");
-    assert(tabOpenHud.debugScoreboardVisible, "Expected debug snapshot to expose scoreboardVisible=true");
-    assert(tabOpenHud.teamCountsText, "Expected Tab panel to include team counts");
-    assert(tabOpenHud.rosterText, "Expected Tab panel to include roster rows");
-    assert(tabOpenHud.missionSummary, "Expected Tab panel to include detailed mission text");
-    assert(tabOpenHud.controlsText.includes("WASD"), "Expected Tab panel to include controls");
-
-    const repeatTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab", true);
-    assert(repeatTabPrevented, "Expected repeated Tab keydown to stay browser-safe while armed");
-    const repeatedTabHud = await readHud(localPage);
-    assert(repeatedTabHud.scoreboardVisible, "Expected repeated Tab keydown not to toggle the panel closed");
-
-    const tabKeyUpPrevented = await keyboardDefaultPrevented(localPage, "keyup", "Tab", "Tab");
-    assert(tabKeyUpPrevented, "Expected Tab keyup to prevent focus navigation while controls are armed");
-    const tabClosedHud = await readHud(localPage);
-    assert(!tabClosedHud.scoreboardVisible, "Expected Tab panel to hide after keyup");
-    assert(!tabClosedHud.debugScoreboardVisible, "Expected debug snapshot to expose scoreboardVisible=false after keyup");
 
     const armedSpacePrevented = await keyboardDefaultPrevented(localPage, "keydown", "Space", " ", true);
     assert(armedSpacePrevented, "Expected Space to prevent browser defaults while controls are armed");
