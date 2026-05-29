@@ -245,6 +245,11 @@ class CdpPage {
 
     throw new Error(`Timed out waiting for expression: ${expression}`);
   }
+
+  async bringToFront() {
+    await this.send("Page.bringToFront");
+    await delay(120);
+  }
 }
 
 async function createPage(url) {
@@ -532,6 +537,27 @@ async function main() {
       ),
     );
 
+    let guestInputCadenceTicks = null;
+    if (joinPages[0]) {
+      const cadencePage = joinPages[0];
+      const beforeCadence = await cadencePage.evaluate(
+        "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0",
+      );
+      await cadencePage.evaluate("window.__dustlineQa__.clearInputState()");
+      await cadencePage.evaluate("window.__dustlineQa__.setInputState(0, 1, false)");
+      await cadencePage.bringToFront();
+      await delay(180);
+      const afterCadence = await cadencePage.evaluate(
+        "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0",
+      );
+      guestInputCadenceTicks = afterCadence - beforeCadence;
+      assert(
+        guestInputCadenceTicks >= 3,
+        `Guest fixed input cadence only advanced ${guestInputCadenceTicks} ticks in 180ms.`,
+      );
+      await cadencePage.evaluate("window.__dustlineQa__.clearInputState()");
+    }
+
     const summary = {
       roomCode,
       guestCount: GUEST_COUNT,
@@ -558,6 +584,7 @@ async function main() {
           joinPage.evaluate("window.__dustlineQa__?.getState()?.match?.remotePlayers?.length ?? 0"),
         ),
       ),
+      guestInputCadenceTicks,
     };
 
     if (guardrails && joinPages[0]) {

@@ -490,6 +490,25 @@ async function main() {
       10_000,
     );
 
+    const guestInputSequenceBeforeCadence = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0",
+    );
+    await clearInputState(joinPage);
+    await setInputState(joinPage, 0, 1, false);
+    await joinPage.bringToFront();
+    await delay(180);
+    const guestInputSequenceAfterCadence = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0",
+    );
+    assert(
+      guestInputSequenceAfterCadence - guestInputSequenceBeforeCadence >= 3,
+      `Guest fixed input cadence only advanced ${
+        guestInputSequenceAfterCadence - guestInputSequenceBeforeCadence
+      } ticks in 180ms.`,
+    );
+    await clearInputState(joinPage);
+    await hostPage.bringToFront();
+
     const initialGuestOnHost = await readRemotePosition(hostPage);
     assert(
       (await driveGuestInputUntilObserved(hostPage, joinPage, initialGuestOnHost, -1, 1, true)) ===
@@ -733,6 +752,8 @@ async function main() {
       ),
       guestAckAfterMovement,
       guestSnapshotAfterHostMove,
+      guestInputCadenceTicks:
+        guestInputSequenceAfterCadence - guestInputSequenceBeforeCadence,
       duplicateDropHostState,
       duplicateDropConnectionState,
       guestJitterMidState,

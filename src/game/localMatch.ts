@@ -77,7 +77,10 @@ const SHOT_MAX_RANGE = 72;
 const SHOT_REWIND_DRIFT_MS = 180;
 const MAX_REMOTE_INPUT_AXIS = 1.01;
 const MAX_REMOTE_INPUT_VECTOR_LENGTH = Math.SQRT2 + 0.01;
-// Guests resend their latest state roughly every 120 ms, so 320 ms tolerates a couple of delayed
+const GUEST_INPUT_PULSE_SECONDS = 1 / 30;
+const HOST_FRAME_STALL_MS = 1_500;
+const HOST_FRAME_STALL_NOTICE_SECONDS = 2.4;
+// Guests resend their latest state at a fixed 30 Hz, so 320 ms tolerates several delayed
 // state ticks before the host clamps stale movement after a lost release.
 const REMOTE_INPUT_DEADMAN_MS = 320;
 const LOCAL_INPUT_HISTORY_MAX_ENTRIES = 40;
@@ -252,6 +255,7 @@ export class LocalMatch {
   private sharedRoomFallbackReason = "";
   private animationHandle = 0;
   private playerHealth = 100;
+  private disposed = false;
   private ammoInClip = CLIP_SIZE;
   private reserveAmmo = RESERVE_AMMO;
   private playerEliminations = 0;
@@ -280,6 +284,19 @@ export class LocalMatch {
   private nextShotClaimId = 1;
   private nextHostSnapshotId = 1;
   private lastHostSnapshotId = 0;
+  private lastAnimationFrameAtMs = Date.now();
+  private lastHostFrameGapMs = 0;
+  private lastHostFrameStallAtMs = 0;
+  private hostWakeLock?: WakeLockSentinel;
+  private hostWakeLockState:
+    | "idle"
+    | "requesting"
+    | "active"
+    | "paused"
+    | "released"
+    | "blocked"
+    | "unsupported" = "idle";
+  private hostWakeLockError = "";
   private authoritativePosition?: THREE.Vector3;
   private authoritativeRespawnAtMs = 0;
   private lastShotClaim?: RoomShotClaim;
@@ -332,6 +349,7 @@ export class LocalMatch {
 
     this.handleResize();
     this.attachEvents();
+    this.requestHostWakeLock();
     this.animate();
     if (this.activeMode === "shared" && this.sharedRole === "host") {
       this.recordSharedCombatFrame(Date.now());
@@ -340,7 +358,9 @@ export class LocalMatch {
   }
 
   dispose(): void {
+    this.disposed = true;
     cancelAnimationFrame(this.animationHandle);
+    this.releaseHostWakeLock();
     this.detachEvents();
 
     if (this.controls.isLocked) {
@@ -407,7 +427,19 @@ export class LocalMatch {
         lastAcknowledgedInputSequence: this.lastAcknowledgedInputSequence,
         pendingInputCount: this.localInputHistory.length,
         pendingReplayDeltaCount: this.localReplayDeltas.length,
+        inputSendIntervalMs: Math.round(GUEST_INPUT_PULSE_SECONDS * 1000),
       },
+      hostAvailability:
+        this.activeMode === "shared" && this.sharedRole === "host"
+          ? {
+              visibilityState: document.visibilityState,
+              wakeLockState: this.hostWakeLockState,
+              wakeLockHeld: Boolean(this.hostWakeLock && !this.hostWakeLock.released),
+              wakeLockError: this.hostWakeLockError,
+              lastFrameGapMs: Math.round(this.lastHostFrameGapMs),
+              lastFrameStallAt: this.lastHostFrameStallAtMs,
+            }
+          : null,
       roster: this.rosterSnapshot(),
       roomConnection: this.sharedRoom?.debugSnapshot() ?? null,
       remotePlayers: [...this.remoteActors.values()].map((actor) => ({
@@ -1290,6 +1322,7 @@ export class LocalMatch {
     window.addEventListener("mouseup", this.handleMouseUp);
     window.addEventListener("mousemove", this.handleMouseMove);
     window.addEventListener("blur", this.handleBlur);
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
   }
 
   private detachEvents(): void {
@@ -1300,6 +1333,7 @@ export class LocalMatch {
     window.removeEventListener("mouseup", this.handleMouseUp);
     window.removeEventListener("mousemove", this.handleMouseMove);
     window.removeEventListener("blur", this.handleBlur);
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     this.controls.removeEventListener("lock", this.handlePointerLock);
     this.controls.removeEventListener("unlock", this.handlePointerLock);
   }
@@ -1408,8 +1442,33 @@ export class LocalMatch {
     this.emitSnapshot();
   };
 
+  private readonly handleVisibilityChange = (): void => {
+    if (!this.isSharedHost()) {
+      return;
+    }
+
+    if (document.visibilityState === "visible") {
+      this.requestHostWakeLock();
+      this.pushFeed("Host tab active. Room state resynced.", 1.6);
+      this.publishHostSnapshot(true);
+    } else {
+      this.releaseHostWakeLock();
+      this.hostWakeLockState = "paused";
+      this.clearAuthoritativeRemoteInput();
+    }
+
+    this.emitSnapshot();
+  };
+
   private readonly animate = (): void => {
     this.animationHandle = requestAnimationFrame(this.animate);
+
+    const frameNowMs = Date.now();
+    const frameGapMs = frameNowMs - this.lastAnimationFrameAtMs;
+    this.lastAnimationFrameAtMs = frameNowMs;
+    if (frameGapMs > HOST_FRAME_STALL_MS) {
+      this.handleHostFrameStall(frameGapMs, frameNowMs);
+    }
 
     const delta = Math.min(0.04, this.clock.getDelta());
     const now = performance.now() / 1000;
@@ -2080,7 +2139,10 @@ export class LocalMatch {
       this.tempLook.z.toFixed(2),
     ].join("|");
 
-    if (signature === this.lastInputSignature && now - this.lastInputSentAt < 0.12) {
+    if (
+      signature === this.lastInputSignature &&
+      now - this.lastInputSentAt < GUEST_INPUT_PULSE_SECONDS
+    ) {
       return;
     }
 
@@ -2527,6 +2589,11 @@ export class LocalMatch {
 
   private defaultStatusLine(): string {
     if (this.activeMode === "shared") {
+      const hostAvailability = this.hostAvailabilityStatusLine();
+      if (hostAvailability) {
+        return hostAvailability;
+      }
+
       if (this.remoteActors.size > 0) {
         return `${this.remoteActors.size + 1} operators live in the room.`;
       }
@@ -2536,6 +2603,31 @@ export class LocalMatch {
     }
 
     return "Solo skirmish active.";
+  }
+
+  private hostAvailabilityStatusLine(): string {
+    if (!this.isSharedHost()) {
+      return "";
+    }
+
+    if (document.visibilityState !== "visible") {
+      return "Host tab is hidden; keep it visible so room simulation stays live.";
+    }
+
+    const nowMs = Date.now();
+    if (nowMs - this.lastHostFrameStallAtMs < HOST_FRAME_STALL_NOTICE_SECONDS * 1000) {
+      return "Host tab resumed after a browser pause. Room state resynced.";
+    }
+
+    if (this.hostWakeLockState === "blocked") {
+      return "Keep this host tab visible; the browser did not grant keep-awake.";
+    }
+
+    if (this.hostWakeLockState === "unsupported") {
+      return "Keep this host tab visible; this browser cannot prevent device sleep.";
+    }
+
+    return "";
   }
 
   private modeNotice(): string {
@@ -2575,6 +2667,130 @@ export class LocalMatch {
 
     this.sharedRoom.publishHostSnapshot(this.buildHostSnapshot(), force);
   }
+
+  private isSharedHost(): boolean {
+    return (
+      !this.disposed &&
+      this.activeMode === "shared" &&
+      this.sharedRole === "host" &&
+      Boolean(this.sharedRoom)
+    );
+  }
+
+  private handleHostFrameStall(gapMs: number, nowMs: number): void {
+    if (!this.isSharedHost()) {
+      return;
+    }
+
+    this.lastHostFrameGapMs = gapMs;
+    this.lastHostFrameStallAtMs = nowMs;
+    this.clearAuthoritativeRemoteInput();
+    this.requestHostWakeLock();
+    this.pushFeed("Host tab resumed after a browser pause. Room state resynced.", 1.8);
+    this.publishHostSnapshot(true);
+  }
+
+  private clearAuthoritativeRemoteInput(): void {
+    for (const actor of this.remoteActors.values()) {
+      actor.inputMovement.set(0, 0);
+      actor.inputSprint = false;
+    }
+  }
+
+  private requestHostWakeLock(): void {
+    if (!this.isSharedHost()) {
+      return;
+    }
+
+    void this.acquireHostWakeLock();
+  }
+
+  private async acquireHostWakeLock(): Promise<void> {
+    if (!this.isSharedHost() || this.hostWakeLockState === "requesting") {
+      return;
+    }
+
+    if (this.hostWakeLock && !this.hostWakeLock.released) {
+      this.hostWakeLockState = "active";
+      return;
+    }
+
+    if (!("wakeLock" in navigator) || !navigator.wakeLock) {
+      this.hostWakeLockState = "unsupported";
+      this.hostWakeLockError = "";
+      this.emitSnapshot();
+      return;
+    }
+
+    if (document.visibilityState !== "visible") {
+      this.hostWakeLockState = "paused";
+      this.hostWakeLockError = "";
+      this.emitSnapshot();
+      return;
+    }
+
+    this.hostWakeLockState = "requesting";
+    this.hostWakeLockError = "";
+    this.emitSnapshot();
+
+    try {
+      const wakeLock = await navigator.wakeLock.request("screen");
+      if (!this.isSharedHost() || document.visibilityState !== "visible") {
+        void wakeLock.release().catch(() => undefined);
+        return;
+      }
+
+      this.hostWakeLock?.removeEventListener("release", this.handleHostWakeLockRelease);
+      this.hostWakeLock = wakeLock;
+      this.hostWakeLock.addEventListener("release", this.handleHostWakeLockRelease);
+      this.hostWakeLockState = "active";
+      this.hostWakeLockError = "";
+    } catch (error) {
+      if (this.disposed) {
+        return;
+      }
+
+      this.hostWakeLock = undefined;
+      this.hostWakeLockState = document.visibilityState === "visible" ? "blocked" : "paused";
+      this.hostWakeLockError =
+        error instanceof Error && error.message ? error.message : "Wake lock request was rejected.";
+    }
+
+    this.emitSnapshot();
+  }
+
+  private releaseHostWakeLock(): void {
+    const wakeLock = this.hostWakeLock;
+    this.hostWakeLock = undefined;
+    this.hostWakeLockState = "released";
+
+    if (!wakeLock) {
+      return;
+    }
+
+    wakeLock.removeEventListener("release", this.handleHostWakeLockRelease);
+    if (!wakeLock.released) {
+      void wakeLock.release().catch(() => undefined);
+    }
+  }
+
+  private readonly handleHostWakeLockRelease = (): void => {
+    this.hostWakeLock?.removeEventListener("release", this.handleHostWakeLockRelease);
+    this.hostWakeLock = undefined;
+
+    if (!this.isSharedHost()) {
+      this.hostWakeLockState = "released";
+      this.emitSnapshot();
+      return;
+    }
+
+    this.hostWakeLockState = document.visibilityState === "visible" ? "released" : "paused";
+    this.emitSnapshot();
+
+    if (document.visibilityState === "visible") {
+      this.requestHostWakeLock();
+    }
+  };
 
   private buildHostSnapshot(): HostRoomSnapshot {
     const now = Date.now();
