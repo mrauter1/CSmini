@@ -58,6 +58,54 @@ rg -n '"vars"|"env"|account_id|route|routes|kv_namespaces|r2_buckets|d1_database
   workers/signaling/wrangler.jsonc
 ```
 
+## Shipped Networking Model
+
+The finished branch keeps the existing deployment model:
+
+- the frontend still ships as a static Vite site
+- the Cloudflare Worker remains signaling-only and does not relay gameplay
+- one browser tab is still the authoritative host
+- there is still no dedicated authoritative game server
+
+Room protocol `v3` now uses two browser-to-browser delivery lanes:
+
+- Reliable ordered lane:
+  - join, accept, reject
+  - participant updates
+  - disconnects
+  - shot claims and shot results
+  - objective or round events
+- Latest-state lane:
+  - guest input ticks
+  - host snapshots
+  - heartbeats
+
+Latest-state handling is freshness-based rather than peer-global ordered:
+
+- late or duplicate `input-tick`, `host-snapshot`, and `heartbeat` messages are dropped quietly
+- malformed, oversized, wrong-room, wrong-target, wrong-lane, role-forbidden, or out-of-order reliable traffic still counts as invalid room traffic
+- if the state lane is backpressured, the transport keeps only the newest unsent latest-state payload instead of preserving a stale backlog
+
+Host-side movement safety is also explicit:
+
+- the host records when each accepted guest `input-tick` arrived
+- if no fresh tick arrives for `320 ms`, the host clears only movement and sprint for that actor
+- this prevents a lost release tick from leaving a guest moving indefinitely without clearing unrelated weapon or reload state
+
+Guest prediction now reconciles against host acknowledgements:
+
+- host snapshots include `lastProcessedInputSequence`
+- the guest keeps a bounded local input and replay history
+- when a host snapshot arrives, the guest drops acknowledged history and reapplies only unacknowledged local movement
+- large divergence, first sync, death, respawn, and reset paths still hard-snap instead of replaying through lifecycle transitions
+
+Remaining trust and connectivity limits are unchanged:
+
+- NAT and firewall edge cases can still block direct browser-to-browser connectivity without TURN
+- the host can still cheat because the host owns canonical gameplay state
+- browser identities are still spoofable protocol labels rather than authenticated accounts
+- manual signaling remains a one-guest fallback, not a dedicated-server path
+
 ## Automated Coverage
 
 ### `npm run typecheck`
@@ -324,6 +372,7 @@ Still manual:
 - The transport currently uses Google STUN by default, but direct connectivity can still fail on tougher NAT combinations without TURN.
 - Manual signaling remains available but is now a fallback, not the default user flow.
 - Cloud Rooms support one host plus up to 13 guests; manual signaling remains a one-guest fallback.
+- There is still no dedicated authoritative game server; the browser host remains the canonical authority.
 - Host migration is still a follow-up item, not part of the shipped implementation.
 
 ## Config Hygiene
