@@ -5,6 +5,7 @@ import {
   type GuestAnswerSignal,
   type HostOfferSignal,
 } from "./manualSignaling";
+import { DEFAULT_ICE_SERVERS, loadIceServers } from "./iceServers";
 import type { ParticipantIdentity } from "./protocol";
 import { MAX_ROOM_MESSAGE_BYTES, measureRoomMessageBytes } from "./protocol";
 import { MAX_TRANSPORT_BUFFERED_BYTES } from "./signalingConfig";
@@ -18,11 +19,7 @@ import type {
 
 export const RELIABLE_DATA_CHANNEL_LABEL = "dustline-room-reliable";
 export const LATEST_STATE_DATA_CHANNEL_LABEL = "dustline-room-state";
-export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-];
+export { DEFAULT_ICE_SERVERS };
 
 interface WebRtcTransportOptions {
   roomId: string;
@@ -30,6 +27,7 @@ interface WebRtcTransportOptions {
   sessionLabel: string;
   localParticipant: ParticipantIdentity;
   role: "host" | "guest";
+  signalingUrl?: string;
 }
 
 interface ChannelListeners {
@@ -55,16 +53,15 @@ export class WebRtcRoomTransport implements RoomTransport {
   readonly kind = "webrtc" as const;
   readonly localPeerId: string;
 
-  private readonly connection = new RTCPeerConnection({
-    iceServers: DEFAULT_ICE_SERVERS,
-    bundlePolicy: "max-bundle",
-  });
+  private connection?: RTCPeerConnection;
+  private readonly iceServersPromise: Promise<RTCIceServer[]>;
   private readonly channels: Partial<Record<RoomTransportLane, RTCDataChannel>> = {};
   private readonly channelListeners: Partial<Record<RoomTransportLane, ChannelListeners>> = {};
   private pendingLatestStateRaw?: string;
   private remoteParticipant?: ParticipantIdentity;
   private status: RoomTransportStatus;
   private events: RoomTransportEvents;
+  private closed = false;
 
   constructor(
     private readonly options: WebRtcTransportOptions,
@@ -72,6 +69,7 @@ export class WebRtcRoomTransport implements RoomTransport {
   ) {
     this.events = events;
     this.localPeerId = options.localParticipant.id;
+    this.iceServersPromise = loadIceServers(options.signalingUrl);
     this.status = {
       phase: options.role === "host" ? "idle" : "signaling",
       detail:
@@ -80,26 +78,6 @@ export class WebRtcRoomTransport implements RoomTransport {
           : "Paste a host offer to generate an answer.",
     };
 
-    if (options.role === "host") {
-      this.bindChannel(
-        "reliable",
-        this.connection.createDataChannel(RELIABLE_DATA_CHANNEL_LABEL, {
-          ordered: true,
-        }),
-      );
-      this.bindChannel(
-        "latest-state",
-        this.connection.createDataChannel(LATEST_STATE_DATA_CHANNEL_LABEL, {
-          ordered: false,
-          maxRetransmits: 0,
-        }),
-      );
-    } else {
-      this.connection.addEventListener("datachannel", this.handleDataChannel);
-    }
-
-    this.connection.addEventListener("connectionstatechange", this.handleConnectionState);
-    this.connection.addEventListener("icecandidateerror", this.handleIceCandidateError);
     this.events.onStatus?.(this.status);
   }
 
@@ -114,11 +92,12 @@ export class WebRtcRoomTransport implements RoomTransport {
     }
 
     this.setStatus("signaling", "Generating offer and collecting ICE candidates.");
-    const offer = await this.connection.createOffer();
-    await this.connection.setLocalDescription(offer);
-    await waitForIceGatheringComplete(this.connection);
+    const connection = await this.getConnection();
+    const offer = await connection.createOffer();
+    await connection.setLocalDescription(offer);
+    await waitForIceGatheringComplete(connection);
 
-    const description = this.connection.localDescription;
+    const description = connection.localDescription;
     if (!description) {
       throw new Error("Host offer was not created.");
     }
@@ -148,7 +127,7 @@ export class WebRtcRoomTransport implements RoomTransport {
     this.assertRoomMatch(parsed.roomId, parsed.mapId);
     this.remoteParticipant = parsed.participant;
     this.setStatus("connecting", `Answer applied from ${parsed.participant.name}.`);
-    await this.connection.setRemoteDescription(parsed.description);
+    await (await this.getConnection()).setRemoteDescription(parsed.description);
   }
 
   async acceptOfferCode(raw: string): Promise<string> {
@@ -164,12 +143,13 @@ export class WebRtcRoomTransport implements RoomTransport {
     this.assertRoomMatch(parsed.roomId, parsed.mapId);
     this.remoteParticipant = parsed.participant;
     this.setStatus("signaling", `Generating answer for ${parsed.participant.name}.`);
-    await this.connection.setRemoteDescription(parsed.description);
-    const answer = await this.connection.createAnswer();
-    await this.connection.setLocalDescription(answer);
-    await waitForIceGatheringComplete(this.connection);
+    const connection = await this.getConnection();
+    await connection.setRemoteDescription(parsed.description);
+    const answer = await connection.createAnswer();
+    await connection.setLocalDescription(answer);
+    await waitForIceGatheringComplete(connection);
 
-    const description = this.connection.localDescription;
+    const description = connection.localDescription;
     if (!description) {
       throw new Error("Guest answer was not created.");
     }
@@ -224,9 +204,10 @@ export class WebRtcRoomTransport implements RoomTransport {
   }
 
   close(reason = "closed"): void {
+    this.closed = true;
     this.unbindChannel("reliable");
     this.unbindChannel("latest-state");
-    this.connection.close();
+    this.connection?.close();
     this.setStatus("closed", reason);
   }
 
@@ -236,6 +217,51 @@ export class WebRtcRoomTransport implements RoomTransport {
 
   getRemoteParticipant(): ParticipantIdentity | undefined {
     return this.remoteParticipant;
+  }
+
+  private async getConnection(): Promise<RTCPeerConnection> {
+    if (this.connection) {
+      return this.connection;
+    }
+
+    this.setStatus("signaling", "Loading WebRTC relay configuration.");
+    const connection = this.createConnection(await this.iceServersPromise);
+    if (this.closed) {
+      connection.close();
+      throw new Error("WebRTC transport is closed.");
+    }
+
+    this.connection = connection;
+    return connection;
+  }
+
+  private createConnection(iceServers: RTCIceServer[]): RTCPeerConnection {
+    const connection = new RTCPeerConnection({
+      iceServers,
+      bundlePolicy: "max-bundle",
+    });
+
+    if (this.options.role === "host") {
+      this.bindChannel(
+        "reliable",
+        connection.createDataChannel(RELIABLE_DATA_CHANNEL_LABEL, {
+          ordered: true,
+        }),
+      );
+      this.bindChannel(
+        "latest-state",
+        connection.createDataChannel(LATEST_STATE_DATA_CHANNEL_LABEL, {
+          ordered: false,
+          maxRetransmits: 0,
+        }),
+      );
+    } else {
+      connection.addEventListener("datachannel", this.handleDataChannel);
+    }
+
+    connection.addEventListener("connectionstatechange", this.handleConnectionState);
+    connection.addEventListener("icecandidateerror", this.handleIceCandidateError);
+    return connection;
   }
 
   private queueLatestState(raw: string, options?: RoomTransportSendOptions): boolean {
@@ -360,24 +386,26 @@ export class WebRtcRoomTransport implements RoomTransport {
       return;
     }
 
-    if (this.connection.connectionState === "failed") {
+    const connectionState = this.connection?.connectionState;
+
+    if (connectionState === "failed") {
       this.setStatus("error", "WebRTC connection failed.");
       return;
     }
 
-    if (this.connection.connectionState === "disconnected") {
+    if (connectionState === "disconnected") {
       this.setStatus("closed", "Peer disconnected.");
       return;
     }
 
-    if (this.connection.connectionState === "closed") {
+    if (connectionState === "closed") {
       this.setStatus("closed", "Peer connection closed.");
       return;
     }
 
     if (
-      this.connection.connectionState === "connected" ||
-      this.connection.connectionState === "connecting" ||
+      connectionState === "connected" ||
+      connectionState === "connecting" ||
       reliableOpen ||
       latestStateOpen
     ) {
@@ -441,7 +469,7 @@ export class WebRtcRoomTransport implements RoomTransport {
   }
 
   private readonly handleConnectionState = (): void => {
-    switch (this.connection.connectionState) {
+    switch (this.connection?.connectionState) {
       case "connected":
         this.updateChannelStatus();
         return;

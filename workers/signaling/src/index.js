@@ -4,6 +4,11 @@ const MAX_ROOM_PEERS = 14;
 const MAX_REQUEST_URL_LENGTH = 512;
 const MAX_QUERY_LENGTH = 256;
 const MAX_ROOM_PATH_LENGTH = 128;
+const MAX_TURN_CREDENTIAL_RESPONSE_BYTES = 16 * 1024;
+const MAX_ICE_SERVER_COUNT = 12;
+const MAX_ICE_URLS_PER_SERVER = 8;
+const MAX_ICE_URL_LENGTH = 256;
+const MAX_ICE_CREDENTIAL_LENGTH = 256;
 
 // Payload caps stay above normal browser-generated signaling blobs while remaining cheap to reject.
 // 24 KiB raw leaves room for the JSON envelope, 12 KiB covers a full offer/answer body, and 2 KiB
@@ -46,10 +51,18 @@ const CLOSE_CODES = Object.freeze({
 });
 
 const RELAY_TYPES = new Set(["offer", "answer", "ice-candidate"]);
+const DEFAULT_ICE_SERVERS = Object.freeze([
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+]);
 const SAFE_ROOM_ID = /^[a-zA-Z0-9:._-]{3,96}$/;
 const SAFE_PEER_ID = /^[a-zA-Z0-9:._-]{3,96}$/;
 const SAFE_MAP_ID = /^[a-z0-9-]{3,64}$/;
 const SAFE_ACCENT_COLOR = /^#[0-9A-Fa-f]{6}$/;
+const SAFE_METERED_APP_NAME = /^[a-zA-Z0-9-]{3,63}$/;
+const SAFE_METERED_API_KEY = /^[a-zA-Z0-9_-]{16,128}$/;
+const SAFE_ICE_URL = /^(stun|stuns|turn|turns):[^"'<>\\\s]+$/i;
 const UTF8 = new TextEncoder();
 
 const DEFAULT_ACCENT_COLOR = "#CFA66F";
@@ -730,6 +743,14 @@ export default {
       });
     }
 
+    if (url.pathname === "/turn-credentials") {
+      if (request.method !== "GET") {
+        return methodNotAllowed("GET");
+      }
+
+      return handleTurnCredentialsRequest(env);
+    }
+
     if (request.method !== "GET") {
       return methodNotAllowed("GET");
     }
@@ -751,6 +772,56 @@ export default {
     return env.ROOMS.get(id).fetch(request);
   },
 };
+
+async function handleTurnCredentialsRequest(env) {
+  const appName = normalizeToken(env.METERED_APP_NAME, SAFE_METERED_APP_NAME);
+  const apiKey = normalizeToken(env.METERED_TURN_API_KEY, SAFE_METERED_API_KEY);
+  if (!appName || !apiKey) {
+    return json(DEFAULT_ICE_SERVERS, 200, {
+      "cache-control": "no-store",
+      "x-ice-servers-source": "default-stun",
+    });
+  }
+
+  const upstreamUrl = new URL(`https://${appName}.metered.live/api/v1/turn/credentials`);
+  upstreamUrl.searchParams.set("apiKey", apiKey);
+
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl.toString(), {
+      headers: { accept: "application/json" },
+    });
+  } catch {
+    return json({ ok: false, error: "Could not reach TURN credential provider." }, 502, {
+      "cache-control": "no-store",
+    });
+  }
+
+  if (!upstream.ok) {
+    return json({ ok: false, error: "TURN credential provider rejected the request." }, 502, {
+      "cache-control": "no-store",
+    });
+  }
+
+  const raw = await upstream.text();
+  if (UTF8.encode(raw).byteLength > MAX_TURN_CREDENTIAL_RESPONSE_BYTES) {
+    return json({ ok: false, error: "TURN credential response is too large." }, 502, {
+      "cache-control": "no-store",
+    });
+  }
+
+  const iceServers = sanitizeIceServers(parseJson(raw));
+  if (!iceServers) {
+    return json({ ok: false, error: "TURN credential response is invalid." }, 502, {
+      "cache-control": "no-store",
+    });
+  }
+
+  return json(iceServers, 200, {
+    "cache-control": "no-store",
+    "x-ice-servers-source": "metered",
+  });
+}
 
 function isWebSocketUpgrade(request) {
   return request.headers.get("upgrade")?.toLowerCase() === "websocket";
@@ -847,6 +918,56 @@ function sanitizeIceCandidate(value) {
   return candidate;
 }
 
+function sanitizeIceServers(value) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const servers = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+
+    const urls = sanitizeIceUrls(entry.urls);
+    if (!urls) {
+      continue;
+    }
+
+    const server = { urls };
+    if (typeof entry.username === "string" && entry.username.length <= MAX_ICE_CREDENTIAL_LENGTH) {
+      server.username = entry.username;
+    }
+    if (typeof entry.credential === "string" && entry.credential.length <= MAX_ICE_CREDENTIAL_LENGTH) {
+      server.credential = entry.credential;
+    }
+
+    servers.push(server);
+    if (servers.length >= MAX_ICE_SERVER_COUNT) {
+      break;
+    }
+  }
+
+  return servers.length > 0 ? servers : null;
+}
+
+function sanitizeIceUrls(value) {
+  if (typeof value === "string") {
+    return isSafeIceUrl(value) ? value : null;
+  }
+
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const urls = value.filter(isSafeIceUrl).slice(0, MAX_ICE_URLS_PER_SERVER);
+  return urls.length > 0 ? urls : null;
+}
+
+function isSafeIceUrl(value) {
+  return typeof value === "string" && value.length <= MAX_ICE_URL_LENGTH && SAFE_ICE_URL.test(value);
+}
+
 function utf8Bytes(value) {
   return UTF8.encode(value).byteLength;
 }
@@ -888,9 +1009,12 @@ function methodNotAllowed(allow) {
   );
 }
 
-function json(body, status = 200) {
+function json(body, status = 200, headers = {}) {
   return Response.json(body, {
     status,
-    headers: corsHeaders,
+    headers: {
+      ...corsHeaders,
+      ...headers,
+    },
   });
 }

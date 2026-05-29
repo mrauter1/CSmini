@@ -67,8 +67,9 @@ Use `Manual Host` and `Manual Join` if the Cloudflare signaling service is unava
 - The host can still cheat because the host owns the canonical state.
 - There are no authenticated accounts or trusted identities yet.
 - Manual offer and answer exchange is still available as a fallback.
-- The current WebRTC transport uses Google STUN servers by default.
-- NAT or firewall combinations can block connection establishment.
+- The WebRTC transport asks the signaling Worker for ICE servers and falls back to Google STUN.
+- TURN relay credentials are required for strict NATs such as some Starlink, cellular, hotel, and corporate networks.
+- NAT or firewall combinations can still block connection establishment if TURN is unavailable.
 - Cloud Rooms support one host plus up to 13 guests; manual signaling remains a one-guest fallback.
 - Host migration is not implemented yet.
 

@@ -165,6 +165,29 @@ async function probeRoutes() {
   };
 }
 
+async function probeTurnCredentials() {
+  const response = await fetch(`${SIGNALING_URL}/turn-credentials`, { cache: "no-store" });
+  assert(response.ok, `TURN credential endpoint failed with HTTP ${response.status}`);
+  assert(response.headers.get("cache-control") === "no-store", "TURN credentials should not be cached.");
+
+  const body = await response.json();
+  assert(Array.isArray(body), "TURN credential endpoint should return an ICE server array.");
+  assert(body.length > 0, "TURN credential endpoint should return at least one ICE server.");
+  assert(
+    body.every((server) => server && (typeof server.urls === "string" || Array.isArray(server.urls))),
+    "Every ICE server must include urls.",
+  );
+
+  const flattenedUrls = body.flatMap((server) => (Array.isArray(server.urls) ? server.urls : [server.urls]));
+  assert(flattenedUrls.every((url) => /^(stun|stuns|turn|turns):/.test(url)), "ICE URLs must use ICE schemes.");
+
+  return {
+    count: body.length,
+    hasTurn: flattenedUrls.some((url) => /^turns?:/.test(url)),
+    source: response.headers.get("x-ice-servers-source") ?? "unknown",
+  };
+}
+
 async function probeCapacityAndRelay() {
   const roomId = createRoomId("capacity");
   const host = openSocket(roomId, "host", "capacity-host", "CapacityHost");
@@ -474,6 +497,7 @@ async function probeIceCandidateBudget() {
 
 async function main() {
   const routes = await probeRoutes();
+  const turnCredentials = await probeTurnCredentials();
   const capacity = await probeCapacityAndRelay();
   const unsupportedMessage = await probeUnsupportedMessage();
   const targetValidation = await probeTargetValidation();
@@ -487,6 +511,7 @@ async function main() {
       {
         signalingUrl: SIGNALING_URL,
         routes,
+        turnCredentials,
         capacity,
         unsupportedMessage,
         targetValidation,

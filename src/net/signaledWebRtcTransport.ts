@@ -19,6 +19,9 @@ import {
 } from "./signalingConfig";
 import {
   DEFAULT_ICE_SERVERS,
+  loadIceServers,
+} from "./iceServers";
+import {
   getRoomDataChannelLane,
   LATEST_STATE_DATA_CHANNEL_LABEL,
   RELIABLE_DATA_CHANNEL_LABEL,
@@ -175,6 +178,8 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   private socket?: WebSocket;
   private status: RoomTransportStatus;
   private events: RoomTransportEvents;
+  private iceServers: RTCIceServer[] = DEFAULT_ICE_SERVERS;
+  private readonly iceServersPromise: Promise<RTCIceServer[]>;
   private closed = false;
   private signalingInvalidMessages = 0;
 
@@ -184,6 +189,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   ) {
     this.events = events;
     this.localPeerId = options.localParticipant.id;
+    this.iceServersPromise = loadIceServers(options.signalingUrl);
     this.status = {
       phase: "signaling",
       detail:
@@ -192,7 +198,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
           : "Joining the Cloudflare signaling room.",
     };
 
-    this.openSocket();
+    void this.initialize();
     this.events.onStatus?.(this.status);
   }
 
@@ -255,6 +261,14 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
 
   debugInjectSignalingMessage(raw: string): void {
     this.handleSocketMessage(new MessageEvent("message", { data: raw }));
+  }
+
+  private async initialize(): Promise<void> {
+    this.setStatus("signaling", "Loading WebRTC relay configuration.");
+    this.iceServers = await this.iceServersPromise;
+    if (!this.closed) {
+      this.openSocket();
+    }
   }
 
   private openSocket(): void {
@@ -339,7 +353,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
       peerId,
       participant,
       connection: new RTCPeerConnection({
-        iceServers: DEFAULT_ICE_SERVERS,
+        iceServers: this.iceServers,
         bundlePolicy: "max-bundle",
       }),
       pendingRemoteCandidates: [],
