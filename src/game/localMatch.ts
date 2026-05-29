@@ -13,6 +13,7 @@ import {
   type RoomHitEvent,
   type RoomIdentity,
   type RoomPresenceSnapshot,
+  type RoomShotEvent,
   SharedRoomSession,
 } from "./multiplayerRoom";
 import {
@@ -132,6 +133,7 @@ const PLAYER_NOISE_INTERVAL = 0.28;
 const PLAYER_NOISE_HEARING_RADIUS = 19;
 const ENEMY_CROUCH_EYE_HEIGHT = 1.08;
 const ENEMY_STANDING_EYE_HEIGHT = 1.45;
+const COMBATANT_AIM_PITCH_LIMIT = Math.PI * 0.34;
 const CAPTURED_KEY_EVENT_OPTIONS = { capture: true };
 
 const ENEMY_NAMES = ["Copper-2", "Vale-3", "Rook-4"];
@@ -257,8 +259,12 @@ interface RemoteActor {
   targetPosition: THREE.Vector3;
   displayPosition: THREE.Vector3;
   forward: THREE.Vector3;
+  lookDirection: THREE.Vector3;
+  aimPitch: number;
+  recoil: number;
   moveBlend: number;
   hitFlashUntil: number;
+  lastShotAt: number;
   lastSeenAt: number;
 }
 
@@ -272,6 +278,13 @@ interface HostageActor {
 interface FeedMessage {
   text: string;
   expiresAt: number;
+}
+
+interface ShotDebugEvent {
+  type: "local" | "shared-sent" | "shared-received" | "enemy";
+  at: number;
+  sourceId: string | null;
+  distance: number | null;
 }
 
 export class LocalMatch {
@@ -296,6 +309,9 @@ export class LocalMatch {
   private readonly tempRight = new THREE.Vector3();
   private readonly tempDelta = new THREE.Vector3();
   private readonly tempLook = new THREE.Vector3();
+  private readonly tempAudioOffset = new THREE.Vector3();
+  private readonly tempWorldForward = new THREE.Vector3();
+  private readonly tempQuaternion = new THREE.Quaternion();
   private readonly tempHitPoint = new THREE.Vector3();
   private readonly tempEnemyMove = new THREE.Vector3();
   private readonly shotRay = new THREE.Ray();
@@ -322,6 +338,11 @@ export class LocalMatch {
   private playerEliminations = 0;
   private playerDeaths = 0;
   private primaryFireHeld = false;
+  private localShotSequence = 0;
+  private lastLocalShotAt = Number.NEGATIVE_INFINITY;
+  private lastSharedShotSentAt = Number.NEGATIVE_INFINITY;
+  private lastRoomShotReceivedAt = Number.NEGATIVE_INFINITY;
+  private readonly shotDebugEvents: ShotDebugEvent[] = [];
   private nextShotAt = 0;
   private reloadEndsAt = 0;
   private playerDead = false;
@@ -499,6 +520,11 @@ export class LocalMatch {
         rendererHeight: this.renderer.domElement.height,
       },
       weaponView: this.weaponViewSnapshot(),
+      audio: this.audio.debugSnapshot(),
+      sharedRoom: {
+        peerCount: this.activeMode === "shared" ? (this.sharedRoom?.peersSnapshot.length ?? 0) : 0,
+      },
+      shots: this.shotDebugSnapshot(),
       localPlayer: {
         id: this.playerIdentity.id,
         name: this.playerIdentity.name,
@@ -633,6 +659,14 @@ export class LocalMatch {
         health: actor.health,
         position: this.toPoint(actor.displayPosition),
         posture: this.combatantPostureSnapshot(actor.avatar.group, actor.status === "alive"),
+        look: this.toPoint(actor.lookDirection),
+        aimPitch: Number(actor.aimPitch.toFixed(4)),
+        recoil: Number(actor.recoil.toFixed(3)),
+        lastShotAgo:
+          actor.lastShotAt > Number.NEGATIVE_INFINITY
+            ? Number((this.gameNow() - actor.lastShotAt).toFixed(2))
+            : null,
+        aim: this.combatantAimSnapshot(actor.avatar, actor.lookDirection),
       })),
     };
   }
@@ -669,7 +703,7 @@ export class LocalMatch {
     this.emitSnapshot();
   }
 
-  debugStageSharedDuel(slot: 0 | 1):
+  debugStageSharedDuel(slot: 0 | 1, aimOffsetY = 0):
     | {
         self: { x: number; y: number; z: number };
         target: { x: number; y: number; z: number };
@@ -683,11 +717,12 @@ export class LocalMatch {
     const self = pair[slot];
     const target = pair[slot === 0 ? 1 : 0];
     const eyeHeight = currentEyeHeight(this.movementState);
-    this.debugSetView(self.x, eyeHeight, self.z, target.x, eyeHeight, target.z);
+    const targetY = eyeHeight + aimOffsetY;
+    this.debugSetView(self.x, eyeHeight, self.z, target.x, targetY, target.z);
 
     return {
       self: this.toPoint(self, eyeHeight),
-      target: this.toPoint(target, eyeHeight),
+      target: this.toPoint(target, targetY),
     };
   }
 
@@ -1079,6 +1114,10 @@ export class LocalMatch {
         this.removeRemoteActor(peerId);
         this.emitSnapshot();
       },
+      onShot: (event) => {
+        this.handleRoomShot(event);
+        this.emitSnapshot();
+      },
       onHit: (event) => {
         this.handleRoomHit(event);
         this.emitSnapshot();
@@ -1402,6 +1441,8 @@ export class LocalMatch {
       actor.avatar.group.position.copy(spawn);
       actor.avatar.group.rotation.set(0, 0, 0);
       actor.hitFlashUntil = 0;
+      actor.recoil = 0;
+      actor.lastShotAt = Number.NEGATIVE_INFINITY;
     }
   }
 
@@ -1497,21 +1538,25 @@ export class LocalMatch {
       existing.deaths = presence.deaths;
       existing.status = presence.status;
       existing.targetPosition.set(presence.position[0], 0, presence.position[2]);
-      this.tempLook.set(presence.look[0], 0, presence.look[2]);
-      if (this.tempLook.lengthSq() > 0.0001) {
-        existing.forward.copy(this.tempLook.normalize());
-      }
+      this.applyRemoteLook(existing, presence.look);
+      this.syncRemoteActorAim(existing, this.gameNow());
       existing.lastSeenAt = presence.updatedAt;
       return;
     }
 
     const avatar = createCombatantAvatar(presence.accentColor);
     const spawnPosition = new THREE.Vector3(presence.position[0], 0, presence.position[2]);
-    const forward = new THREE.Vector3(presence.look[0], 0, presence.look[2]);
+    const lookDirection = new THREE.Vector3(presence.look[0], presence.look[1], presence.look[2]);
+    if (lookDirection.lengthSq() > 0.0001) {
+      lookDirection.normalize();
+    } else {
+      lookDirection.set(0, 0, 1);
+    }
+    const forward = new THREE.Vector3(lookDirection.x, 0, lookDirection.z);
     if (forward.lengthSq() > 0.0001) {
       forward.normalize();
     } else {
-      forward.set(0, 0, -1);
+      forward.set(0, 0, 1);
     }
     avatar.group.position.copy(spawnPosition);
     this.scene.add(avatar.group);
@@ -1521,7 +1566,7 @@ export class LocalMatch {
       this.remoteRaycastMeshes.push(mesh);
     }
 
-    this.remoteActors.set(presence.id, {
+    const actor: RemoteActor = {
       id: presence.id,
       name: presence.name,
       accentColor: presence.accentColor,
@@ -1535,10 +1580,16 @@ export class LocalMatch {
       targetPosition: spawnPosition.clone(),
       displayPosition: spawnPosition.clone(),
       forward,
+      lookDirection,
+      aimPitch: this.aimPitchFromLook(lookDirection),
+      recoil: 0,
       moveBlend: 0,
       hitFlashUntil: 0,
+      lastShotAt: Number.NEGATIVE_INFINITY,
       lastSeenAt: presence.updatedAt,
-    });
+    };
+    this.syncRemoteActorAim(actor, this.gameNow());
+    this.remoteActors.set(presence.id, actor);
   }
 
   private removeRemoteActor(peerId: string): void {
@@ -2615,10 +2666,22 @@ export class LocalMatch {
     this.muzzleFlashUntil = now + MUZZLE_FLASH_DURATION;
     this.audio.fire();
     this.registerPlayerNoise(now);
+    this.localShotSequence += 1;
+    this.lastLocalShotAt = now;
+    this.recordShotDebug("local", now, this.playerIdentity.id);
 
     this.scene.updateMatrixWorld(true);
     this.attackDirection.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
     this.raycaster.set(this.camera.position, this.attackDirection);
+
+    if (this.activeMode === "shared") {
+      this.sharedRoom?.sendShot(
+        [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+        [this.attackDirection.x, this.attackDirection.y, this.attackDirection.z],
+      );
+      this.lastSharedShotSentAt = now;
+      this.recordShotDebug("shared-sent", now, this.playerIdentity.id);
+    }
 
     const combatantMeshes =
       this.activeMode === "shared" ? this.remoteRaycastMeshes : this.enemyRaycastMeshes;
@@ -2736,19 +2799,11 @@ export class LocalMatch {
       actor.displayPosition.lerp(actor.targetPosition, 1 - Math.exp(-REMOTE_LERP_SPEED * delta));
       actor.avatar.group.position.x = actor.displayPosition.x;
       actor.avatar.group.position.z = actor.displayPosition.z;
-
-      const facing = actor.forward.lengthSq() > 0.01 ? actor.forward : this.tempLook.set(0, 0, -1);
-      this.setCombatantYawFromDirection(actor.avatar.group, facing.x, facing.z);
+      actor.recoil = THREE.MathUtils.damp(actor.recoil, 0, 12, delta);
 
       const moving = actor.displayPosition.distanceTo(actor.targetPosition) > 0.06 ? 1 : 0;
       actor.moveBlend = THREE.MathUtils.damp(actor.moveBlend, moving, 9, delta);
-      actor.avatar.update(
-        now,
-        actor.moveBlend,
-        actor.status === "alive",
-        0,
-        actor.hitFlashUntil > now ? 1 : 0,
-      );
+      this.syncRemoteActorAim(actor, now);
     }
   }
 
@@ -2957,7 +3012,9 @@ export class LocalMatch {
       enemy.ai.targetLabel = targetLabel;
       enemy.ai.targetPosition.copy(targetPosition);
 
-      const lookTarget = canSeePlayer ? playerFeet : targetPosition;
+      const currentEnemyEye = this.enemyEyePosition(enemy, stance);
+      const lookTarget = canSeePlayer ? this.camera.position : targetPosition.clone().setY(currentEnemyEye.y);
+      const aimPitch = this.aimPitchBetween(currentEnemyEye, lookTarget);
       this.faceCombatantAt(enemy.avatar.group, enemyPosition, lookTarget);
 
       if (canSeePlayer && shotProfile && !previousVisibility) {
@@ -2974,6 +3031,8 @@ export class LocalMatch {
         enemy.nextFireAt =
           now + ENEMY_FIRE_INTERVAL + shotProfile.missChance * 0.16 + Math.abs(rolled.result.offsetYawDegrees) * 0.01;
         enemy.recoil = 0.8;
+        this.recordShotDebug("enemy", now, enemy.id, currentEnemyEye.distanceTo(this.camera.position));
+        this.playWorldFireAt(currentEnemyEye);
 
         if (rolled.result.hit) {
           enemy.ai.shotHits += 1;
@@ -2990,8 +3049,36 @@ export class LocalMatch {
         true,
         enemy.recoil,
         enemy.hitFlashUntil > now ? 1 : 0,
+        aimPitch,
       );
     }
+  }
+
+  private handleRoomShot(event: RoomShotEvent): void {
+    const now = this.gameNow();
+    const shotPosition = new THREE.Vector3(
+      event.position[0],
+      event.position[1],
+      event.position[2],
+    );
+    this.lastRoomShotReceivedAt = now;
+    this.recordShotDebug(
+      "shared-received",
+      now,
+      event.attackerId,
+      shotPosition.distanceTo(this.camera.position),
+    );
+
+    const attacker = this.remoteActors.get(event.attackerId);
+
+    if (attacker) {
+      this.applyRemoteLook(attacker, event.look);
+      attacker.recoil = 0.85;
+      attacker.lastShotAt = now;
+      this.syncRemoteActorAim(attacker, now);
+    }
+
+    this.playWorldFireAt(shotPosition);
   }
 
   private handleRoomHit(event: RoomHitEvent): void {
@@ -3671,6 +3758,100 @@ export class LocalMatch {
     );
   }
 
+  private shotDebugSnapshot(): Record<string, unknown> {
+    const now = this.gameNow();
+    const ago = (at: number): number | null =>
+      at > Number.NEGATIVE_INFINITY ? Number((now - at).toFixed(2)) : null;
+
+    return {
+      localSequence: this.localShotSequence,
+      lastLocalShotAgo: ago(this.lastLocalShotAt),
+      lastSharedShotSentAgo: ago(this.lastSharedShotSentAt),
+      lastRoomShotReceivedAgo: ago(this.lastRoomShotReceivedAt),
+      events: this.shotDebugEvents.map((event) => ({ ...event })),
+    };
+  }
+
+  private recordShotDebug(
+    type: ShotDebugEvent["type"],
+    at: number,
+    sourceId: string | null,
+    distance: number | null = null,
+  ): void {
+    this.shotDebugEvents.push({
+      type,
+      at: Number(at.toFixed(3)),
+      sourceId,
+      distance: distance === null ? null : Number(distance.toFixed(2)),
+    });
+
+    if (this.shotDebugEvents.length > 32) {
+      this.shotDebugEvents.splice(0, this.shotDebugEvents.length - 32);
+    }
+  }
+
+  private applyRemoteLook(actor: RemoteActor, look: [number, number, number]): void {
+    this.tempLook.set(look[0], look[1], look[2]);
+    if (this.tempLook.lengthSq() <= 0.0001) {
+      return;
+    }
+
+    actor.lookDirection.copy(this.tempLook.normalize());
+    actor.aimPitch = this.aimPitchFromLook(actor.lookDirection);
+
+    this.tempLook.set(actor.lookDirection.x, 0, actor.lookDirection.z);
+    if (this.tempLook.lengthSq() > 0.0001) {
+      actor.forward.copy(this.tempLook.normalize());
+    }
+  }
+
+  private syncRemoteActorAim(actor: RemoteActor, now: number): void {
+    const facing = actor.forward.lengthSq() > 0.01 ? actor.forward : this.tempLook.set(0, 0, 1);
+    this.setCombatantYawFromDirection(actor.avatar.group, facing.x, facing.z);
+    actor.avatar.update(
+      now,
+      actor.moveBlend,
+      actor.status === "alive",
+      actor.recoil,
+      actor.hitFlashUntil > now ? 1 : 0,
+      actor.aimPitch,
+    );
+  }
+
+  private aimPitchFromLook(look: THREE.Vector3): number {
+    return THREE.MathUtils.clamp(
+      Math.asin(THREE.MathUtils.clamp(look.y, -1, 1)),
+      -COMBATANT_AIM_PITCH_LIMIT,
+      COMBATANT_AIM_PITCH_LIMIT,
+    );
+  }
+
+  private aimPitchBetween(origin: THREE.Vector3, target: THREE.Vector3): number {
+    this.tempLook.copy(target).sub(origin);
+    if (this.tempLook.lengthSq() <= 0.0001) {
+      return 0;
+    }
+
+    return this.aimPitchFromLook(this.tempLook.normalize());
+  }
+
+  private playWorldFireAt(position: THREE.Vector3): void {
+    this.tempAudioOffset.copy(position).sub(this.camera.position);
+    const distance = this.tempAudioOffset.length();
+    let pan = 0;
+
+    if (distance > 0.001) {
+      this.tempWorldForward.set(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
+      pan = THREE.MathUtils.clamp(
+        this.tempAudioOffset.normalize().dot(this.tempWorldForward),
+        -0.85,
+        0.85,
+      );
+    }
+
+    this.audio.worldFire(distance, pan);
+  }
+
   private setCombatantYawFromDirection(
     group: THREE.Object3D,
     directionX: number,
@@ -3682,8 +3863,8 @@ export class LocalMatch {
       return;
     }
 
-    // Match Object3D.lookAt's local -Z facing convention without pitching the avatar root.
-    group.rotation.set(0, Math.atan2(-directionX, -directionZ), 0);
+    // Combatant bodies are authored with their readable front and rifle on local +Z.
+    group.rotation.set(0, Math.atan2(directionX, directionZ), 0);
   }
 
   private faceCombatantAt(
@@ -3733,6 +3914,43 @@ export class LocalMatch {
       feetY,
       upright: !alive || (Math.abs(rootPitch) <= 0.01 && Math.abs(rootRoll) <= 0.08),
       aboveGround: !alive || feetY >= -0.01,
+    };
+  }
+
+  private combatantAimSnapshot(
+    avatar: CombatantAvatar,
+    expectedLook: THREE.Vector3,
+  ): Record<string, unknown> {
+    this.scene.updateMatrixWorld(true);
+
+    const expected = expectedLook.clone();
+    if (expected.lengthSq() <= 0.0001) {
+      expected.set(0, 0, 1);
+    } else {
+      expected.normalize();
+    }
+
+    const expectedHorizontal = expected.clone().setY(0);
+    if (expectedHorizontal.lengthSq() <= 0.0001) {
+      expectedHorizontal.set(0, 0, 1);
+    } else {
+      expectedHorizontal.normalize();
+    }
+
+    const bodyForward = new THREE.Vector3(0, 0, 1)
+      .applyQuaternion(avatar.group.getWorldQuaternion(this.tempQuaternion))
+      .normalize();
+    const weaponForward = new THREE.Vector3(0, 0, 1)
+      .applyQuaternion(avatar.weaponAimPivot.getWorldQuaternion(this.tempQuaternion))
+      .normalize();
+
+    return {
+      expectedLook: this.toPoint(expected),
+      bodyForward: this.toPoint(bodyForward),
+      weaponForward: this.toPoint(weaponForward),
+      bodyDot: Number(bodyForward.dot(expectedHorizontal).toFixed(3)),
+      weaponDot: Number(weaponForward.dot(expected).toFixed(3)),
+      weaponTracksPitch: Math.abs(weaponForward.y - expected.y) <= 0.05,
     };
   }
 

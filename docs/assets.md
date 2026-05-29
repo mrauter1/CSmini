@@ -1,6 +1,6 @@
 # Asset And Originality Record
 
-Date reviewed: `2026-05-28`
+Date reviewed: `2026-05-29`
 
 ## Shipped Asset Posture
 
@@ -39,7 +39,7 @@ This pass reviewed the current maps, mission content, HUD labels, geometry, UI t
 
 - The menu, roster, HUD, and prompt treatment are original browser-authored UI surfaces implemented in `src/ui/templates.ts`, `src/ui/app.ts`, and `src/styles.css`.
 - Weapon, character, and environment geometry are built from original primitives in the current Three.js scene blueprints.
-- Audio remains procedural browser synthesis from `src/game/audio.ts`; there are no imported gunshots, voice lines, or commercial sound effects.
+- Audio remains procedural browser synthesis from `src/game/audio.ts`; local fire, remote world-fire, and opponent-fire distance gain use generated oscillator voices with no imported gunshots, voice lines, or commercial sound effects.
 - The current UI and HUD do not copy Counter-Strike branding, logos, fonts, icons, radar art, or panel layouts.
 
 ### Gameplay data and tuning
@@ -100,4 +100,4 @@ No external runtime assets are approved in the shipped build.
 
 | Asset | Source | Author | License | Commercial Use | Derivatives | Redistribution/Embedding | Attribution | Browser Suitability | Style Fit | Decision | Date Checked |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | rejected by default until evaluated | 2026-05-28 |
+| none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | rejected by default until evaluated | 2026-05-29 |

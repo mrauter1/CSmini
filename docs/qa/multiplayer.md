@@ -1,6 +1,6 @@
 # Multiplayer QA
 
-Date: 2026-05-28
+Date: 2026-05-29
 
 ## Scope
 
@@ -9,6 +9,8 @@ Targeted verification for shared-room behavior inside `round-core-and-movement-f
 - same-map roster membership
 - explicit team assignment sync
 - round phase sync
+- third-person remote avatar aim sync with upright body roots
+- remote-player gunfire events and distance-normalized world-fire audio
 - different-map isolation
 - missing `BroadcastChannel` fallback
 - bomb carrier sync, planted-state sync, and defender-side defuse resolution
@@ -41,6 +43,21 @@ Observed results:
 - both pages reported the same round number and round phase
 
 Result: shared-room mode synchronized team assignment, roster membership, and round phase on the same map.
+
+### Remote aim and fire feedback
+
+The same two pages were staged into a direct duel pose with opposite vertical look offsets before objective testing continued.
+
+Observed results:
+
+- both pages kept the remote combatant root upright and above ground
+- remote body yaw tracked the other player horizontally while root pitch stayed near zero
+- the remote weapon aim pivot tracked the full look vector, including vertical pitch, so the gun points where the other player is looking instead of pitching the whole character
+- page 1 fired a live shared-room shot and recorded a `shared-sent` shot event
+- page 2 received the same shot as `shared-received`, marked the remote actor with a recent shot, and logged a `world-fire` audio event
+- the received world-fire event carried distance and normalized gain bounded inside the accepted `0.08..0.92` range
+
+Result: shared-room combat now distinguishes body yaw from weapon pitch and gives observers audible opponent gunfire feedback for remote shots, including misses.
 
 ### Shared bomb round
 

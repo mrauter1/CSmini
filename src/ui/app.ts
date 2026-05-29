@@ -465,13 +465,13 @@ export class TacticalShellApp {
     this.match?.debugSetView(x, y, z, targetX, targetY, targetZ);
   }
 
-  debugStageSharedDuel(slot: 0 | 1):
+  debugStageSharedDuel(slot: 0 | 1, aimOffsetY = 0):
     | {
         self: { x: number; y: number; z: number };
         target: { x: number; y: number; z: number };
       }
     | null {
-    return this.match?.debugStageSharedDuel(slot) ?? null;
+    return this.match?.debugStageSharedDuel(slot, aimOffsetY) ?? null;
   }
 
   debugFire(): void {

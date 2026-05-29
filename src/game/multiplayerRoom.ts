@@ -58,6 +58,14 @@ export interface RoomHitEvent {
   sentAt: number;
 }
 
+export interface RoomShotEvent {
+  attackerId: string;
+  attackerName: string;
+  position: [number, number, number];
+  look: [number, number, number];
+  sentAt: number;
+}
+
 export interface RoomEliminationEvent {
   attackerId: string;
   attackerName: string;
@@ -77,6 +85,11 @@ type BroadcastEnvelope =
       payload: RoomPresenceSnapshot;
     }
   | {
+      kind: "shot";
+      senderId: string;
+      payload: RoomShotEvent;
+    }
+  | {
       kind: "hit";
       senderId: string;
       payload: RoomHitEvent;
@@ -94,6 +107,7 @@ type BroadcastEnvelope =
 export interface SharedRoomHandlers {
   onPresence: (presence: RoomPresenceSnapshot, event: "joined" | "updated") => void;
   onLeave: (peerId: string, reason: "leave" | "stale") => void;
+  onShot: (event: RoomShotEvent) => void;
   onHit: (event: RoomHitEvent) => void;
   onElimination: (event: RoomEliminationEvent) => void;
 }
@@ -187,6 +201,20 @@ export class SharedRoomSession {
     return true;
   }
 
+  sendShot(position: [number, number, number], look: [number, number, number]): void {
+    this.send({
+      kind: "shot",
+      senderId: this.identity.id,
+      payload: {
+        attackerId: this.identity.id,
+        attackerName: this.identity.name,
+        position,
+        look,
+        sentAt: Date.now(),
+      },
+    });
+  }
+
   sendElimination(
     attackerId: string,
     attackerName: string,
@@ -257,6 +285,9 @@ export class SharedRoomSession {
         this.handlers.onPresence(data.payload, existing ? "updated" : "joined");
         return;
       }
+      case "shot":
+        this.handlers.onShot(data.payload);
+        return;
       case "hit":
         if (data.payload.targetId === this.identity.id) {
           this.handlers.onHit(data.payload);

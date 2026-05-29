@@ -29,6 +29,7 @@ declare global {
       ) => void;
       stageSharedDuel: (
         slot: 0 | 1,
+        aimOffsetY?: number,
       ) =>
         | {
             self: { x: number; y: number; z: number };
@@ -117,7 +118,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     setCameraPose: (x, y, z, yaw, pitch) => app.debugSetCameraPose(x, y, z, yaw, pitch),
     setView: (x, y, z, targetX, targetY, targetZ) =>
       app.debugSetView(x, y, z, targetX, targetY, targetZ),
-    stageSharedDuel: (slot) => app.debugStageSharedDuel(slot),
+    stageSharedDuel: (slot, aimOffsetY) => app.debugStageSharedDuel(slot, aimOffsetY),
     aimAt: (combatantId) => app.debugAimAt(combatantId),
     probeShot: () => app.debugProbeShot(),
     sharedTarget: () => app.debugSharedTarget(),

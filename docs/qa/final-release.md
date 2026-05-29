@@ -1,6 +1,6 @@
 # Final Release QA
 
-Date: `2026-05-28`
+Date: `2026-05-29`
 
 ## Scope
 
@@ -9,13 +9,14 @@ Final verification for the current presentation and release guardrail pass cover
 - browser-only architecture and dependency guardrails
 - static `dist/` build output
 - compact in-match HUD behavior, hold-Tab operations board, and viewport fullscreen control
-- first-person weapon alignment and upright above-ground combatant posture
+- first-person weapon alignment, upright combatant posture, and third-person weapon pitch
+- procedural opponent gunfire audio with distance-normalized world-fire gain
 - final browser QA coverage for movement, rounds, missions, AI, and shared-room sync
 - originality and asset-policy confirmation
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh current-tree verifier reruns were completed on `2026-05-28T23:24:13-03:00`.
+Fresh current-tree verifier reruns were completed on `2026-05-29T10:08-03:00`.
 
 ## Commands Run
 
@@ -23,7 +24,6 @@ Fresh current-tree verifier reruns were completed on `2026-05-28T23:24:13-03:00`
 npm run typecheck
 npm run build
 npm test
-npm run qa:final
 ```
 
 Results on the current tree:
@@ -31,11 +31,10 @@ Results on the current tree:
 - `npm run typecheck`: passed
 - `npm run build`: passed and produced static `dist/` output
 - `npm test`: passed and returned successfully after rebuilding the app and running the full browser QA harness
-- `npm run qa:final`: passed and returned successfully while refreshing `assets/screenshots/`
 
 Non-blocking note:
 
-- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for `dist/assets/localMatch-C9OukZRX.js` at `570.84 kB` after minification. This did not block verification.
+- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for `dist/assets/localMatch-BG0I1IuZ.js` at `576.86 kB` after minification. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -52,7 +51,7 @@ Non-blocking note:
 
 ## QA Coverage Summary
 
-The passing browser summaries from the fresh `npm test` and `npm run qa:final` reruns explicitly covered the required gameplay contract:
+The passing browser summary from the fresh `npm test` rerun explicitly covered the required gameplay contract:
 
 - HUD and fullscreen:
   - old `.hud-card` / `.hud-overlay` gameplay surfaces were absent from live play
@@ -68,9 +67,10 @@ The passing browser summaries from the fresh `npm test` and `npm run qa:final` r
   - firing reported `muzzleFlashRecent: true` and `flashVisible: true`
   - live solo enemies across objective, patrol, blocked, investigate, engage, reposition, and pursue states stayed upright and above ground
   - shared-room remote actors on both pages stayed upright and above ground
+  - shared-room remote body yaw tracked horizontal look while weapon aim tracked the full vertical look vector
 - Movement:
   - crouch lowered the camera from `1.62` to `1.18`
-  - crouch reduced same-window travel from `2.4` to `1.18`
+  - crouch reduced same-window travel from `1.72` to `0.79`
   - jump peaked at `2.59`, landed at `1.62`, and stayed airborne for `0.767s`
 - Teams and spawns:
   - all five shipped maps loaded round-one bomb metadata live
@@ -81,6 +81,8 @@ The passing browser summaries from the fresh `npm test` and `npm run qa:final` r
 - Bomb mode:
   - local play proved carrier ownership, valid-site arming, planted countdown, and explosion resolution
   - shared-room play proved carrier sync, planted-state sync, defender defuse, and matching resolution text on both pages
+- Shared combat:
+  - page 1 firing in shared mode recorded a sent shot event, page 2 received it, and page 2 logged distance-normalized world-fire audio while marking the remote actor's recent shot state
 - Hostage mode:
   - local play proved secure, escort, route traversal, extraction, and automatic reset into round `3`
   - shared-room play proved rescuer sync, route progress sync, extraction progress, and matching rescue resolution on both pages
@@ -88,13 +90,14 @@ The passing browser summaries from the fresh `npm test` and `npm run qa:final` r
   - observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors
   - blocker `Crate stack west` prevented through-wall fire at `visibility: 0`
   - shot model produced both hits and misses, with hit-chance dropping from `0.722` close-standing to `0.262` far-moving and `0.449` crouched-partial
+  - enemy live fire emitted a distance-normalized world-fire audio event
 - Shared-room fallback:
   - removing `BroadcastChannel` kept the app playable in local mode with a clear fallback notice instead of a crash
 
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-28`, with the latest current-tree timestamps between `23:21` and `23:23 -03:00`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-29`, with the latest current-tree timestamps between `10:06` and `10:08 -03:00`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`

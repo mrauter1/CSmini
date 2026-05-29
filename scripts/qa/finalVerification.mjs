@@ -617,8 +617,8 @@ async function setView(page, from, to) {
   await delay(140);
 }
 
-async function stageSharedDuel(page, slot) {
-  const pose = await page.evaluate(`window.__dustlineQa__.stageSharedDuel(${slot})`);
+async function stageSharedDuel(page, slot, aimOffsetY = 0) {
+  const pose = await page.evaluate(`window.__dustlineQa__.stageSharedDuel(${slot}, ${aimOffsetY})`);
   assert(pose, `Could not stage shared duel pose for slot ${slot}`);
   await delay(180);
   return pose;
@@ -708,6 +708,41 @@ function assertAlivePosture(entries, label) {
       `Expected ${label} ${actorLabel} feet above ground, saw ${posture.feetY}`,
     );
   }
+}
+
+function assertRemoteAim(entries, label) {
+  const aliveEntries = (entries ?? []).filter(
+    (entry) => entry && entry.status !== "down" && entry.aim,
+  );
+  assert(aliveEntries.length > 0, `Expected at least one live ${label} aim sample`);
+
+  for (const entry of aliveEntries) {
+    const actorLabel = entry.id ?? entry.name ?? "actor";
+    assert(
+      Math.abs(entry.posture?.rotation?.x ?? 999) <= 0.01,
+      `Expected ${label} ${actorLabel} root to stay unpitched while aiming`,
+    );
+    assert(
+      entry.aim.bodyDot > 0.94,
+      `Expected ${label} ${actorLabel} body forward to track horizontal look, saw ${entry.aim.bodyDot}`,
+    );
+    assert(
+      entry.aim.weaponDot > 0.94,
+      `Expected ${label} ${actorLabel} weapon to track full look vector, saw ${entry.aim.weaponDot}`,
+    );
+    assert(
+      entry.aim.weaponTracksPitch === true,
+      `Expected ${label} ${actorLabel} weapon pitch to track look pitch`,
+    );
+  }
+}
+
+function worldFireEvents(state) {
+  return (state?.audio ?? []).filter((event) => event.type === "world-fire");
+}
+
+function shotEvents(state, type) {
+  return (state?.shots?.events ?? []).filter((event) => event.type === type);
 }
 
 async function startPreview() {
@@ -1408,6 +1443,12 @@ async function main() {
     const engageEnemy = engageState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
     assert(engageEnemy?.ai?.behavior === "engage", "Expected the staged AI to enter engage behavior");
     assertAlivePosture([engageEnemy], "engage solo enemy");
+    const aiWorldFire = worldFireEvents(engageState).at(-1);
+    assert(aiWorldFire, "Expected solo enemy fire to create a world-fire audio event");
+    assert(
+      aiWorldFire.distance > 1 && aiWorldFire.gain > 0.08 && aiWorldFire.gain <= 0.92,
+      `Expected AI shot audio to carry distance-normalized gain, saw ${JSON.stringify(aiWorldFire)}`,
+    );
 
     await aimAt(localPage, sightlineCase.enemyId);
     await fire(localPage);
@@ -1619,13 +1660,15 @@ async function main() {
       "Expected a different map to remain isolated from the shared room",
     );
 
-    await stageSharedDuel(sharedPageOne, 0);
-    await stageSharedDuel(sharedPageTwo, 1);
+    await stageSharedDuel(sharedPageOne, 0, 0.75);
+    await stageSharedDuel(sharedPageTwo, 1, -0.45);
     await delay(500);
     const sharedDuelStateOne = await getState(sharedPageOne);
     const sharedDuelStateTwo = await getState(sharedPageTwo);
     assertAlivePosture(sharedDuelStateOne.remotePlayers, "shared remote actor page one");
     assertAlivePosture(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
+    assertRemoteAim(sharedDuelStateOne.remotePlayers, "shared remote actor page one");
+    assertRemoteAim(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
     await captureScreenshot(sharedPageTwo, "12-two-player-multiplayer.png", capturedScreenshots);
 
     await engageControls(sharedPageOne);
@@ -1634,6 +1677,40 @@ async function main() {
     await sharedPageTwo.waitForExpression(
       "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
       5_000,
+    );
+
+    const sharedSentBefore = shotEvents(await getState(sharedPageOne), "shared-sent").length;
+    const sharedReceivedBefore = shotEvents(await getState(sharedPageTwo), "shared-received").length;
+    const worldFireBefore = worldFireEvents(await getState(sharedPageTwo)).length;
+    await fire(sharedPageOne);
+    await sharedPageOne.waitForExpression(
+      `((window.__dustlineQa__?.getState()?.shots?.events ?? []).filter((event) => event.type === 'shared-sent').length) > ${sharedSentBefore}`,
+      5_000,
+    );
+    await sharedPageTwo.waitForExpression(
+      `((window.__dustlineQa__?.getState()?.shots?.events ?? []).filter((event) => event.type === 'shared-received').length) > ${sharedReceivedBefore}`,
+      5_000,
+    );
+    await sharedPageTwo.waitForExpression(
+      `((window.__dustlineQa__?.getState()?.audio ?? []).filter((event) => event.type === 'world-fire').length) > ${worldFireBefore}`,
+      5_000,
+    );
+    const sharedShotAudioState = await getState(sharedPageTwo);
+    const sharedShotEvent = shotEvents(sharedShotAudioState, "shared-received").at(-1);
+    assert(sharedShotEvent, "Expected shared remote shot event to be received");
+    assert(
+      sharedShotEvent.distance > 1,
+      `Expected shared remote shot event to carry distance, saw ${JSON.stringify(sharedShotEvent)}`,
+    );
+    const sharedWorldFire = worldFireEvents(sharedShotAudioState).at(-1);
+    assert(sharedWorldFire, "Expected shared remote shot to create a world-fire audio event");
+    assert(
+      sharedWorldFire.distance > 1 && sharedWorldFire.gain > 0.08 && sharedWorldFire.gain <= 0.92,
+      `Expected shared shot audio to carry distance-normalized gain, saw ${JSON.stringify(sharedWorldFire)}`,
+    );
+    assert(
+      sharedShotAudioState.remotePlayers?.[0]?.lastShotAgo !== null,
+      "Expected shared remote actor to record a recent remote shot",
     );
 
     const sharedBombStartOne = await getState(sharedPageOne);

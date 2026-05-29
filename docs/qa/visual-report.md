@@ -1,6 +1,6 @@
 # Visual QA Report
 
-Date: 2026-05-28
+Date: 2026-05-29
 
 ## Scope
 
@@ -10,9 +10,9 @@ Final verification for the presentation and release guardrail pass covered:
 - main-map visual match against the generated reference set
 - compact match HUD, hold-Tab information panel behavior, and viewport fullscreen control
 - first-person weapon and HUD presentation
-- upright opposing-player and shared-room avatar posture
-- death and respawn feedback
-- same-map two-tab multiplayer presence, damage, death, respawn, and fallback behavior
+- upright opposing-player and shared-room avatar posture with remote weapon pitch
+- death, respawn, and procedural opponent-fire audio feedback
+- same-map two-tab multiplayer presence, damage, death, respawn, remote fire audio, and fallback behavior
 - asset-license posture and documentation completeness
 
 ## Reference Inputs
@@ -59,7 +59,6 @@ Captured from the current browser build in `assets/screenshots/`:
 npm run typecheck
 npm run build
 npm test
-npm run qa:final
 ```
 
 Results:
@@ -67,11 +66,10 @@ Results:
 - `npm run typecheck`: passed
 - `npm run build`: passed
 - `npm test`: passed; rebuilt the app and completed the final browser QA harness
-- `npm run qa:final`: passed again after the final screenshot framing adjustments
 
 Non-blocking note:
 
-- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `570.84 kB` minified. This did not block runtime verification.
+- `vite build` emitted a chunk-size warning for the `localMatch` bundle at `576.86 kB` minified. This did not block runtime verification.
 
 ## Visual Target Summary
 

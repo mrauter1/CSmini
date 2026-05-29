@@ -2,6 +2,7 @@ import * as THREE from "three";
 
 export interface CombatantAvatar {
   group: THREE.Group;
+  weaponAimPivot: THREE.Object3D;
   hitMeshes: THREE.Mesh[];
   update(
     elapsed: number,
@@ -9,6 +10,7 @@ export interface CombatantAvatar {
     alive: boolean,
     recoil: number,
     hitFlash: number,
+    aimPitch?: number,
   ): void;
 }
 
@@ -108,10 +110,13 @@ export function createCombatantAvatar(accentColor: string): CombatantAvatar {
   rightLeg.castShadow = true;
   rightLegPivot.add(rightLeg);
 
+  const weaponAimPivot = new THREE.Group();
+  weaponAimPivot.position.set(0.18, 1.36, 0.34);
+  group.add(weaponAimPivot);
+
   const rifle = new THREE.Group();
-  rifle.position.set(0.18, 1.36, 0.34);
-  rifle.rotation.set(-0.08, Math.PI / 2, -0.12);
-  group.add(rifle);
+  rifle.rotation.set(0, -Math.PI / 2, -0.12);
+  weaponAimPivot.add(rifle);
 
   const rifleBody = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.18, 0.18), detailMaterial);
   rifleBody.castShadow = true;
@@ -129,14 +134,26 @@ export function createCombatantAvatar(accentColor: string): CombatantAvatar {
   rifleGrip.position.set(-0.02, -0.2, 0);
   rifle.add(rifleGrip);
 
+  const muzzleFlashMaterial = new THREE.MeshBasicMaterial({
+    color: "#FFD18A",
+    transparent: true,
+    opacity: 0,
+  });
+  const muzzleFlash = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.18), muzzleFlashMaterial);
+  muzzleFlash.position.x = 0.7;
+  muzzleFlash.visible = false;
+  rifle.add(muzzleFlash);
+
   const hitMeshes = [torso, chestRig, head, visor, leftArm, rightArm, leftLeg, rightLeg];
 
   return {
     group,
+    weaponAimPivot,
     hitMeshes,
-    update(elapsed, moveBlend, alive, recoil, hitFlash) {
+    update(elapsed, moveBlend, alive, recoil, hitFlash, aimPitch = 0) {
       const swing = Math.sin(elapsed * 7.6) * 0.75 * moveBlend;
       const pulse = Math.max(0, hitFlash);
+      const clampedAimPitch = THREE.MathUtils.clamp(aimPitch, -1.05, 1.05);
 
       leftArmPivot.rotation.x = alive ? swing : -0.9;
       rightArmPivot.rotation.x = alive ? -swing - recoil * 0.7 : 0.28;
@@ -144,11 +161,15 @@ export function createCombatantAvatar(accentColor: string): CombatantAvatar {
       rightLegPivot.rotation.x = alive ? swing : 0;
 
       torso.rotation.z = alive ? Math.sin(elapsed * 3.2) * 0.035 * moveBlend : -0.18;
+      weaponAimPivot.rotation.set(alive ? -clampedAimPitch : 0, 0, 0);
       rifle.rotation.z = alive ? -0.12 - recoil * 0.18 : -0.48;
-      rifle.rotation.x = alive ? -0.08 : 0.22;
+      rifle.rotation.x = alive ? 0 : 0.22;
       group.rotation.x = 0;
       group.rotation.z = alive ? 0 : 1.34;
       group.position.y = alive ? 0 : 0.08;
+
+      muzzleFlash.visible = alive && recoil > 0.34;
+      muzzleFlashMaterial.opacity = muzzleFlash.visible ? Math.min(0.88, recoil) : 0;
 
       for (const material of hitMaterials) {
         material.emissive.setRGB(0.34 * pulse, 0.08 * pulse, 0.02 * pulse);
