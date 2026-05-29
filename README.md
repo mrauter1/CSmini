@@ -23,6 +23,8 @@ Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The cu
   - reposition
   - pursue
 
+Solo bots use the same walk, crouch, jump, gravity, and collision contract as the player. `easy`, `medium`, and `hard` change tactical quality instead: reaction time, communication delay, memory, burst discipline, cover choice, and shot spread. `medium` remains the default.
+
 ## Controls
 
 - `WASD`: move

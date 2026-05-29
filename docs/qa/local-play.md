@@ -25,9 +25,13 @@ Targeted verification for `round-core-and-movement-foundation`, `bomb-mission-mo
 - hostage extraction resolution and automatic next-round reset in solo-local play
 - tactical AI opening behavior split between objective hold and route patrol
 - blocked line-of-sight investigation without through-wall fire
+- delayed squad contact sharing instead of instant omniscience
+- bounded last-known pursuit memory and stuck-route recovery
+- ordered `easy` / `medium` / `hard` shot-danger differences without movement-speed changes
+- enemy-side bomb pressure through the same solo-local objective state
 - live hit and miss behavior with spread and miss chance influenced by distance, movement, crouch, and visibility
 - playable opponent gunfire world-audio events with distance-normalized gain
-- bounded solo-round elimination after the AI overhaul
+- bounded solo-round resolution after the AI overhaul
 - compact in-match HUD, hold-Tab operations board, and viewport-shell fullscreen control behavior
 - team-specific opponent avatar uniforms
 
@@ -140,6 +144,14 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility after the user-gesture unlock pulse armed the audio context.
 - Stale opponent-fire audio is not replayed after a late browser audio unlock; blocked shots are dropped rather than played out of time.
 - After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then dropped into `pursue` after the player ducked back behind cover.
+- A staged observer/receiver pair proved squad contact stayed delayed: the receiver held `patrol` before delivery, then entered `pursue` only after the shared-contact lag elapsed.
+- A bounded-memory follow-up proved the same last-known pursuit expired back out of `pursue` instead of lasting indefinitely.
+- A staged blocked-traversal case forced the same enemy to recover through `repath` rather than teleporting, and the debug state recorded `recoveryCount: 1` with a held fallback target.
+- A deterministic difficulty sample on the same geometry produced ordered danger without changing locomotion:
+  - `easy`: `reaction 0.487s`, `spread 7.124`, `hitChance 0.407`
+  - `medium`: `reaction 0.377s`, `spread 6.037`, `hitChance 0.537`
+  - `hard`: `reaction 0.317s`, `spread 5.434`, `hitChance 0.617`
+- An enemy-side bomb-pressure case staged the attacking carrier onto `Kiln Yard`; the same live solo round moved through `planting` into `planted`, then resolved by breach as `Copper-2 breached Kiln Yard.`
 - The shared shot model was sampled through the QA hook with three profiles:
   - close standing target: `hitChance 0.722`, `missChance 0.278`, `spread 3.479`
   - far moving target: `hitChance 0.262`, `missChance 0.738`, `spread 9.956`
@@ -147,14 +159,13 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 
 Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; moves, crouches, jumps, and lands through the same locomotion contract as the player; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
 
-### Bounded solo elimination round
+### Bounded solo resolution round
 
-- `Sandline Foundry` was reopened again in local mode with QA invulnerability disabled.
-- The same `Crate stack west` sightline case staged the player onto the clear `Water Tower Court` angle and let the live round continue without forcing eliminations.
-- The round resolved naturally with `Cobalt Reach cleared the roster.`
-- At resolution, the player was dead, the staged enemy was still in `engage`, and that enemy alone had fired `13` live shots.
+- The same staged enemy-side `Kiln Yard` plant case was allowed to continue into its natural solo-local round resolution.
+- The round resolved without a forced advance as `Copper-2 breached Kiln Yard.`
+- The carrier stayed on the live solo AI roster, and the round shell advanced to `resolution` without hanging.
 
-Result: at least one upgraded solo round now progresses from start to elimination without AI deadlock, stuck pathing, or wall-vision regressions.
+Result: at least one upgraded solo round now progresses from live objective pressure to natural round resolution without AI deadlock, stuck pathing, or wall-vision regressions.
 
 ## Notes
 
@@ -164,3 +175,7 @@ Result: at least one upgraded solo round now progresses from start to eliminatio
 - The bomb proof uses QA-only hooks for `forceRoundActive`, `setInvulnerable`, and `startObjectiveAction` so the test can isolate the mission flow from headless timing while still exercising the shipped plant, fuse, and round-resolution code paths.
 - The hostage proof also uses `forceNextRound`, `forceRoundActive`, `setInvulnerable`, `setCameraPose`, and `startObjectiveAction` so the harness can deterministically enter the round-2 evac mission, stage the escort path, and verify the real rescue timers and round-reset behavior without relying on manual headless navigation.
 - The AI proof uses QA-only hooks for `stageAiSightlineCase()` and `evaluateEnemyShot()` so the harness can reproduce the same blocked-cover case and shot-profile comparisons on every run without weakening the live line-of-sight or combat code.
+- The smarter-bot pass adds three more QA-only staging hooks:
+  - `stageAiCommunicationCase()` for delayed squad-contact proof
+  - `stageAiRecoveryCase()` for blocked-route recovery proof
+  - `stageEnemyBombPlantCase()` for deterministic enemy-side objective pressure and bounded solo-round resolution

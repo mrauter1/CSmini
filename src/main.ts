@@ -56,6 +56,33 @@ declare global {
             clearPlayerLabel: string;
           }
         | null;
+      stageAiCommunicationCase: () =>
+        | {
+            observerEnemyId: string;
+            receiverEnemyId: string;
+            playerPosition: { x: number; y: number; z: number };
+            observerPosition: { x: number; y: number; z: number };
+            receiverPosition: { x: number; y: number; z: number };
+            blockerName: string;
+          }
+        | null;
+      stageAiRecoveryCase: () =>
+        | {
+            enemyId: string;
+            enemyLabel: string;
+            blockerName: string;
+            targetLabel: string;
+            enemyPosition: { x: number; y: number; z: number };
+            blockedTargetPosition: { x: number; y: number; z: number };
+          }
+        | null;
+      stageEnemyBombPlantCase: () =>
+        | {
+            carrierEnemyId: string;
+            siteLabel: string;
+            sitePosition: { x: number; y: number; z: number };
+          }
+        | null;
       evaluateEnemyShot: (
         combatantId: string,
         overrides?: Partial<{
@@ -152,6 +179,9 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     probeShot: () => app.debugProbeShot(),
     sharedTarget: () => app.debugSharedTarget(),
     stageAiSightlineCase: () => app.debugStageAiSightlineCase(),
+    stageAiCommunicationCase: () => app.debugStageAiCommunicationCase(),
+    stageAiRecoveryCase: () => app.debugStageAiRecoveryCase(),
+    stageEnemyBombPlantCase: () => app.debugStageEnemyBombPlantCase(),
     evaluateEnemyShot: (combatantId, overrides) => app.debugEvaluateEnemyShot(combatantId, overrides),
     fire: () => app.debugFire(),
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),

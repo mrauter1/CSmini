@@ -53,9 +53,28 @@ export interface EnemyShotRoll {
   offsetPitchDegrees: number;
 }
 
+export interface EnemyShotTuning {
+  reactionBiasSeconds?: number;
+  hitChanceBias?: number;
+  spreadMultiplier?: number;
+}
+
 export interface RepositionChoice {
   anchor: TacticalAnchor;
   reason: "cover" | "angle";
+  visibility: number;
+}
+
+export interface RepositionTuning {
+  coverWeight?: number;
+  angleWeight?: number;
+  pressureWeight?: number;
+  travelPenaltyWeight?: number;
+  minimumScore?: number;
+}
+
+export interface RecoveryChoice {
+  anchor: TacticalAnchor;
   visibility: number;
 }
 
@@ -132,7 +151,7 @@ export function evaluateEnemyShotProfile(input: {
   targetSpeed: number;
   targetCrouching: boolean;
   shooterCrouching: boolean;
-}): EnemyShotProfile {
+}, tuning: EnemyShotTuning = {}): EnemyShotProfile {
   const distanceFactor = clamp01(input.distance / 22);
   const shooterMoveFactor = clamp01(input.shooterSpeed / 2.8);
   const targetMoveFactor = clamp01(input.targetSpeed / 4.6);
@@ -145,20 +164,29 @@ export function evaluateEnemyShotProfile(input: {
       targetMoveFactor * 0.16 -
       partialVisibility * 0.22 -
       (input.targetCrouching ? 0.08 : 0) +
-      (input.shooterCrouching ? 0.05 : 0),
+      (input.shooterCrouching ? 0.05 : 0) +
+      (tuning.hitChanceBias ?? 0),
     0.14,
-    0.9,
+    0.88,
   );
   const missChance = clamp01(1 - hitChance);
   const spreadDegrees = THREE.MathUtils.clamp(
-    2.1 +
+    (2.1 +
       distanceFactor * 4.8 +
       shooterMoveFactor * 2.4 +
       targetMoveFactor * 1.6 +
       partialVisibility * 2.8 -
-      (input.shooterCrouching ? 0.6 : 0),
+      (input.shooterCrouching ? 0.6 : 0)) * (tuning.spreadMultiplier ?? 1),
     1.7,
     12.5,
+  );
+  const reactionSeconds = THREE.MathUtils.clamp(
+    0.22 +
+      distanceFactor * 0.18 +
+      partialVisibility * 0.25 +
+      (tuning.reactionBiasSeconds ?? 0),
+    0.14,
+    0.9,
   );
 
   return {
@@ -168,10 +196,7 @@ export function evaluateEnemyShotProfile(input: {
     targetSpeed: Number(input.targetSpeed.toFixed(2)),
     targetCrouching: input.targetCrouching,
     shooterCrouching: input.shooterCrouching,
-    reactionSeconds: Number(
-      THREE.MathUtils.clamp(0.22 + distanceFactor * 0.18 + partialVisibility * 0.25, 0.18, 0.74)
-        .toFixed(3),
-    ),
+    reactionSeconds: Number(reactionSeconds.toFixed(3)),
     spreadDegrees: Number(spreadDegrees.toFixed(3)),
     hitChance: Number(hitChance.toFixed(3)),
     missChance: Number(missChance.toFixed(3)),
@@ -302,9 +327,14 @@ export function chooseRepositionAnchor(input: {
   playerPosition: THREE.Vector3;
   playerVisibilityPoints: THREE.Vector3[];
   objectiveAnchor: TacticalAnchor;
+  tuning?: RepositionTuning;
 }): RepositionChoice | null {
   let bestChoice: RepositionChoice | null = null;
   let bestScore = -Infinity;
+  const coverWeight = input.tuning?.coverWeight ?? 1;
+  const angleWeight = input.tuning?.angleWeight ?? 1;
+  const pressureWeight = input.tuning?.pressureWeight ?? 1;
+  const travelPenaltyWeight = input.tuning?.travelPenaltyWeight ?? 1;
 
   for (const anchor of input.profile.anchors) {
     const travelDistance = anchor.position.distanceTo(input.enemyPosition);
@@ -323,10 +353,11 @@ export function chooseRepositionAnchor(input: {
       .clone()
       .sub(input.playerPosition)
       .normalize();
-    const angleBonus = (1 - candidateDirection.dot(objectiveDirection)) * 0.8;
-    const coverBonus = breaksSight ? 2.8 : Math.max(0, 0.9 - visibility) * 1.6;
-    const pressureBonus = Math.max(0, 8 - objectiveDistance) / 8;
-    const travelPenalty = travelDistance / 12;
+    const angleBonus = (1 - candidateDirection.dot(objectiveDirection)) * 0.8 * angleWeight;
+    const coverBonus =
+      (breaksSight ? 2.8 : Math.max(0, 0.9 - visibility) * 1.6) * coverWeight;
+    const pressureBonus = (Math.max(0, 8 - objectiveDistance) / 8) * pressureWeight;
+    const travelPenalty = (travelDistance / 12) * travelPenaltyWeight;
     const score = coverBonus + angleBonus + pressureBonus - travelPenalty;
 
     if (score <= bestScore) {
@@ -341,7 +372,55 @@ export function chooseRepositionAnchor(input: {
     };
   }
 
-  return bestChoice && bestScore > 0.35 ? bestChoice : null;
+  return bestChoice && bestScore > (input.tuning?.minimumScore ?? 0.35) ? bestChoice : null;
+}
+
+export function chooseRecoveryAnchor(input: {
+  profile: TacticalProfile;
+  world: CollisionWorld;
+  enemyPosition: THREE.Vector3;
+  enemyEyeHeight: number;
+  blockedTargetPosition: THREE.Vector3;
+  blockedTargetVisibilityPoints: THREE.Vector3[];
+  objectiveAnchor: TacticalAnchor;
+  excludeAnchorIds?: string[];
+}): RecoveryChoice | null {
+  let bestChoice: RecoveryChoice | null = null;
+  let bestScore = -Infinity;
+  const excluded = new Set(input.excludeAnchorIds ?? []);
+
+  for (const anchor of input.profile.anchors) {
+    if (excluded.has(anchor.id)) {
+      continue;
+    }
+
+    const travelDistance = anchor.position.distanceTo(input.enemyPosition);
+    const targetDistance = anchor.position.distanceTo(input.blockedTargetPosition);
+    if (travelDistance < 1.6 || travelDistance > 18 || targetDistance > 16) {
+      continue;
+    }
+
+    const eye = anchor.position.clone().setY(input.enemyEyeHeight);
+    const visibility = evaluateVisibility(input.world, eye, input.blockedTargetVisibilityPoints);
+    const objectiveDistance = anchor.position.distanceTo(input.objectiveAnchor.position);
+    const score =
+      visibility * 2.6 +
+      Math.max(0, 10 - targetDistance) / 10 +
+      Math.max(0, 8 - objectiveDistance) / 16 -
+      travelDistance / 14;
+
+    if (score <= bestScore) {
+      continue;
+    }
+
+    bestScore = score;
+    bestChoice = {
+      anchor,
+      visibility: Number(visibility.toFixed(3)),
+    };
+  }
+
+  return bestChoice && bestScore > 0.4 ? bestChoice : null;
 }
 
 export function buildTacticalProfile(

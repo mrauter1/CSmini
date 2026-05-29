@@ -759,6 +759,27 @@ async function stageAiSightlineCase(page) {
   return sightlineCase;
 }
 
+async function stageAiCommunicationCase(page) {
+  const communicationCase = await page.evaluate("window.__dustlineQa__.stageAiCommunicationCase()");
+  assert(communicationCase, "Expected a deterministic AI communication case");
+  await delay(180);
+  return communicationCase;
+}
+
+async function stageAiRecoveryCase(page) {
+  const recoveryCase = await page.evaluate("window.__dustlineQa__.stageAiRecoveryCase()");
+  assert(recoveryCase, "Expected a deterministic AI recovery case");
+  await delay(180);
+  return recoveryCase;
+}
+
+async function stageEnemyBombPlantCase(page) {
+  const plantCase = await page.evaluate("window.__dustlineQa__.stageEnemyBombPlantCase()");
+  assert(plantCase, "Expected a deterministic enemy bomb-plant case");
+  await delay(180);
+  return plantCase;
+}
+
 async function evaluateEnemyShot(page, combatantId, overrides = undefined) {
   const profile = await page.evaluate(
     `window.__dustlineQa__.evaluateEnemyShot(${JSON.stringify(combatantId)}, ${JSON.stringify(overrides)})`,
@@ -1738,6 +1759,50 @@ async function main() {
     assert(openingObjectiveEnemy, "Expected at least one opening objective bot to crouch tactically");
     assertAlivePosture(aiOpeningState.enemies, "opening solo enemy");
     assertTeamVisual(aiOpeningState.enemies, "cobalt", "opening solo enemy");
+    const communicationCase = await stageAiCommunicationCase(localPage);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemies = window.__dustlineQa__?.getState()?.enemies ?? [];
+          const observer = enemies.find((enemy) => enemy.id === ${JSON.stringify(communicationCase.observerEnemyId)});
+          const receiver = enemies.find((enemy) => enemy.id === ${JSON.stringify(communicationCase.receiverEnemyId)});
+          return observer?.ai?.canSeePlayer === true && receiver?.ai?.canSeePlayer === false;
+        })()
+      `,
+      4_000,
+    );
+    const communicationImmediateState = await getState(localPage);
+    const immediateReceiver = communicationImmediateState.enemies.find(
+      (enemy) => enemy.id === communicationCase.receiverEnemyId,
+    );
+    assert(
+      immediateReceiver?.ai?.lastSharedContactAgo === null,
+      `Expected delayed squad contact instead of instant omniscience, saw ${immediateReceiver?.ai?.lastSharedContactAgo}`,
+    );
+    assert(
+      immediateReceiver?.ai?.behavior === "patrol" || immediateReceiver?.ai?.behavior === "objective",
+      `Expected receiver to stay on its opening task before contact delivery, saw ${immediateReceiver?.ai?.behavior}`,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const receiver = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(communicationCase.receiverEnemyId)});
+          return receiver?.ai?.lastSharedContactAgo !== null
+            && receiver?.ai?.canSeePlayer === false
+            && (receiver?.ai?.behavior === 'investigate' || receiver?.ai?.behavior === 'pursue');
+        })()
+      `,
+      5_000,
+    );
+    const communicationDelayedState = await getState(localPage);
+    const delayedReceiver = communicationDelayedState.enemies.find(
+      (enemy) => enemy.id === communicationCase.receiverEnemyId,
+    );
+    assert(
+      delayedReceiver?.ai?.lastSharedContactAgo !== null,
+      "Expected receiver to record delayed shared contact",
+    );
     const sightlineCase = await stageAiSightlineCase(localPage);
     await localPage.waitForExpression(
       `
@@ -1803,6 +1868,62 @@ async function main() {
       `Expected bot jump sample to land near standing eye height ${botMovementSample.standing.eyeHeight}, saw ${botMovementSample.jump.landedEyeY}`,
     );
 
+    await setBotDifficulty(localPage, "easy");
+    const easyDifficultyShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
+      distance: 10,
+      visibility: 0.7,
+      shooterSpeed: 0.5,
+      targetSpeed: 1.4,
+      targetCrouching: false,
+      shooterCrouching: false,
+    });
+    const easyDifficultyState = await getState(localPage);
+    await setBotDifficulty(localPage, "medium");
+    const mediumDifficultyShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
+      distance: 10,
+      visibility: 0.7,
+      shooterSpeed: 0.5,
+      targetSpeed: 1.4,
+      targetCrouching: false,
+      shooterCrouching: false,
+    });
+    const mediumDifficultyState = await getState(localPage);
+    await setBotDifficulty(localPage, "hard");
+    const hardDifficultyShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
+      distance: 10,
+      visibility: 0.7,
+      shooterSpeed: 0.5,
+      targetSpeed: 1.4,
+      targetCrouching: false,
+      shooterCrouching: false,
+    });
+    const hardDifficultyState = await getState(localPage);
+    assert(
+      easyDifficultyShot.hitChance < mediumDifficultyShot.hitChance &&
+        mediumDifficultyShot.hitChance < hardDifficultyShot.hitChance,
+      `Expected ordered difficulty danger for hit chance, saw easy=${easyDifficultyShot.hitChance}, medium=${mediumDifficultyShot.hitChance}, hard=${hardDifficultyShot.hitChance}`,
+    );
+    assert(
+      easyDifficultyShot.reactionSeconds > mediumDifficultyShot.reactionSeconds &&
+        mediumDifficultyShot.reactionSeconds > hardDifficultyShot.reactionSeconds,
+      `Expected ordered reaction speeds, saw easy=${easyDifficultyShot.reactionSeconds}, medium=${mediumDifficultyShot.reactionSeconds}, hard=${hardDifficultyShot.reactionSeconds}`,
+    );
+    assert(
+      easyDifficultyShot.spreadDegrees > mediumDifficultyShot.spreadDegrees &&
+        mediumDifficultyShot.spreadDegrees > hardDifficultyShot.spreadDegrees,
+      `Expected ordered spread by difficulty, saw easy=${easyDifficultyShot.spreadDegrees}, medium=${mediumDifficultyShot.spreadDegrees}, hard=${hardDifficultyShot.spreadDegrees}`,
+    );
+    assert(
+      hardDifficultyShot.hitChance < 0.89,
+      `Expected hard bots to stay imperfect, saw hit chance ${hardDifficultyShot.hitChance}`,
+    );
+    assert(
+      easyDifficultyState.tuning?.botMovement?.walkSpeed === mediumDifficultyState.tuning?.botMovement?.walkSpeed &&
+        mediumDifficultyState.tuning?.botMovement?.walkSpeed === hardDifficultyState.tuning?.botMovement?.walkSpeed,
+      "Expected all bot difficulties to keep the same movement tuning",
+    );
+    await setBotDifficulty(localPage, "medium");
+
     await setView(localPage, sightlineCase.blockedPlayerPosition, {
       x: sightlineCase.blockedPlayerPosition.x + 2,
       y: sightlineCase.blockedPlayerPosition.y,
@@ -1856,7 +1977,10 @@ async function main() {
     );
     const engageState = await getState(localPage);
     const engageEnemy = engageState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
-    assert(engageEnemy?.ai?.behavior === "engage", "Expected the staged AI to enter engage behavior");
+    assert(
+      engageEnemy?.ai?.behavior === "engage" || engageEnemy?.ai?.behavior === "reposition",
+      `Expected the staged AI to take a clear-shot combat state, saw ${engageEnemy?.ai?.behavior}`,
+    );
     assertAlivePosture([engageEnemy], "engage solo enemy");
     assertAimContract([engageEnemy], "engage solo enemy");
     const aiWorldFire = playableWorldFireEvents(engageState).at(-1);
@@ -1932,6 +2056,57 @@ async function main() {
     const pursueState = await getState(localPage);
     const pursueEnemy = pursueState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
     assertAlivePosture([pursueEnemy], "pursue solo enemy");
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy
+            && enemy.ai.behavior !== 'pursue'
+            && (enemy.ai.lastSeenAgo ?? 0) >= ${Number((mediumDifficultyState.tuning.ai.pursuitWindow + 0.2).toFixed(2))};
+        })()
+      `,
+      8_000,
+    );
+    const boundedMemoryState = await getState(localPage);
+    const boundedMemoryEnemy = boundedMemoryState.enemies.find(
+      (enemy) => enemy.id === sightlineCase.enemyId,
+    );
+    assert(
+      boundedMemoryEnemy?.ai?.behavior !== "pursue",
+      `Expected last-known pursuit memory to expire, saw ${boundedMemoryEnemy?.ai?.behavior}`,
+    );
+
+    const recoveryCase = await stageAiRecoveryCase(localPage);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(recoveryCase.enemyId)});
+          return enemy?.ai?.lastRecoveryReason === 'repath' && (enemy?.ai?.recoveryCount ?? 0) >= 1;
+        })()
+      `,
+      6_000,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(recoveryCase.enemyId)});
+          if (!enemy?.position) {
+            return false;
+          }
+          const dx = enemy.position.x - ${recoveryCase.enemyPosition.x};
+          const dz = enemy.position.z - ${recoveryCase.enemyPosition.z};
+          const distance = Math.hypot(dx, dz);
+          return distance > 0.6 && distance < 8;
+        })()
+      `,
+      6_000,
+    );
+    const recoveryState = await getState(localPage);
+    const recoveryEnemy = recoveryState.enemies.find((enemy) => enemy.id === recoveryCase.enemyId);
+    assertAlivePosture([recoveryEnemy], "recovery solo enemy");
 
     const closeStandingShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
       distance: 6,
@@ -1979,6 +2154,19 @@ async function main() {
       mapId: aiOpeningState.mapId,
       roundMission: aiOpeningState.round.missionLabel,
       botMovementTuning,
+      communicationDelay: {
+        blockerName: communicationCase.blockerName,
+        observerEnemyId: communicationCase.observerEnemyId,
+        receiverEnemyId: communicationCase.receiverEnemyId,
+        immediateBehavior: immediateReceiver?.ai?.behavior ?? null,
+        delayedBehavior: delayedReceiver?.ai?.behavior ?? null,
+        delayedContactAgo: delayedReceiver?.ai?.lastSharedContactAgo ?? null,
+      },
+      difficultyShots: {
+        easy: easyDifficultyShot,
+        medium: mediumDifficultyShot,
+        hard: hardDifficultyShot,
+      },
       crouchedObjectiveEnemyId: openingObjectiveEnemy.id,
       botMovementSample,
       observedOpeningBehaviors: openingBehaviors,
@@ -1993,6 +2181,14 @@ async function main() {
       repositionBehavior: repositionEnemy?.ai?.behavior ?? null,
       repositionReason: repositionEnemy?.ai?.repositionReason ?? null,
       pursueBehavior: pursueEnemy?.ai?.behavior ?? null,
+      boundedMemoryBehavior: boundedMemoryEnemy?.ai?.behavior ?? null,
+      recovery: {
+        enemyId: recoveryCase.enemyId,
+        blockerName: recoveryCase.blockerName,
+        reason: recoveryEnemy?.ai?.lastRecoveryReason ?? null,
+        count: recoveryEnemy?.ai?.recoveryCount ?? 0,
+        heldTarget: recoveryEnemy?.ai?.forcedTargetLabel ?? null,
+      },
       posture: {
         opening: aiOpeningState.enemies.map((enemy) => enemy.posture),
         blocked: blockedEnemy.posture,
@@ -2013,55 +2209,56 @@ async function main() {
       crouchedPartialShot,
     };
 
-    await setInvulnerable(localPage, false);
-    await setTeamPreference(localPage, "amber");
+    await setTeamPreference(localPage, "cobalt");
+    await setBotDifficulty(localPage, "medium");
     await openMap(localPage, "sandline-foundry", "local");
     await engageControls(localPage);
+    await setInvulnerable(localPage, true);
     await forceRoundActive(localPage);
     await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
       5_000,
     );
-    const soloRoundCase = await stageAiSightlineCase(localPage);
-    await setView(localPage, soloRoundCase.clearPlayerPosition, soloRoundCase.enemyPosition);
-    const soloRoundStart = await getState(localPage);
-    const soloRoundStartEnemy = soloRoundStart.enemies.find(
-      (enemy) => enemy.id === soloRoundCase.enemyId,
+    const enemyBombPlantCase = await stageEnemyBombPlantCase(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'planting'",
+      5_000,
     );
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'planted'",
+      8_000,
+    );
+    const enemyBombPlantState = await getState(localPage);
     await localPage.waitForExpression(
       `
         (() => {
           const state = window.__dustlineQa__?.getState();
-          return state?.round?.phase === 'resolution' && /cleared the roster/i.test(state?.round?.result ?? '');
+          return state?.round?.phase === 'resolution' && Boolean(state?.round?.result);
         })()
       `,
       20_000,
     );
-    const soloRoundResolved = await getState(localPage);
-    const soloRoundEnemy = soloRoundResolved.enemies.find(
-      (enemy) => enemy.id === soloRoundCase.enemyId,
-    );
-    assert(
-      soloRoundResolved.localPlayer.dead === true,
-      "Expected the bounded solo AI round to end by live elimination",
-    );
-    assert(
-      soloRoundEnemy &&
-        (soloRoundEnemy.ai.shotsFired > 0 ||
-          (soloRoundStartEnemy &&
-          Math.hypot(
-            soloRoundEnemy.position.x - soloRoundStartEnemy.position.x,
-            soloRoundEnemy.position.z - soloRoundStartEnemy.position.z,
-          ) > 1)),
-      "Expected the solo AI round to progress without deadlock",
-    );
-
+    const enemyBombResolvedState = await getState(localPage);
+    summary.aiObjectiveBomb = {
+      carrierEnemyId: enemyBombPlantCase.carrierEnemyId,
+      siteLabel: enemyBombPlantCase.siteLabel,
+      phase: enemyBombPlantState.bomb.phase,
+      plantedById: enemyBombPlantState.bomb.plantedById,
+      plantedByName: enemyBombPlantState.bomb.plantedByName,
+      hudStatus: enemyBombPlantState.objectiveStatus,
+      hudProgress: enemyBombPlantState.objectiveProgressLabel,
+      resolution: enemyBombResolvedState.round.result,
+    };
     summary.aiSoloRound = {
-      resolution: soloRoundResolved.round.result,
-      playerDead: soloRoundResolved.localPlayer.dead,
-      enemyBehaviorAtResolution: soloRoundEnemy?.ai?.behavior ?? null,
-      enemyShotsFired: soloRoundEnemy?.ai?.shotsFired ?? 0,
-      blockerName: soloRoundCase.blockerName,
+      resolution: enemyBombResolvedState.round.result,
+      playerDead: enemyBombResolvedState.localPlayer.dead,
+      enemyBehaviorAtResolution:
+        enemyBombResolvedState.enemies.find((enemy) => enemy.id === enemyBombPlantCase.carrierEnemyId)?.ai
+          ?.behavior ?? null,
+      enemyShotsFired:
+        enemyBombResolvedState.enemies.find((enemy) => enemy.id === enemyBombPlantCase.carrierEnemyId)?.ai
+          ?.shotsFired ?? 0,
+      blockerName: enemyBombPlantCase.siteLabel,
     };
 
     const sharedPageOne = await createPage(`${ROOT_URL}?qa=1`);

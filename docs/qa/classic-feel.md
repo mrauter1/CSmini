@@ -64,14 +64,22 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 - Bot jump sample: feet peak `0.97`, eye peak `2.59`, landed eye `1.62`, airtime `0.767s`
 - Enemy fire interval: `0.92s`
 - Engage distance: `20u`
-- Investigation window: `3.8s`
-- Pursuit window: `4.8s`
-- Reposition window: `2.2s`
+- Medium investigation window: `3.8s`
+- Medium pursuit window: `4.8s`
+- Medium post-contact reposition window: `1.2s`
+- Medium squad-contact delay: `0.62s`
+- Medium burst size / cooldown: `2-3 shots` / `0.76s`
+- Medium behavior hold: `0.72s`
+- Medium stuck-recovery window: `0.78s`
 - Close standing reaction sample: `0.269s`, hit chance `0.722`
 - Far moving reaction sample: `0.462s`, hit chance `0.262`
 - Crouched partial sample: hit chance `0.449`
+- Difficulty comparison sample at the same pose:
+  - `easy`: `0.487s` reaction, `7.124` spread, `0.407` hit chance
+  - `medium`: `0.377s` reaction, `6.037` spread, `0.537` hit chance
+  - `hard`: `0.317s` reaction, `5.434` spread, `0.617` hit chance
 
-Rationale: the solo fireteam now closes space, crouches, hops, and lands through the same grounded movement rules as the player, so the threat comes from angle choice, timing, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, reposition, and pressure cover without snapping instantly into perfect hits.
+Rationale: the solo fireteam now closes space, crouches, hops, and lands through the same grounded movement rules as the player, so the threat comes from angle choice, timing, delayed communication, burst discipline, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, recover, reposition, and pressure objectives without snapping instantly into perfect hits.
 
 ## Classic-Feel Checklist
 
@@ -98,6 +106,10 @@ Test surfaces used for the checklist:
   Evidence: fresh HUD samples showed solo bomb `11.8s to breach`, shared bomb `12.0s to breach`, solo hostage `1.3s to clear Water Tower Gate`, and shared hostage `1.6s to clear Water Tower Gate`.
 - Cover-oriented combat: `pass`
   Evidence: the AI used `Crate stack west` as a real blocker, held fire at blocked visibility `0`, then switched through `reposition` and `pursue` after contact and broken sight.
+- Squad coordination: `pass`
+  Evidence: a staged receiver stayed on `patrol` before a delayed shared contact, then switched into `pursue` after the lag elapsed instead of gaining instant wall knowledge.
+- Objective resolution: `pass`
+  Evidence: a staged enemy carrier planted at `Kiln Yard` and the same solo-local round resolved by breach without a forced round advance.
 - HUD clarity: `pass`
   Evidence: the solo HUD simultaneously exposed team `Amber Vanguard`, `Round 1`, `Round Live`, `Relay Charge`, and `Kiln Yard`; the shared HUD simultaneously exposed team context, `Round 2`, `Round Live`, `Evac Escort`, and `Loading Crew to Water Tower Gate`.
 

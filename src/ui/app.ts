@@ -663,6 +663,42 @@ export class TacticalShellApp {
     return this.match?.debugStageAiSightlineCase() ?? null;
   }
 
+  debugStageAiCommunicationCase():
+    | {
+        observerEnemyId: string;
+        receiverEnemyId: string;
+        playerPosition: { x: number; y: number; z: number };
+        observerPosition: { x: number; y: number; z: number };
+        receiverPosition: { x: number; y: number; z: number };
+        blockerName: string;
+      }
+    | null {
+    return this.match?.debugStageAiCommunicationCase() ?? null;
+  }
+
+  debugStageAiRecoveryCase():
+    | {
+        enemyId: string;
+        enemyLabel: string;
+        blockerName: string;
+        targetLabel: string;
+        enemyPosition: { x: number; y: number; z: number };
+        blockedTargetPosition: { x: number; y: number; z: number };
+      }
+    | null {
+    return this.match?.debugStageAiRecoveryCase() ?? null;
+  }
+
+  debugStageEnemyBombPlantCase():
+    | {
+        carrierEnemyId: string;
+        siteLabel: string;
+        sitePosition: { x: number; y: number; z: number };
+      }
+    | null {
+    return this.match?.debugStageEnemyBombPlantCase() ?? null;
+  }
+
   debugEvaluateEnemyShot(
     combatantId: string,
     overrides?: Partial<{
