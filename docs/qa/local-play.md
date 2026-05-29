@@ -11,6 +11,7 @@ Targeted verification for `round-core-and-movement-foundation`, `bomb-mission-mo
 - `medium` as the default solo bot level when storage is empty or unavailable
 - best-effort solo bot difficulty persistence across reload when storage works
 - safe solo-local fallback when bot-difficulty storage throws
+- solo bots using the same walk, crouch, air-control, gravity, jump, and collision contract as the player
 - roster-wide team spawn separation across every shipped playable map
 - live round metadata driven from declared mission data
 - crouch camera and speed change
@@ -126,11 +127,16 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 ### Local tactical AI round
 
 - `Sandline Foundry` was reopened in local mode as `Amber Vanguard`, the round was forced live, and the AI fireteam opened with distinct roles: one enemy held `objective`, while the other two stayed on `patrol`.
+- The opening objective bot was already in a live tactical crouch (`crouchBlend 0.814`) rather than only carrying a `standing | crouched` label.
+- The live debug tuning reported a player-equivalent bot movement contract: walk `8.6u/s`, crouch `4.82u/s`, gravity `13.6`, jump velocity `5.25`, standing eye/body `1.62 / 1.72`, crouched eye/body `1.08 / 1.18`.
+- A deterministic bot movement sample on that same round measured `5.16` units over `0.6s` standing (`8.6u/s`) and `2.89` units crouched (`4.816u/s`), confirming that crouch slows the bot through the same multiplier as the player while also lowering eye/body height.
 - The same opening enemy samples exposed Cobalt Reach blue-gray uniform colors and no domino mask through the debug state.
 - A QA-only `stageAiSightlineCase()` hook staged `enemy-0` behind the named blocker `Crate stack west`, with the player hidden on the `Generator Hall` side and a clear fallback pose at `Water Tower Court`.
 - In the blocked pose, the debug state reported `visibility: 0` and `canSeePlayer: false`.
 - Firing once from the blocked pose drew the enemy into `investigate`, but the same debug state kept `shotsFired: 0`, proving the bot reacted to sound without shooting through the crate stack.
 - Moving to the clear pose advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `4` shots and split them into `2` hits and `2` misses.
+- A deterministic bot jump sample for that same enemy started grounded, entered an airborne phase, peaked at feet `0.97` / eye `2.59`, then landed safely back at eye `1.62` after `0.767s`.
+- A QA-only live jump request lifted the same engaged enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract, then landed back at `feetY 0` without breaking posture or aim separation.
 - The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility after the user-gesture unlock pulse armed the audio context.
 - Stale opponent-fire audio is not replayed after a late browser audio unlock; blocked shots are dropped rather than played out of time.
 - After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then dropped into `pursue` after the player ducked back behind cover.
@@ -139,7 +145,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
   - far moving target: `hitChance 0.262`, `missChance 0.738`, `spread 9.956`
   - crouched partial target: `hitChance 0.449`, `missChance 0.551`, `spread 6.176`
 
-Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
+Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; moves, crouches, jumps, and lands through the same locomotion contract as the player; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
 
 ### Bounded solo elimination round
 
@@ -154,6 +160,7 @@ Result: at least one upgraded solo round now progresses from start to eliminatio
 
 - The movement and round verification stayed inside the browser build; no extra engine or non-browser runtime was introduced.
 - The jump sample in the QA harness uses the live movement integrator through a dedicated QA hook to avoid headless browser timing noise while still validating the same movement code path.
+- The shared bot-movement proof uses QA-only `enemyMovementSample()` and `requestEnemyJump()` hooks so the harness can verify crouch, stride, jump, airborne posture, and aim separation deterministically without weakening the shipped locomotion rules.
 - The bomb proof uses QA-only hooks for `forceRoundActive`, `setInvulnerable`, and `startObjectiveAction` so the test can isolate the mission flow from headless timing while still exercising the shipped plant, fuse, and round-resolution code paths.
 - The hostage proof also uses `forceNextRound`, `forceRoundActive`, `setInvulnerable`, `setCameraPose`, and `startObjectiveAction` so the harness can deterministically enter the round-2 evac mission, stage the escort path, and verify the real rescue timers and round-reset behavior without relying on manual headless navigation.
 - The AI proof uses QA-only hooks for `stageAiSightlineCase()` and `evaluateEnemyShot()` so the harness can reproduce the same blocked-cover case and shot-profile comparisons on every run without weakening the live line-of-sight or combat code.

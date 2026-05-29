@@ -35,18 +35,23 @@ import {
 } from "./collision";
 import {
   CROUCH_EYE_HEIGHT,
+  CROUCH_BODY_HEIGHT,
   PLAYER_RADIUS,
   PLAYER_AIR_CONTROL,
   PLAYER_CROUCH_MULTIPLIER,
   PLAYER_GRAVITY,
   PLAYER_JUMP_VELOCITY,
   PLAYER_WALK_SPEED,
+  STANDING_BODY_HEIGHT,
   STANDING_EYE_HEIGHT,
+  createMovementState,
   createPlayerMovementState,
   currentBodyHeight,
   currentEyeHeight,
   setDebugCameraPose,
+  updateSharedMovement,
   updatePlayerMovement,
+  type MovementState,
   type PlayerMovementState,
 } from "./playerMovement";
 import {
@@ -120,7 +125,6 @@ const CLIP_SIZE = 24;
 const RESERVE_AMMO = 120;
 const PLAYER_DAMAGE = 34;
 const ENEMY_DAMAGE = 14;
-const ENEMY_SPEED = 2.35;
 const ENEMY_FIRE_INTERVAL = 0.92;
 const ENEMY_ENGAGE_DISTANCE = 20;
 const HIT_INDICATOR_DURATION = 0.16;
@@ -132,10 +136,12 @@ const ENEMY_PURSUIT_WINDOW = 4.8;
 const ENEMY_REPOSITION_WINDOW = 2.2;
 const PLAYER_NOISE_INTERVAL = 0.28;
 const PLAYER_NOISE_HEARING_RADIUS = 19;
-const ENEMY_CROUCH_EYE_HEIGHT = 1.08;
-const ENEMY_STANDING_EYE_HEIGHT = 1.45;
 const COMBATANT_AIM_PITCH_LIMIT = Math.PI * 0.34;
 const CAPTURED_KEY_EVENT_OPTIONS = { capture: true };
+const COMBATANT_MOVEMENT_OFFSET = new THREE.Quaternion().setFromAxisAngle(
+  new THREE.Vector3(0, 1, 0),
+  Math.PI,
+);
 
 const ENEMY_NAMES = ["Copper-2", "Vale-3", "Rook-4"];
 
@@ -208,6 +214,7 @@ interface EnemyActor {
   name: string;
   teamId: TeamId;
   avatar: CombatantAvatar;
+  movementState: MovementState;
   health: number;
   alive: boolean;
   eliminations: number;
@@ -217,8 +224,11 @@ interface EnemyActor {
   waypoints: THREE.Vector3[];
   recoil: number;
   moveBlend: number;
+  speed: number;
   hitFlashUntil: number;
   spawnPoint: THREE.Vector3;
+  lookDirection: THREE.Vector3;
+  qaJumpRequested: boolean;
   ai: {
     role: "anchor" | "route" | "flank";
     behavior: EnemyBehavior;
@@ -561,6 +571,22 @@ export class LocalMatch {
         movement: {
           standingEyeHeight: Number(STANDING_EYE_HEIGHT.toFixed(2)),
           crouchEyeHeight: Number(CROUCH_EYE_HEIGHT.toFixed(2)),
+          standingBodyHeight: Number(STANDING_BODY_HEIGHT.toFixed(2)),
+          crouchBodyHeight: Number(CROUCH_BODY_HEIGHT.toFixed(2)),
+          radius: Number(PLAYER_RADIUS.toFixed(2)),
+          walkSpeed: Number(PLAYER_WALK_SPEED.toFixed(2)),
+          crouchMultiplier: Number(PLAYER_CROUCH_MULTIPLIER.toFixed(2)),
+          crouchSpeed: Number((PLAYER_WALK_SPEED * PLAYER_CROUCH_MULTIPLIER).toFixed(2)),
+          airControl: Number(PLAYER_AIR_CONTROL.toFixed(2)),
+          gravity: Number(PLAYER_GRAVITY.toFixed(2)),
+          jumpVelocity: Number(PLAYER_JUMP_VELOCITY.toFixed(2)),
+        },
+        botMovement: {
+          standingEyeHeight: Number(STANDING_EYE_HEIGHT.toFixed(2)),
+          crouchEyeHeight: Number(CROUCH_EYE_HEIGHT.toFixed(2)),
+          standingBodyHeight: Number(STANDING_BODY_HEIGHT.toFixed(2)),
+          crouchBodyHeight: Number(CROUCH_BODY_HEIGHT.toFixed(2)),
+          radius: Number(PLAYER_RADIUS.toFixed(2)),
           walkSpeed: Number(PLAYER_WALK_SPEED.toFixed(2)),
           crouchMultiplier: Number(PLAYER_CROUCH_MULTIPLIER.toFixed(2)),
           crouchSpeed: Number((PLAYER_WALK_SPEED * PLAYER_CROUCH_MULTIPLIER).toFixed(2)),
@@ -585,7 +611,6 @@ export class LocalMatch {
         },
         ai: {
           botDifficulty: this.botDifficulty,
-          enemySpeed: Number(ENEMY_SPEED.toFixed(2)),
           fireInterval: Number(ENEMY_FIRE_INTERVAL.toFixed(2)),
           engageDistance: Number(ENEMY_ENGAGE_DISTANCE.toFixed(1)),
           investigationWindow: Number(ENEMY_INVESTIGATION_WINDOW.toFixed(1)),
@@ -621,9 +646,21 @@ export class LocalMatch {
         teamId: enemy.teamId,
         alive: enemy.alive,
         health: enemy.health,
-        position: this.toPoint(enemy.avatar.group.position, 0),
+        position: this.toPoint(enemy.avatar.group.position),
         posture: this.combatantPostureSnapshot(enemy.avatar.group, enemy.alive),
         visual: this.combatantVisualSnapshot(enemy.avatar),
+        movement: {
+          crouchBlend: Number(enemy.movementState.crouchBlend.toFixed(3)),
+          verticalVelocity: Number(enemy.movementState.verticalVelocity.toFixed(3)),
+          heightOffset: Number(enemy.movementState.heightOffset.toFixed(3)),
+          grounded: enemy.movementState.grounded,
+          airborne: !enemy.movementState.grounded,
+          eyeHeight: Number(this.enemyEyeHeight(enemy).toFixed(3)),
+          bodyHeight: Number(this.enemyBodyHeight(enemy).toFixed(3)),
+          speed: Number(enemy.speed.toFixed(2)),
+        },
+        look: this.toPoint(enemy.lookDirection),
+        aimPitch: Number(this.aimPitchFromLook(enemy.lookDirection).toFixed(4)),
         ai: {
           role: enemy.ai.role,
           behavior: enemy.ai.behavior,
@@ -659,6 +696,7 @@ export class LocalMatch {
           lastShotOutcome: enemy.ai.lastShotOutcome,
           lastShotProfile: enemy.ai.lastShotProfile,
         },
+        aim: this.combatantAimSnapshot(enemy.avatar, enemy.lookDirection),
       })),
       remotePlayers: [...this.remoteActors.values()].map((actor) => ({
         id: actor.id,
@@ -919,13 +957,189 @@ export class LocalMatch {
     };
   }
 
+  debugRequestEnemyJump(combatantId: string): boolean {
+    if (this.activeMode !== "local") {
+      return false;
+    }
+
+    const enemy = this.enemies.find((entry) => entry.id === combatantId && entry.alive);
+    if (!enemy) {
+      return false;
+    }
+
+    enemy.qaJumpRequested = true;
+    this.emitSnapshot();
+    return true;
+  }
+
+  debugEnemyMovementSample(combatantId: string):
+    | {
+        standing: { distance: number; speed: number; eyeHeight: number; bodyHeight: number };
+        crouched: { distance: number; speed: number; eyeHeight: number; bodyHeight: number };
+        live: {
+          crouchBlend: number;
+          grounded: boolean;
+          eyeHeight: number;
+          bodyHeight: number;
+          speed: number;
+        };
+        jump: {
+          groundedStart: boolean;
+          airborneObserved: boolean;
+          peakFeetY: number;
+          peakEyeY: number;
+          landedFeetY: number;
+          landedEyeY: number;
+          landed: boolean;
+          airborneSeconds: number;
+        };
+      }
+    | null {
+    const enemy = this.enemies.find((entry) => entry.id === combatantId && entry.alive);
+    if (!enemy) {
+      return null;
+    }
+
+    const sampleStride = (crouching: boolean) => {
+      const headings = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+      let bestDistance = 0;
+
+      for (const heading of headings) {
+        const sampleState = createMovementState();
+        sampleState.crouchBlend = crouching ? 1 : 0;
+        const samplePosition = enemy.avatar.group.position.clone().setY(0);
+        const sampleOrientation = new THREE.Quaternion()
+          .setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading)
+          .multiply(COMBATANT_MOVEMENT_OFFSET);
+        const tempForward = new THREE.Vector3();
+        const tempRight = new THREE.Vector3();
+        const tempDelta = new THREE.Vector3();
+        const startX = samplePosition.x;
+        const startZ = samplePosition.z;
+        const frames = 36;
+
+        for (let frame = 0; frame < frames; frame += 1) {
+          updateSharedMovement(
+            sampleState,
+            samplePosition,
+            sampleOrientation,
+            "feet",
+            this.collisionWorld,
+            1 / 60,
+            frame / 60,
+            {
+              enabled: true,
+              moveX: 0,
+              moveZ: 1,
+              crouching,
+              jumpRequested: false,
+            },
+            tempForward,
+            tempRight,
+            tempDelta,
+            PLAYER_RADIUS,
+          );
+        }
+
+        bestDistance = Math.max(
+          bestDistance,
+          Math.hypot(samplePosition.x - startX, samplePosition.z - startZ),
+        );
+      }
+
+      const seconds = 36 / 60;
+      return {
+        distance: Number(bestDistance.toFixed(3)),
+        speed: Number((bestDistance / seconds).toFixed(3)),
+        eyeHeight: Number((crouching ? CROUCH_EYE_HEIGHT : STANDING_EYE_HEIGHT).toFixed(3)),
+        bodyHeight: Number((crouching ? CROUCH_BODY_HEIGHT : STANDING_BODY_HEIGHT).toFixed(3)),
+      };
+    };
+
+    const jumpState = createMovementState();
+    const jumpPosition = enemy.avatar.group.position.clone().setY(0);
+    const jumpOrientation = enemy.avatar.group.quaternion.clone().multiply(COMBATANT_MOVEMENT_OFFSET);
+    const tempForward = new THREE.Vector3();
+    const tempRight = new THREE.Vector3();
+    const tempDelta = new THREE.Vector3();
+    const groundedStart = jumpState.grounded;
+    let airborneObserved = false;
+    let landed = false;
+    let peakFeetY = jumpPosition.y;
+    let peakEyeY = jumpPosition.y + currentEyeHeight(jumpState);
+    let landedFeetY = jumpPosition.y;
+    let landedEyeY = peakEyeY;
+    let airborneFrames = 0;
+
+    for (let frame = 0; frame < 180; frame += 1) {
+      const result = updateSharedMovement(
+        jumpState,
+        jumpPosition,
+        jumpOrientation,
+        "feet",
+        this.collisionWorld,
+        1 / 60,
+        frame / 60,
+        {
+          enabled: true,
+          moveX: 0,
+          moveZ: 0,
+          crouching: false,
+          jumpRequested: frame === 0,
+        },
+        tempForward,
+        tempRight,
+        tempDelta,
+        PLAYER_RADIUS,
+      );
+
+      peakFeetY = Math.max(peakFeetY, jumpPosition.y);
+      peakEyeY = Math.max(peakEyeY, jumpPosition.y + result.eyeHeight);
+      if (!result.grounded) {
+        airborneObserved = true;
+      }
+      if (airborneObserved && !result.grounded) {
+        airborneFrames = frame + 1;
+      }
+      if (airborneObserved && frame > 0 && result.grounded) {
+        landed = true;
+        landedFeetY = jumpPosition.y;
+        landedEyeY = jumpPosition.y + result.eyeHeight;
+        airborneFrames = frame + 1;
+        break;
+      }
+    }
+
+    return {
+      standing: sampleStride(false),
+      crouched: sampleStride(true),
+      live: {
+        crouchBlend: Number(enemy.movementState.crouchBlend.toFixed(3)),
+        grounded: enemy.movementState.grounded,
+        eyeHeight: Number(this.enemyEyeHeight(enemy).toFixed(3)),
+        bodyHeight: Number(this.enemyBodyHeight(enemy).toFixed(3)),
+        speed: Number(enemy.speed.toFixed(3)),
+      },
+      jump: {
+        groundedStart,
+        airborneObserved,
+        peakFeetY: Number(peakFeetY.toFixed(3)),
+        peakEyeY: Number(peakEyeY.toFixed(3)),
+        landedFeetY: Number(landedFeetY.toFixed(3)),
+        landedEyeY: Number(landedEyeY.toFixed(3)),
+        landed,
+        airborneSeconds: Number(((landed ? airborneFrames : 180) / 60).toFixed(3)),
+      },
+    };
+  }
+
   debugAimAt(combatantId: string): boolean {
     const remote = this.remoteActors.get(combatantId);
     const enemy = this.enemies.find((entry) => entry.id === combatantId);
     const targetPosition = remote
       ? remote.displayPosition.clone().setY(1.45)
       : enemy
-        ? enemy.avatar.group.position.clone().setY(1.45)
+        ? enemy.avatar.group.position.clone().setY(this.enemyEyeHeight(enemy))
         : undefined;
 
     if (!targetPosition) {
@@ -1011,6 +1225,12 @@ export class LocalMatch {
     }
 
     enemy.avatar.group.position.copy(caseData.enemyPosition);
+    enemy.movementState.verticalVelocity = 0;
+    enemy.movementState.heightOffset = 0;
+    enemy.movementState.grounded = true;
+    enemy.movementState.crouchBlend = 0;
+    enemy.speed = 0;
+    enemy.qaJumpRequested = false;
     this.faceCombatantAt(enemy.avatar.group, caseData.enemyPosition, caseData.blockedPlayerPosition);
     this.configureEnemyAi(enemy, this.enemies.indexOf(enemy));
     this.lastPlayerNoiseAt = Number.NEGATIVE_INFINITY;
@@ -1020,7 +1240,7 @@ export class LocalMatch {
       currentEyeHeight(this.movementState),
       caseData.blockedPlayerPosition.z,
       caseData.enemyPosition.x,
-      ENEMY_STANDING_EYE_HEIGHT,
+      this.enemyEyeHeight(enemy),
       caseData.enemyPosition.z,
     );
 
@@ -1028,7 +1248,7 @@ export class LocalMatch {
       enemyId: enemy.id,
       enemyLabel: enemy.name,
       blockerName: caseData.blockerName,
-      enemyPosition: this.toPoint(caseData.enemyPosition, ENEMY_STANDING_EYE_HEIGHT),
+      enemyPosition: this.toPoint(caseData.enemyPosition, this.enemyEyeHeight(enemy)),
       blockedPlayerPosition: this.toPoint(
         caseData.blockedPlayerPosition,
         currentEyeHeight(this.movementState),
@@ -1066,10 +1286,9 @@ export class LocalMatch {
         ),
       visibility: overrides?.visibility ?? enemy.ai.lastVisibility,
       targetSpeed: overrides?.targetSpeed ?? this.playerSpeed,
-      shooterSpeed: overrides?.shooterSpeed ?? (enemy.ai.behavior === "engage" ? 0.35 : ENEMY_SPEED),
+      shooterSpeed: overrides?.shooterSpeed ?? enemy.speed,
       targetCrouching: overrides?.targetCrouching ?? this.playerCrouching,
-      shooterCrouching:
-        overrides?.shooterCrouching ?? enemy.ai.stance === "crouched",
+      shooterCrouching: overrides?.shooterCrouching ?? enemy.movementState.crouchBlend > 0.5,
     });
   }
 
@@ -1311,6 +1530,7 @@ export class LocalMatch {
         name: ENEMY_NAMES[index % ENEMY_NAMES.length],
         teamId: this.enemyTeamId,
         avatar,
+        movementState: createMovementState(),
         health: 100,
         alive: true,
         eliminations: 0,
@@ -1320,8 +1540,11 @@ export class LocalMatch {
         waypoints: [],
         recoil: 0,
         moveBlend: 0,
+        speed: 0,
         hitFlashUntil: 0,
         spawnPoint,
+        lookDirection: new THREE.Vector3(0, 0, 1),
+        qaJumpRequested: false,
         ai: {
           role: index === 0 ? "anchor" : index === 1 ? "route" : "flank",
           behavior: index === 0 ? "objective" : "patrol",
@@ -1370,10 +1593,18 @@ export class LocalMatch {
       enemy.nextFireAt = 0;
       enemy.recoil = 0;
       enemy.moveBlend = 0;
+      enemy.speed = 0;
       enemy.hitFlashUntil = 0;
       enemy.spawnPoint = this.enemySpawnPoint(index);
       enemy.avatar.group.position.copy(enemy.spawnPoint);
       enemy.avatar.group.rotation.set(0, 0, 0);
+      enemy.lookDirection.set(0, 0, 1);
+      enemy.qaJumpRequested = false;
+      enemy.movementState.verticalVelocity = 0;
+      enemy.movementState.heightOffset = 0;
+      enemy.movementState.grounded = true;
+      enemy.movementState.crouchBlend = 0;
+      enemy.movementState.spectatorUntil = 0;
       this.configureEnemyAi(enemy, index);
     }
   }
@@ -1444,6 +1675,7 @@ export class LocalMatch {
     enemy.ai.lastShotProfile = null;
     enemy.ai.rngState =
       (((index + 1) * 0x9e3779b9) ^ (this.roundState.roundNumber * 2654435761)) >>> 0;
+    enemy.qaJumpRequested = false;
   }
 
   private resetRemoteActorsForRound(): void {
@@ -2835,11 +3067,22 @@ export class LocalMatch {
       enemy.recoil = THREE.MathUtils.damp(enemy.recoil, 0, 12, delta);
 
       if (!enemy.alive) {
-        enemy.avatar.update(now, 0, false, 0, enemy.hitFlashUntil > now ? 1 : 0);
+        enemy.speed = 0;
+        enemy.avatar.update(
+          now,
+          0,
+          false,
+          0,
+          enemy.hitFlashUntil > now ? 1 : 0,
+          0,
+          enemy.movementState.crouchBlend,
+          enemy.movementState.grounded ? 0 : 1,
+        );
         continue;
       }
 
       if (this.roundState.phase !== "active") {
+        enemy.speed = 0;
         enemy.moveBlend = THREE.MathUtils.damp(enemy.moveBlend, 0, 8, delta);
         enemy.avatar.update(
           now,
@@ -2847,6 +3090,9 @@ export class LocalMatch {
           true,
           enemy.recoil,
           enemy.hitFlashUntil > now ? 1 : 0,
+          this.aimPitchFromLook(enemy.lookDirection),
+          enemy.movementState.crouchBlend,
+          enemy.movementState.grounded ? 0 : 1,
         );
         continue;
       }
@@ -2867,8 +3113,9 @@ export class LocalMatch {
 
       const previousVisibility = enemy.ai.canSeePlayer;
       const enemyPosition = enemy.avatar.group.position;
+      const enemyFeet = new THREE.Vector3(enemyPosition.x, 0, enemyPosition.z);
       const enemyEye = this.enemyEyePosition(enemy);
-      const toPlayer = playerFeet.clone().sub(enemyPosition);
+      const toPlayer = playerFeet.clone().sub(enemyFeet);
       const playerDistance = toPlayer.length();
       const visibility = !this.playerDead
         ? evaluateVisibility(this.collisionWorld, enemyEye, playerVisibilityPoints)
@@ -2885,7 +3132,7 @@ export class LocalMatch {
 
       const heardPlayer =
         now - this.lastPlayerNoiseAt <= 1.6 &&
-        enemyPosition.distanceTo(this.lastPlayerNoisePosition) <= PLAYER_NOISE_HEARING_RADIUS;
+        enemyFeet.distanceTo(this.lastPlayerNoisePosition) <= PLAYER_NOISE_HEARING_RADIUS;
       if (heardPlayer) {
         enemy.ai.lastHeardAt = now;
         enemy.ai.lastHeardPosition = this.lastPlayerNoisePosition.clone();
@@ -2900,21 +3147,11 @@ export class LocalMatch {
       let stance: EnemyStance = enemy.ai.role === "anchor" ? "crouched" : "standing";
       let targetPosition = enemy.ai.objectiveAnchor.position.clone();
       let targetLabel = enemy.ai.objectiveAnchor.label;
-      let desiredSpeed = ENEMY_SPEED * 0.86;
-      let shotProfile: EnemyShotProfile | null = null;
+      let moveTowardTarget = true;
       let shouldShoot = false;
       enemy.ai.repositionReason = null;
 
       if (canSeePlayer) {
-        shotProfile = evaluateEnemyShotProfile({
-          distance: playerDistance,
-          visibility,
-          shooterSpeed: enemy.moveBlend > 0.45 ? ENEMY_SPEED : 0,
-          targetSpeed: this.playerSpeed,
-          targetCrouching: this.playerCrouching,
-          shooterCrouching: enemy.ai.stance === "crouched",
-        });
-
         const underPressure = now - enemy.ai.lastDamagedAt <= ENEMY_REPOSITION_WINDOW;
         const repositionChoice =
           underPressure || visibility < 0.56 || playerDistance < 4.4
@@ -2922,7 +3159,7 @@ export class LocalMatch {
                 profile: this.tacticalProfile,
                 world: this.collisionWorld,
                 bodyHeight: this.enemyBodyHeight(enemy),
-                enemyPosition,
+                enemyPosition: enemyFeet,
                 enemyEyeHeight: this.enemyEyeHeight(enemy),
                 playerPosition: playerFeet,
                 playerVisibilityPoints,
@@ -2939,28 +3176,25 @@ export class LocalMatch {
           stance = repositionChoice?.reason === "cover" ? "crouched" : "standing";
           targetPosition = fallbackAnchor.position.clone();
           targetLabel = fallbackAnchor.label;
-          desiredSpeed = ENEMY_SPEED * 1.04;
           enemy.ai.repositionReason = repositionChoice?.reason ?? "angle";
         } else if (repositionChoice) {
           behavior = "reposition";
           stance = repositionChoice.reason === "cover" ? "crouched" : "standing";
           targetPosition = repositionChoice.anchor.position.clone();
           targetLabel = repositionChoice.anchor.label;
-          desiredSpeed = ENEMY_SPEED * 1.04;
           enemy.ai.repositionReason = repositionChoice.reason;
         } else if (playerDistance > 11.5) {
           behavior = "pursue";
           stance = "standing";
           targetPosition = playerFeet.clone();
           targetLabel = "Last seen angle";
-          desiredSpeed = ENEMY_SPEED;
           shouldShoot = visibility >= 0.72;
         } else {
           behavior = "engage";
           stance = visibility < 0.58 ? "crouched" : "standing";
-          targetPosition = enemyPosition.clone();
+          targetPosition = playerDistance > 6.2 ? playerFeet.clone() : enemyFeet.clone();
           targetLabel = visibility >= 0.72 ? "Clear shot" : "Partial angle";
-          desiredSpeed = playerDistance > 6.2 ? ENEMY_SPEED * 0.32 : 0;
+          moveTowardTarget = playerDistance > 6.2;
           shouldShoot = true;
         }
       } else if (
@@ -2971,7 +3205,6 @@ export class LocalMatch {
         stance = "standing";
         targetPosition = enemy.ai.lastKnownPlayerPosition.clone();
         targetLabel = "Last known position";
-        desiredSpeed = ENEMY_SPEED * 1.04;
       } else if (
         enemy.ai.lastHeardPosition &&
         now - enemy.ai.lastHeardAt <= ENEMY_INVESTIGATION_WINDOW
@@ -2980,13 +3213,11 @@ export class LocalMatch {
         stance = "standing";
         targetPosition = enemy.ai.lastHeardPosition.clone();
         targetLabel = "Sound contact";
-        desiredSpeed = ENEMY_SPEED * 0.95;
       } else if (enemy.ai.role === "anchor") {
         behavior = "objective";
         stance = enemy.ai.role === "anchor" ? "crouched" : "standing";
         targetPosition = enemy.ai.objectiveAnchor.position.clone();
         targetLabel = enemy.ai.objectiveAnchor.label;
-        desiredSpeed = ENEMY_SPEED * 0.82;
       } else {
         behavior = "patrol";
         stance = "standing";
@@ -2994,10 +3225,10 @@ export class LocalMatch {
           enemy.ai.patrolRoute[enemy.ai.patrolIndex] ?? enemy.ai.objectiveAnchor;
         targetPosition = routeTarget.position.clone();
         targetLabel = routeTarget.label;
-        desiredSpeed = ENEMY_SPEED * 0.88;
       }
 
-      const toTarget = targetPosition.clone().sub(enemyPosition);
+      const toTarget = targetPosition.clone().sub(enemyFeet);
+      toTarget.y = 0;
       const targetDistance = toTarget.length();
       if (behavior === "patrol" && targetDistance < 0.9 && enemy.ai.patrolRoute.length > 0) {
         enemy.ai.patrolIndex = (enemy.ai.patrolIndex + 1) % enemy.ai.patrolRoute.length;
@@ -3006,36 +3237,98 @@ export class LocalMatch {
         targetLabel = nextPatrol.label;
       }
 
-      const shouldMove = targetDistance > 0.5 && desiredSpeed > 0.02;
+      const lookTargetBeforeMove = canSeePlayer
+        ? this.camera.position
+        : targetPosition.clone().setY(enemyEye.y);
+      this.faceCombatantAt(enemy.avatar.group, enemyPosition, lookTargetBeforeMove);
+
+      const desiredMoveDirection = targetPosition.clone().sub(enemyFeet).setY(0);
+      const shouldMove = moveTowardTarget && desiredMoveDirection.length() > 0.5;
+      let moveX = 0;
+      let moveZ = 0;
+
       if (shouldMove) {
-        toTarget.normalize();
-        this.tempEnemyMove.set(
-          toTarget.x * desiredSpeed * delta,
-          0,
-          toTarget.z * desiredSpeed * delta,
-        );
+        desiredMoveDirection.normalize();
+        this.tempQuaternion
+          .copy(enemy.avatar.group.quaternion)
+          .multiply(COMBATANT_MOVEMENT_OFFSET);
+        this.tempWorldForward.set(0, 0, -1).applyQuaternion(this.tempQuaternion);
+        this.tempWorldForward.y = 0;
+        this.tempWorldForward.normalize();
+        this.tempLook.crossVectors(this.tempWorldForward, new THREE.Vector3(0, 1, 0)).normalize();
 
-        const next = resolveHorizontalMovement(
-          this.collisionWorld,
-          enemyPosition,
-          this.tempEnemyMove,
-          PLAYER_RADIUS * 0.9,
-          this.enemyBodyHeight(enemy, stance),
-        );
-
-        enemyPosition.x = next.x;
-        enemyPosition.z = next.z;
+        moveZ = desiredMoveDirection.dot(this.tempWorldForward);
+        moveX = desiredMoveDirection.dot(this.tempLook);
+        const inputLength = Math.hypot(moveX, moveZ);
+        if (inputLength > 0.001) {
+          moveX /= inputLength;
+          moveZ /= inputLength;
+        } else {
+          moveX = 0;
+          moveZ = 0;
+        }
       }
+
+      const previousX = enemyPosition.x;
+      const previousZ = enemyPosition.z;
+      this.tempQuaternion
+        .copy(enemy.avatar.group.quaternion)
+        .multiply(COMBATANT_MOVEMENT_OFFSET);
+      const movement = updateSharedMovement(
+        enemy.movementState,
+        enemyPosition,
+        this.tempQuaternion,
+        "feet",
+        this.collisionWorld,
+        delta,
+        now,
+        {
+          enabled: true,
+          moveX,
+          moveZ,
+          crouching: stance === "crouched",
+          jumpRequested: enemy.qaJumpRequested,
+        },
+        this.tempForward,
+        this.tempRight,
+        this.tempEnemyMove,
+        PLAYER_RADIUS,
+      );
+      enemy.qaJumpRequested = false;
+      enemy.speed =
+        delta > 0
+          ? Math.hypot(enemyPosition.x - previousX, enemyPosition.z - previousZ) / delta
+          : 0;
 
       enemy.ai.behavior = behavior;
       enemy.ai.stance = stance;
       enemy.ai.targetLabel = targetLabel;
       enemy.ai.targetPosition.copy(targetPosition);
 
-      const currentEnemyEye = this.enemyEyePosition(enemy, stance);
-      const lookTarget = canSeePlayer ? this.camera.position : targetPosition.clone().setY(currentEnemyEye.y);
+      const currentEnemyEye = this.enemyEyePosition(enemy);
+      const lookTarget = canSeePlayer
+        ? this.camera.position
+        : targetPosition.clone().setY(currentEnemyEye.y);
       const aimPitch = this.aimPitchBetween(currentEnemyEye, lookTarget);
       this.faceCombatantAt(enemy.avatar.group, enemyPosition, lookTarget);
+      this.tempLook.copy(lookTarget).sub(currentEnemyEye);
+      if (this.tempLook.lengthSq() <= 0.0001) {
+        enemy.lookDirection.set(0, 0, 1);
+      } else {
+        enemy.lookDirection.copy(this.tempLook.normalize());
+      }
+
+      const shotProfile =
+        canSeePlayer
+          ? evaluateEnemyShotProfile({
+              distance: playerDistance,
+              visibility,
+              shooterSpeed: enemy.speed,
+              targetSpeed: this.playerSpeed,
+              targetCrouching: this.playerCrouching,
+              shooterCrouching: movement.crouching,
+            })
+          : null;
 
       if (canSeePlayer && shotProfile && !previousVisibility) {
         enemy.nextFireAt = Math.max(enemy.nextFireAt, now + shotProfile.reactionSeconds);
@@ -3049,9 +3342,17 @@ export class LocalMatch {
         enemy.ai.lastShotProfile = shotProfile;
         enemy.ai.lastShotOutcome = rolled.result.hit ? "hit" : "miss";
         enemy.nextFireAt =
-          now + ENEMY_FIRE_INTERVAL + shotProfile.missChance * 0.16 + Math.abs(rolled.result.offsetYawDegrees) * 0.01;
+          now +
+          ENEMY_FIRE_INTERVAL +
+          shotProfile.missChance * 0.16 +
+          Math.abs(rolled.result.offsetYawDegrees) * 0.01;
         enemy.recoil = 0.8;
-        this.recordShotDebug("enemy", now, enemy.id, currentEnemyEye.distanceTo(this.camera.position));
+        this.recordShotDebug(
+          "enemy",
+          now,
+          enemy.id,
+          currentEnemyEye.distanceTo(this.camera.position),
+        );
         this.playWorldFireAt(currentEnemyEye);
 
         if (rolled.result.hit) {
@@ -3062,7 +3363,12 @@ export class LocalMatch {
         }
       }
 
-      enemy.moveBlend = THREE.MathUtils.damp(enemy.moveBlend, shouldMove ? 1 : 0.16, 8, delta);
+      enemy.moveBlend = THREE.MathUtils.damp(
+        enemy.moveBlend,
+        enemy.speed > 0.05 ? THREE.MathUtils.lerp(1, 0.72, enemy.movementState.crouchBlend) : 0,
+        8,
+        delta,
+      );
       enemy.avatar.update(
         now,
         enemy.moveBlend,
@@ -3070,6 +3376,8 @@ export class LocalMatch {
         enemy.recoil,
         enemy.hitFlashUntil > now ? 1 : 0,
         aimPitch,
+        enemy.movementState.crouchBlend,
+        movement.airborne ? 1 : 0,
       );
     }
   }
@@ -3986,7 +4294,11 @@ export class LocalMatch {
   }
 
   private enemyEyeHeight(enemy: EnemyActor, stance = enemy.ai.stance): number {
-    return stance === "crouched" ? ENEMY_CROUCH_EYE_HEIGHT : ENEMY_STANDING_EYE_HEIGHT;
+    if (stance === enemy.ai.stance) {
+      return currentEyeHeight(enemy.movementState);
+    }
+
+    return stance === "crouched" ? CROUCH_EYE_HEIGHT : STANDING_EYE_HEIGHT;
   }
 
   private enemyEyePosition(enemy: EnemyActor, stance = enemy.ai.stance): THREE.Vector3 {
@@ -3994,7 +4306,11 @@ export class LocalMatch {
   }
 
   private enemyBodyHeight(enemy: EnemyActor, stance = enemy.ai.stance): number {
-    return stance === "crouched" ? 1.28 : 1.72;
+    if (stance === enemy.ai.stance) {
+      return currentBodyHeight(enemy.movementState);
+    }
+
+    return stance === "crouched" ? CROUCH_BODY_HEIGHT : STANDING_BODY_HEIGHT;
   }
 
   private playerVisibilityPoints(): THREE.Vector3[] {
@@ -4075,7 +4391,7 @@ export class LocalMatch {
         continue;
       }
 
-      const enemyEye = enemyAnchor.position.clone().setY(ENEMY_STANDING_EYE_HEIGHT);
+      const enemyEye = enemyAnchor.position.clone().setY(STANDING_EYE_HEIGHT);
 
       for (const blockedAnchor of this.tacticalProfile.anchors) {
         if (blockedAnchor.id === enemyAnchor.id) {

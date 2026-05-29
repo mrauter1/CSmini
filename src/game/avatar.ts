@@ -22,6 +22,8 @@ export interface CombatantAvatar {
     recoil: number,
     hitFlash: number,
     aimPitch?: number,
+    crouchBlend?: number,
+    airborneBlend?: number,
   ): void;
 }
 
@@ -221,6 +223,18 @@ export function createCombatantAvatar(
   muzzleFlash.visible = false;
   rifle.add(muzzleFlash);
 
+  const torsoBaseY = torso.position.y;
+  const chestRigBaseY = chestRig.position.y;
+  const shoulderPatchBaseY = shoulderPatch.position.y;
+  const headBaseY = head.position.y;
+  const helmetBaseY = helmet.position.y;
+  const leftArmPivotBaseY = leftArmPivot.position.y;
+  const rightArmPivotBaseY = rightArmPivot.position.y;
+  const leftLegPivotBaseY = leftLegPivot.position.y;
+  const rightLegPivotBaseY = rightLegPivot.position.y;
+  const weaponAimPivotBaseY = weaponAimPivot.position.y;
+  const faceDetailBaseY = faceDetails.map((detail) => detail.position.y);
+
   const hitMeshes = [
     torso,
     chestRig,
@@ -239,23 +253,51 @@ export function createCombatantAvatar(
     weaponAimPivot,
     hitMeshes,
     style,
-    update(elapsed, moveBlend, alive, recoil, hitFlash, aimPitch = 0) {
+    update(
+      elapsed,
+      moveBlend,
+      alive,
+      recoil,
+      hitFlash,
+      aimPitch = 0,
+      crouchBlend = 0,
+      airborneBlend = 0,
+    ) {
       const swing = Math.sin(elapsed * 7.6) * 0.75 * moveBlend;
       const pulse = Math.max(0, hitFlash);
       const clampedAimPitch = THREE.MathUtils.clamp(aimPitch, -1.05, 1.05);
+      const crouchDrop = 0.28 * crouchBlend;
+      const airborneLift = 0.04 * airborneBlend;
 
-      leftArmPivot.rotation.x = alive ? swing : -0.9;
-      rightArmPivot.rotation.x = alive ? -swing - recoil * 0.7 : 0.28;
-      leftLegPivot.rotation.x = alive ? -swing : 0;
-      rightLegPivot.rotation.x = alive ? swing : 0;
+      torso.position.y = torsoBaseY - crouchDrop + airborneLift * 0.24;
+      chestRig.position.y = chestRigBaseY - crouchDrop * 0.94 + airborneLift * 0.2;
+      shoulderPatch.position.y = shoulderPatchBaseY - crouchDrop * 0.88 + airborneLift * 0.16;
+      head.position.y = headBaseY - crouchDrop * 1.05 + airborneLift * 0.26;
+      helmet.position.y = helmetBaseY - crouchDrop * 1.05 + airborneLift * 0.28;
+      leftArmPivot.position.y = leftArmPivotBaseY - crouchDrop * 0.58;
+      rightArmPivot.position.y = rightArmPivotBaseY - crouchDrop * 0.58;
+      leftLegPivot.position.y = leftLegPivotBaseY - crouchDrop * 0.12;
+      rightLegPivot.position.y = rightLegPivotBaseY - crouchDrop * 0.12;
+      weaponAimPivot.position.y = weaponAimPivotBaseY - crouchDrop * 0.9 + airborneLift * 0.12;
 
-      torso.rotation.z = alive ? Math.sin(elapsed * 3.2) * 0.035 * moveBlend : -0.18;
+      for (let index = 0; index < faceDetails.length; index += 1) {
+        faceDetails[index].position.y = faceDetailBaseY[index] - crouchDrop * 1.02 + airborneLift * 0.26;
+      }
+
+      leftArmPivot.rotation.x = alive ? swing - crouchBlend * 0.22 : -0.9;
+      rightArmPivot.rotation.x = alive ? -swing - recoil * 0.7 - crouchBlend * 0.16 : 0.28;
+      leftLegPivot.rotation.x = alive ? -swing + crouchBlend * 0.9 + airborneBlend * 0.08 : 0;
+      rightLegPivot.rotation.x = alive ? swing + crouchBlend * 0.9 + airborneBlend * 0.08 : 0;
+
+      torso.rotation.x = alive ? crouchBlend * 0.08 + airborneBlend * 0.04 : 0;
+      torso.rotation.z =
+        alive ? Math.sin(elapsed * 3.2) * 0.035 * moveBlend * (1 - crouchBlend * 0.32) : -0.18;
       weaponAimPivot.rotation.set(alive ? -clampedAimPitch : 0, 0, 0);
       rifle.rotation.z = alive ? -0.12 - recoil * 0.18 : -0.48;
       rifle.rotation.x = alive ? 0 : 0.22;
       group.rotation.x = 0;
       group.rotation.z = alive ? 0 : 1.34;
-      group.position.y = alive ? 0 : 0.08;
+      group.position.y = alive ? Math.max(0, group.position.y) : 0.08;
 
       muzzleFlash.visible = alive && recoil > 0.34;
       muzzleFlashMaterial.opacity = muzzleFlash.visible ? Math.min(0.88, recoil) : 0;

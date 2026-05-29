@@ -2,6 +2,8 @@ import * as THREE from "three";
 
 import { resolveHorizontalMovement, type CollisionWorld } from "./collision";
 
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
 export const PLAYER_RADIUS = 0.62;
 export const STANDING_EYE_HEIGHT = 1.62;
 export const CROUCH_EYE_HEIGHT = 1.08;
@@ -13,13 +15,15 @@ export const PLAYER_AIR_CONTROL = 0.78;
 export const PLAYER_GRAVITY = 13.6;
 export const PLAYER_JUMP_VELOCITY = 5.25;
 
-export interface PlayerMovementState {
+export interface MovementState {
   verticalVelocity: number;
   heightOffset: number;
   grounded: boolean;
   crouchBlend: number;
   spectatorUntil: number;
 }
+
+export type PlayerMovementState = MovementState;
 
 export interface MovementInputState {
   enabled: boolean;
@@ -28,6 +32,8 @@ export interface MovementInputState {
   crouching: boolean;
   jumpRequested: boolean;
 }
+
+export type MovementVerticalReference = "eye" | "feet";
 
 export interface MovementUpdateResult {
   crouching: boolean;
@@ -40,7 +46,7 @@ export interface MovementUpdateResult {
   jumped: boolean;
 }
 
-export function createPlayerMovementState(): PlayerMovementState {
+export function createMovementState(): MovementState {
   return {
     verticalVelocity: 0,
     heightOffset: 0,
@@ -50,16 +56,20 @@ export function createPlayerMovementState(): PlayerMovementState {
   };
 }
 
-export function currentEyeHeight(state: PlayerMovementState): number {
+export function createPlayerMovementState(): PlayerMovementState {
+  return createMovementState();
+}
+
+export function currentEyeHeight(state: MovementState): number {
   return THREE.MathUtils.lerp(STANDING_EYE_HEIGHT, CROUCH_EYE_HEIGHT, state.crouchBlend);
 }
 
-export function currentBodyHeight(state: PlayerMovementState): number {
+export function currentBodyHeight(state: MovementState): number {
   return THREE.MathUtils.lerp(STANDING_BODY_HEIGHT, CROUCH_BODY_HEIGHT, state.crouchBlend);
 }
 
 export function holdDebugCamera(
-  state: PlayerMovementState,
+  state: MovementState,
   now: number,
   seconds = 0.4,
 ): void {
@@ -67,7 +77,7 @@ export function holdDebugCamera(
 }
 
 export function setDebugCameraPose(
-  state: PlayerMovementState,
+  state: MovementState,
   camera: THREE.PerspectiveCamera,
   now: number,
   x: number,
@@ -82,9 +92,18 @@ export function setDebugCameraPose(
   holdDebugCamera(state, now, holdSeconds);
 }
 
-export function updatePlayerMovement(
-  state: PlayerMovementState,
-  camera: THREE.PerspectiveCamera,
+function movementReferenceY(
+  eyeHeight: number,
+  verticalReference: MovementVerticalReference,
+): number {
+  return verticalReference === "eye" ? eyeHeight : 0;
+}
+
+export function updateSharedMovement(
+  state: MovementState,
+  position: THREE.Vector3,
+  orientation: THREE.Quaternion,
+  verticalReference: MovementVerticalReference,
   collisionWorld: CollisionWorld,
   delta: number,
   now: number,
@@ -92,6 +111,7 @@ export function updatePlayerMovement(
   tempForward: THREE.Vector3,
   tempRight: THREE.Vector3,
   tempDelta: THREE.Vector3,
+  radius = PLAYER_RADIUS,
 ): MovementUpdateResult {
   state.crouchBlend = THREE.MathUtils.damp(
     state.crouchBlend,
@@ -124,20 +144,21 @@ export function updatePlayerMovement(
     }
   }
 
+  const referenceY = movementReferenceY(eyeHeight, verticalReference);
   if (spectatorHold) {
-    state.heightOffset = Math.max(0, camera.position.y - eyeHeight);
+    state.heightOffset = Math.max(0, position.y - referenceY);
     state.grounded = state.heightOffset <= 0.01;
   } else {
-    camera.position.y = eyeHeight + state.heightOffset;
+    position.y = referenceY + state.heightOffset;
   }
 
   const moving = Math.hypot(input.moveX, input.moveZ) > 0.001;
 
   if (!spectatorHold && input.enabled && moving) {
-    tempForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+    tempForward.set(0, 0, -1).applyQuaternion(orientation);
     tempForward.y = 0;
     tempForward.normalize();
-    tempRight.crossVectors(tempForward, new THREE.Vector3(0, 1, 0)).normalize();
+    tempRight.crossVectors(tempForward, WORLD_UP).normalize();
 
     const movementScale = state.grounded ? 1 : PLAYER_AIR_CONTROL;
     const crouchScale = THREE.MathUtils.lerp(1, PLAYER_CROUCH_MULTIPLIER, state.crouchBlend);
@@ -151,13 +172,13 @@ export function updatePlayerMovement(
 
     const next = resolveHorizontalMovement(
       collisionWorld,
-      camera.position,
+      position,
       tempDelta,
-      PLAYER_RADIUS,
+      radius,
       bodyHeight,
     );
-    camera.position.x = next.x;
-    camera.position.z = next.z;
+    position.x = next.x;
+    position.z = next.z;
   }
 
   return {
@@ -170,4 +191,31 @@ export function updatePlayerMovement(
     landed,
     jumped,
   };
+}
+
+export function updatePlayerMovement(
+  state: PlayerMovementState,
+  camera: THREE.PerspectiveCamera,
+  collisionWorld: CollisionWorld,
+  delta: number,
+  now: number,
+  input: MovementInputState,
+  tempForward: THREE.Vector3,
+  tempRight: THREE.Vector3,
+  tempDelta: THREE.Vector3,
+): MovementUpdateResult {
+  return updateSharedMovement(
+    state,
+    camera.position,
+    camera.quaternion,
+    "eye",
+    collisionWorld,
+    delta,
+    now,
+    input,
+    tempForward,
+    tempRight,
+    tempDelta,
+    PLAYER_RADIUS,
+  );
 }

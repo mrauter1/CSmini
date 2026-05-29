@@ -767,6 +767,21 @@ async function evaluateEnemyShot(page, combatantId, overrides = undefined) {
   return profile;
 }
 
+async function enemyMovementSample(page, combatantId) {
+  const sample = await page.evaluate(
+    `window.__dustlineQa__.enemyMovementSample(${JSON.stringify(combatantId)})`,
+  );
+  assert(sample, `Expected a bot movement sample for ${combatantId}`);
+  return sample;
+}
+
+async function requestEnemyJump(page, combatantId) {
+  const requested = await page.evaluate(
+    `window.__dustlineQa__.requestEnemyJump(${JSON.stringify(combatantId)})`,
+  );
+  assert(requested, `Expected live bot jump request to succeed for ${combatantId}`);
+}
+
 function assertWeaponViewAlignment(state, label) {
   const weapon = state?.weaponView;
   assert(weapon, `Expected ${label} to expose weapon view debug state`);
@@ -810,7 +825,7 @@ function assertAlivePosture(entries, label) {
   }
 }
 
-function assertRemoteAim(entries, label) {
+function assertAimContract(entries, label) {
   const aliveEntries = (entries ?? []).filter(
     (entry) => entry && entry.status !== "down" && entry.aim,
   );
@@ -1685,9 +1700,42 @@ async function main() {
       `,
       6_000,
     );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemies = window.__dustlineQa__?.getState()?.enemies ?? [];
+          return enemies.some(
+            (enemy) => enemy?.ai?.behavior === 'objective' && (enemy?.movement?.crouchBlend ?? 0) > 0.55
+          );
+        })()
+      `,
+      4_000,
+    );
 
     const aiOpeningState = await getState(localPage);
     const openingBehaviors = aiOpeningState.enemies.map((enemy) => enemy.ai.behavior);
+    const botMovementTuning = aiOpeningState.tuning?.botMovement;
+    assert(botMovementTuning, "Expected bot movement tuning in debug snapshot");
+    assert(
+      botMovementTuning.walkSpeed === aiOpeningState.tuning?.movement?.walkSpeed,
+      `Expected bot walk speed to match player walk speed, saw ${botMovementTuning.walkSpeed} vs ${aiOpeningState.tuning?.movement?.walkSpeed}`,
+    );
+    assert(
+      botMovementTuning.crouchSpeed === aiOpeningState.tuning?.movement?.crouchSpeed,
+      `Expected bot crouch speed to match player crouch speed, saw ${botMovementTuning.crouchSpeed} vs ${aiOpeningState.tuning?.movement?.crouchSpeed}`,
+    );
+    assert(
+      botMovementTuning.jumpVelocity === aiOpeningState.tuning?.movement?.jumpVelocity,
+      `Expected bot jump velocity to match player jump velocity, saw ${botMovementTuning.jumpVelocity} vs ${aiOpeningState.tuning?.movement?.jumpVelocity}`,
+    );
+    assert(
+      botMovementTuning.gravity === aiOpeningState.tuning?.movement?.gravity,
+      `Expected bot gravity to match player gravity, saw ${botMovementTuning.gravity} vs ${aiOpeningState.tuning?.movement?.gravity}`,
+    );
+    const openingObjectiveEnemy = aiOpeningState.enemies.find(
+      (enemy) => enemy.ai.behavior === "objective" && (enemy.movement?.crouchBlend ?? 0) > 0.55,
+    );
+    assert(openingObjectiveEnemy, "Expected at least one opening objective bot to crouch tactically");
     assertAlivePosture(aiOpeningState.enemies, "opening solo enemy");
     assertTeamVisual(aiOpeningState.enemies, "cobalt", "opening solo enemy");
     const sightlineCase = await stageAiSightlineCase(localPage);
@@ -1710,6 +1758,49 @@ async function main() {
     assert(
       blockedEnemy.ai.canSeePlayer === false,
       "Expected the staged AI wall case to block direct detection",
+    );
+    const botMovementSample = await enemyMovementSample(localPage, sightlineCase.enemyId);
+    assert(
+      Math.abs(botMovementSample.standing.speed - botMovementTuning.walkSpeed) <= 0.35,
+      `Expected standing bot stride near ${botMovementTuning.walkSpeed}u/s, saw ${botMovementSample.standing.speed}`,
+    );
+    assert(
+      Math.abs(botMovementSample.crouched.speed - botMovementTuning.crouchSpeed) <= 0.35,
+      `Expected crouched bot stride near ${botMovementTuning.crouchSpeed}u/s, saw ${botMovementSample.crouched.speed}`,
+    );
+    assert(
+      botMovementSample.crouched.speed < botMovementSample.standing.speed * 0.72,
+      `Expected crouched bot stride to be slower than standing, saw ${botMovementSample.crouched.speed} vs ${botMovementSample.standing.speed}`,
+    );
+    assert(
+      Math.abs(botMovementSample.standing.eyeHeight - botMovementTuning.standingEyeHeight) <= 0.001,
+      `Expected standing bot eye height ${botMovementTuning.standingEyeHeight}, saw ${botMovementSample.standing.eyeHeight}`,
+    );
+    assert(
+      Math.abs(botMovementSample.crouched.eyeHeight - botMovementTuning.crouchEyeHeight) <= 0.001,
+      `Expected crouched bot eye height ${botMovementTuning.crouchEyeHeight}, saw ${botMovementSample.crouched.eyeHeight}`,
+    );
+    assert(
+      Math.abs(botMovementSample.standing.bodyHeight - botMovementTuning.standingBodyHeight) <= 0.001,
+      `Expected standing bot body height ${botMovementTuning.standingBodyHeight}, saw ${botMovementSample.standing.bodyHeight}`,
+    );
+    assert(
+      Math.abs(botMovementSample.crouched.bodyHeight - botMovementTuning.crouchBodyHeight) <= 0.001,
+      `Expected crouched bot body height ${botMovementTuning.crouchBodyHeight}, saw ${botMovementSample.crouched.bodyHeight}`,
+    );
+    assert(botMovementSample.jump.groundedStart === true, "Expected bot jump sample to start grounded");
+    assert(
+      botMovementSample.jump.airborneObserved === true,
+      "Expected bot jump sample to enter an airborne phase",
+    );
+    assert(botMovementSample.jump.landed === true, "Expected bot jump sample to land safely");
+    assert(
+      botMovementSample.jump.peakEyeY > botMovementSample.standing.eyeHeight + 0.18,
+      `Expected bot jump sample peak ${botMovementSample.jump.peakEyeY} above standing eye ${botMovementSample.standing.eyeHeight}`,
+    );
+    assert(
+      Math.abs(botMovementSample.jump.landedEyeY - botMovementSample.standing.eyeHeight) <= 0.12,
+      `Expected bot jump sample to land near standing eye height ${botMovementSample.standing.eyeHeight}, saw ${botMovementSample.jump.landedEyeY}`,
     );
 
     await setView(localPage, sightlineCase.blockedPlayerPosition, {
@@ -1767,6 +1858,7 @@ async function main() {
     const engageEnemy = engageState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
     assert(engageEnemy?.ai?.behavior === "engage", "Expected the staged AI to enter engage behavior");
     assertAlivePosture([engageEnemy], "engage solo enemy");
+    assertAimContract([engageEnemy], "engage solo enemy");
     const aiWorldFire = playableWorldFireEvents(engageState).at(-1);
     assert(aiWorldFire, "Expected solo enemy fire to create a playable world-fire audio event");
     assert(
@@ -1776,6 +1868,37 @@ async function main() {
         aiWorldFire.outputGain >= aiWorldFire.gain,
       `Expected AI shot audio to carry distance-normalized gain, saw ${JSON.stringify(aiWorldFire)}`,
     );
+
+    await requestEnemyJump(localPage, sightlineCase.enemyId);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.movement?.airborne === true && enemy?.posture?.feetY > 0.05;
+        })()
+      `,
+      4_000,
+    );
+    const airborneState = await getState(localPage);
+    const airborneEnemy = airborneState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
+    assertAlivePosture([airborneEnemy], "airborne solo enemy");
+    assertAimContract([airborneEnemy], "airborne solo enemy");
+
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+          return enemy?.movement?.grounded === true && Math.abs(enemy?.posture?.feetY ?? 1) <= 0.02;
+        })()
+      `,
+      5_000,
+    );
+    const landedState = await getState(localPage);
+    const landedEnemy = landedState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
+    assertAlivePosture([landedEnemy], "landed solo enemy");
+    assertAimContract([landedEnemy], "landed solo enemy");
 
     await aimAt(localPage, sightlineCase.enemyId);
     await fire(localPage);
@@ -1855,6 +1978,9 @@ async function main() {
     summary.aiLocal = {
       mapId: aiOpeningState.mapId,
       roundMission: aiOpeningState.round.missionLabel,
+      botMovementTuning,
+      crouchedObjectiveEnemyId: openingObjectiveEnemy.id,
+      botMovementSample,
       observedOpeningBehaviors: openingBehaviors,
       sightlineCase: {
         blockerName: sightlineCase.blockerName,
@@ -1872,6 +1998,8 @@ async function main() {
         blocked: blockedEnemy.posture,
         investigate: investigateEnemy?.posture ?? null,
         engage: engageEnemy.posture,
+        airborne: airborneEnemy?.posture ?? null,
+        landed: landedEnemy?.posture ?? null,
         reposition: repositionEnemy?.posture ?? null,
         pursue: pursueEnemy?.posture ?? null,
       },
@@ -1994,8 +2122,8 @@ async function main() {
     const sharedDuelStateTwo = await getState(sharedPageTwo);
     assertAlivePosture(sharedDuelStateOne.remotePlayers, "shared remote actor page one");
     assertAlivePosture(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
-    assertRemoteAim(sharedDuelStateOne.remotePlayers, "shared remote actor page one");
-    assertRemoteAim(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
+    assertAimContract(sharedDuelStateOne.remotePlayers, "shared remote actor page one");
+    assertAimContract(sharedDuelStateTwo.remotePlayers, "shared remote actor page two");
     assertTeamVisual(sharedDuelStateOne.remotePlayers, "cobalt", "shared remote actor page one");
     assertTeamVisual(sharedDuelStateTwo.remotePlayers, "amber", "shared remote actor page two");
     await captureScreenshot(sharedPageTwo, "12-two-player-multiplayer.png", capturedScreenshots);
@@ -2333,6 +2461,7 @@ async function main() {
     summary.classicFeel = {
       tuning: {
         movement: localBombStart.tuning.movement,
+        botMovement: localBombStart.tuning.botMovement,
         weapon: localBombStart.tuning.weapon,
         round: localBombStart.tuning.round,
         bombTimerRange: {

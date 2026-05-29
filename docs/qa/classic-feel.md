@@ -58,7 +58,10 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 
 ### AI pressure
 
-- Enemy speed: `2.35u/s`
+- Bot locomotion contract: same as player walk/crouch/jump/gravity rules
+- Standing bot stride sample: `8.6u/s`
+- Crouched bot stride sample: `4.816u/s`
+- Bot jump sample: feet peak `0.97`, eye peak `2.59`, landed eye `1.62`, airtime `0.767s`
 - Enemy fire interval: `0.92s`
 - Engage distance: `20u`
 - Investigation window: `3.8s`
@@ -68,7 +71,7 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 - Far moving reaction sample: `0.462s`, hit chance `0.262`
 - Crouched partial sample: hit chance `0.449`
 
-Rationale: the solo fireteam has time to react, miss, reposition, and pressure cover without snapping instantly into perfect hits. That keeps the round readable and tense instead of purely mechanical.
+Rationale: the solo fireteam now closes space, crouches, hops, and lands through the same grounded movement rules as the player, so the threat comes from angle choice, timing, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, reposition, and pressure cover without snapping instantly into perfect hits.
 
 ## Classic-Feel Checklist
 
@@ -100,4 +103,4 @@ Test surfaces used for the checklist:
 
 ## Outcome
 
-No gameplay constant changes were required in this pass. The current values already land inside the intended feel target, and this subgoal formalizes those tuned values plus fresh pass/fail evidence so later verification can audit the homage target directly instead of relying on vague feel claims.
+No player movement constant changes were required in this pass. The current values already land inside the intended feel target, and the solo fireteam now uses those same locomotion values instead of a separate slow-bot path. This note locks in that shared contract plus fresh pass/fail evidence so later verification can audit the homage target directly instead of relying on vague feel claims.

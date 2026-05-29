@@ -96,6 +96,32 @@ declare global {
             airborneSeconds: number;
           }
         | null;
+      requestEnemyJump: (combatantId: string) => boolean;
+      enemyMovementSample: (
+        combatantId: string,
+      ) =>
+        | {
+            standing: { distance: number; speed: number; eyeHeight: number; bodyHeight: number };
+            crouched: { distance: number; speed: number; eyeHeight: number; bodyHeight: number };
+            live: {
+              crouchBlend: number;
+              grounded: boolean;
+              eyeHeight: number;
+              bodyHeight: number;
+              speed: number;
+            };
+            jump: {
+              groundedStart: boolean;
+              airborneObserved: boolean;
+              peakFeetY: number;
+              peakEyeY: number;
+              landedFeetY: number;
+              landedEyeY: number;
+              landed: boolean;
+              airborneSeconds: number;
+            };
+          }
+        | null;
     };
   }
 }
@@ -136,6 +162,8 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     setKey: (code, active) => app.debugSetKey(code, active),
     jump: () => app.debugJump(),
     jumpSample: () => app.debugJumpSample(),
+    requestEnemyJump: (combatantId) => app.debugRequestEnemyJump(combatantId),
+    enemyMovementSample: (combatantId) => app.debugEnemyMovementSample(combatantId),
   };
 }
 

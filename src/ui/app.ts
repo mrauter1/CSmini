@@ -601,6 +601,36 @@ export class TacticalShellApp {
     return this.match?.debugJumpSample() ?? null;
   }
 
+  debugRequestEnemyJump(combatantId: string): boolean {
+    return this.match?.debugRequestEnemyJump(combatantId) ?? false;
+  }
+
+  debugEnemyMovementSample(combatantId: string):
+    | {
+        standing: { distance: number; speed: number; eyeHeight: number; bodyHeight: number };
+        crouched: { distance: number; speed: number; eyeHeight: number; bodyHeight: number };
+        live: {
+          crouchBlend: number;
+          grounded: boolean;
+          eyeHeight: number;
+          bodyHeight: number;
+          speed: number;
+        };
+        jump: {
+          groundedStart: boolean;
+          airborneObserved: boolean;
+          peakFeetY: number;
+          peakEyeY: number;
+          landedFeetY: number;
+          landedEyeY: number;
+          landed: boolean;
+          airborneSeconds: number;
+        };
+      }
+    | null {
+    return this.match?.debugEnemyMovementSample(combatantId) ?? null;
+  }
+
   debugAimAt(combatantId: string): boolean {
     return this.match?.debugAimAt(combatantId) ?? false;
   }
