@@ -22,6 +22,18 @@ Dustline keeps the frontend deployable as a plain static site while still allowi
 - `Same-Browser Dev Room`: the older `BroadcastChannel` transport still exists for local tab-to-tab development and debugging.
 - The room/session protocol lives under `src/net/` and is versioned so malformed or stale messages can be rejected.
 
+## Signaling Abuse Controls
+
+The Cloudflare Worker is intentionally narrow:
+
+- `GET /health` stays lightweight and only reports service readiness plus the public 14-peer room cap.
+- WebSocket signaling is only accepted on `GET /room/:roomId`, with bounded room ids plus bounded path and query lengths so cheap junk requests can be rejected before Durable Object dispatch.
+- Each accepted socket is limited by raw message bytes, SDP bytes, ICE candidate bytes, per-window message count, per-window byte count, and invalid-message count.
+- The Durable Object keeps the room at one host plus up to 13 guests, rejects duplicate peer ids and second hosts, expires sockets that never become ready, and closes idle sessions instead of letting abandoned room metadata accumulate.
+- Relay is allowlist-based: only `offer`, `answer`, and `ice-candidate` pass through, every relay must target a specific peer, and the Worker rebuilds the forwarded payload instead of copying arbitrary client fields.
+
+These controls harden signaling abuse and bandwidth amplification. They are not gameplay anti-cheat. They also do not solve tough NAT traversal or replace TURN, and they do not authenticate browser identities beyond the room protocol itself.
+
 ## Host Authority
 
 The host is the only side that accepts or publishes authoritative room state:
