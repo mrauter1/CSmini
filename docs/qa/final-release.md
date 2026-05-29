@@ -10,7 +10,7 @@ Final verification for the current presentation and release guardrail pass cover
 - static `dist/` build output
 - compact in-match HUD behavior, hold-Tab operations board, and viewport fullscreen control
 - first-person weapon alignment, upright combatant posture, third-person weapon pitch, and team-specific avatar uniforms
-- procedural opponent gunfire audio with playable distance-normalized world-fire gain
+- procedural opponent gunfire audio with a user-gesture unlock pulse and playable distance-normalized world-fire gain
 - final browser QA coverage for movement, rounds, missions, AI, and shared-room sync
 - originality and asset-policy confirmation
 - screenshot refresh for the shipped browser views
@@ -83,8 +83,8 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - local play proved carrier ownership, valid-site arming, planted countdown, and explosion resolution
   - shared-room play proved carrier sync, planted-state sync, defender defuse, and matching resolution text on both pages
 - Shared combat:
-  - page 1 firing in shared mode recorded a sent shot event, page 2 received it, and page 2 logged playable distance-normalized world-fire audio with no blocked reason while marking the remote actor's recent shot state
-  - the browser QA uses a trusted match-control click and asserts page 2's audio context is `running` before counting remote-fire audio as audible
+  - page 1 firing in shared mode recorded a sent shot event, page 2 received it, and page 2 logged playable distance-normalized world-fire audio with no blocked reason after its audio context was armed while marking the remote actor's recent shot state
+  - the browser QA uses a trusted match-control click and asserts page 2's audio context is both `running` and `audioArmed` before counting remote-fire audio as audible
   - stale remote-fire audio is not queued for delayed replay; blocked shots are dropped unless the audio context resumes inside the short freshness window
 - Hostage mode:
   - local play proved secure, escort, route traversal, extraction, and automatic reset into round `3`

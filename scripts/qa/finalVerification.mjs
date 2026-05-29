@@ -379,6 +379,10 @@ async function engageControls(page) {
     "window.__dustlineQa__?.getState()?.audioState?.contextState === 'running'",
     5_000,
   );
+  await page.waitForExpression(
+    "window.__dustlineQa__?.getState()?.audioState?.audioArmed === true",
+    5_000,
+  );
   await delay(150);
 }
 

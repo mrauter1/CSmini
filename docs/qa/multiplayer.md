@@ -57,7 +57,7 @@ Observed results:
 - page 1 saw the remote Cobalt operator with the blue-gray uniform and no domino mask
 - page 2 saw the remote Amber operator with the warm rust/tan uniform and a dark domino mask
 - page 1 fired a live shared-room shot and recorded a `shared-sent` shot event
-- page 2 received the same shot as `shared-received`, marked the remote actor with a recent shot, and logged a playable `world-fire` audio event after its audio context was armed
+- page 2 received the same shot as `shared-received`, marked the remote actor with a recent shot, and logged a playable `world-fire` audio event after its audio context was armed by the user-gesture unlock pulse
 - the received world-fire event carried distance, normalized gain bounded inside the accepted `0.08..0.92` range, no blocked reason, and boosted output gain for audibility
 - stale remote-fire audio is dropped if the receiving browser cannot resume audio immediately, avoiding delayed shots after a later unlock
 

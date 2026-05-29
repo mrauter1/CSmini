@@ -40,7 +40,7 @@ This pass reviewed the current maps, mission content, HUD labels, geometry, UI t
 
 - The menu, roster, HUD, and prompt treatment are original browser-authored UI surfaces implemented in `src/ui/templates.ts`, `src/ui/app.ts`, and `src/styles.css`.
 - Weapon, character, and environment geometry are built from original primitives in the current Three.js scene blueprints, including the team-specific avatar uniforms and Amber domino mask.
-- Audio remains procedural browser synthesis from `src/game/audio.ts`; local fire, remote world-fire, opponent-fire distance gain, and the short audio-resume grace path use generated oscillator voices with no imported gunshots, voice lines, or commercial sound effects.
+- Audio remains procedural browser synthesis from `src/game/audio.ts`; local fire, remote world-fire, opponent-fire distance gain, the near-silent user-gesture unlock pulse, and the short audio-resume grace path use generated oscillator voices with no imported gunshots, voice lines, or commercial sound effects.
 - The current UI and HUD do not copy Counter-Strike branding, logos, fonts, icons, radar art, or panel layouts.
 
 ### Gameplay data and tuning

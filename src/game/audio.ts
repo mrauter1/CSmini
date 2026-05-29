@@ -17,33 +17,44 @@ export interface AudioDebugEvent {
 
 export interface AudioDebugState {
   contextState: AudioDebugContextState;
+  audioArmed: boolean;
   pendingWorldFireCount: number;
   lastResumeAttemptAt: number | null;
+  lastUnlockPulseAt: number | null;
   lastPlayableWorldFireAt: number | null;
   lastBlockedWorldFireAt: number | null;
 }
 
 const WORLD_FIRE_OUTPUT_BOOST = 1.75;
 const WORLD_FIRE_RESUME_GRACE_SECONDS = 0.16;
+const UNLOCK_PULSE_DURATION_SECONDS = 0.045;
+const UNLOCK_PULSE_GAIN = 0.00001;
 
 export class RetroAudio {
   private context?: AudioContext;
   private readonly debugEvents: AudioDebugEvent[] = [];
+  private audioArmed = false;
   private lastResumeAttemptAt: number | null = null;
+  private lastUnlockPulseAt: number | null = null;
   private lastPlayableWorldFireAt: number | null = null;
   private lastBlockedWorldFireAt: number | null = null;
 
   prime(): void {
     const context = this.ensureContext();
-    this.lastResumeAttemptAt = this.debugNow();
+    const requestedAt = performance.now() / 1000;
+    this.lastResumeAttemptAt = requestedAt;
+    this.scheduleUnlockPulse(context, requestedAt);
 
     if (context.state === "running") {
+      this.markArmedIfReady(context);
       return;
     }
 
     void context
       .resume()
-      .then(() => undefined)
+      .then(() => {
+        this.markArmedIfReady(context);
+      })
       .catch(() => undefined);
   }
 
@@ -125,8 +136,10 @@ export class RetroAudio {
   debugState(): AudioDebugState {
     return {
       contextState: this.contextState(),
+      audioArmed: this.audioArmed,
       pendingWorldFireCount: 0,
       lastResumeAttemptAt: this.lastResumeAttemptAt,
+      lastUnlockPulseAt: this.lastUnlockPulseAt,
       lastPlayableWorldFireAt: this.lastPlayableWorldFireAt,
       lastBlockedWorldFireAt: this.lastBlockedWorldFireAt,
     };
@@ -146,6 +159,40 @@ export class RetroAudio {
   private ensureContext(): AudioContext {
     this.context ??= new AudioContext();
     return this.context;
+  }
+
+  private scheduleUnlockPulse(context: AudioContext, requestedAt: number): void {
+    if (this.audioArmed || this.lastUnlockPulseAt !== null) {
+      return;
+    }
+
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const startAt = context.currentTime;
+    const endAt = startAt + UNLOCK_PULSE_DURATION_SECONDS;
+
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(64, startAt);
+    gain.gain.setValueAtTime(UNLOCK_PULSE_GAIN, startAt);
+    gain.gain.setValueAtTime(UNLOCK_PULSE_GAIN, endAt - 0.01);
+    gain.gain.linearRampToValueAtTime(0.000001, endAt);
+
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startAt);
+    oscillator.stop(endAt + 0.01);
+    oscillator.onended = () => {
+      oscillator.disconnect();
+      gain.disconnect();
+    };
+
+    this.lastUnlockPulseAt = Number(requestedAt.toFixed(3));
+  }
+
+  private markArmedIfReady(context: AudioContext): void {
+    if (context.state === "running" && this.lastUnlockPulseAt !== null) {
+      this.audioArmed = true;
+    }
   }
 
   private voice(

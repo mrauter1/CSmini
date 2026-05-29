@@ -116,7 +116,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - In the blocked pose, the debug state reported `visibility: 0` and `canSeePlayer: false`.
 - Firing once from the blocked pose drew the enemy into `investigate`, but the same debug state kept `shotsFired: 0`, proving the bot reacted to sound without shooting through the crate stack.
 - Moving to the clear pose advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `4` shots and split them into `2` hits and `2` misses.
-- The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility.
+- The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility after the user-gesture unlock pulse armed the audio context.
 - Stale opponent-fire audio is not replayed after a late browser audio unlock; blocked shots are dropped rather than played out of time.
 - After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then dropped into `pursue` after the player ducked back behind cover.
 - The shared shot model was sampled through the QA hook with three profiles:
