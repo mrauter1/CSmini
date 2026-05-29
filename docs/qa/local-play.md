@@ -7,6 +7,10 @@ Date: 2026-05-29
 Targeted verification for `round-core-and-movement-foundation`, `bomb-mission-mode`, and `hostage-mission-mode`:
 
 - explicit team entry in the browser flow
+- solo bot difficulty selection with `easy`, `medium`, and `hard`
+- `medium` as the default solo bot level when storage is empty or unavailable
+- best-effort solo bot difficulty persistence across reload when storage works
+- safe solo-local fallback when bot-difficulty storage throws
 - roster-wide team spawn separation across every shipped playable map
 - live round metadata driven from declared mission data
 - crouch camera and speed change
@@ -37,6 +41,17 @@ npm test
 `npm test` runs `node scripts/qa/finalVerification.mjs`, which starts `vite preview`, opens a WebGL-capable headless Chrome session, and drives the browser QA hooks exposed through `window.__dustlineQa__`.
 
 ## Fresh Results
+
+### Solo bot difficulty selection
+
+- The menu and roster flow exposed exactly three solo bot controls: `easy`, `medium`, and `hard`.
+- The default browser state reported `medium` through `window.__dustlineQa__.getState().botDifficulty`.
+- A menu click changed the stored value to `hard`, and the same `hard` value carried into a live local round through the durable debug snapshot.
+- A QA hook changed the live local round to `easy`, and the same debug snapshot updated in place without breaking the solo match shell.
+- An explicit restore to `medium` kept the roster flow aligned with the default contract before the rest of the local-play pass continued.
+- A reload-focused QA page kept `hard` selected after refresh when storage was available.
+- A storage-failure QA page forced `localStorage` reads and writes for `dustline.soloBotDifficulty` to throw; the shell still defaulted to `medium`, accepted an in-memory `easy` selection, and opened a solo round without crashing.
+- The player-facing note stayed explicit that the selector applies to solo rounds only and that shared-room sessions stay human-only across tabs.
 
 ### Roster-wide map pass
 

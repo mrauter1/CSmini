@@ -1,5 +1,6 @@
 import "./styles.css";
 
+import type { BotDifficulty } from "./game/botDifficulty";
 import { TacticalShellApp } from "./ui/app";
 import type { TeamPreference } from "./types";
 
@@ -8,6 +9,7 @@ declare global {
     __dustlineQa__?: {
       openMap: (mapId: string, mode: "shared" | "local") => void;
       setTeamPreference: (teamPreference: TeamPreference) => void;
+      setBotDifficulty: (botDifficulty: BotDifficulty) => void;
       returnToCatalog: () => void;
       getState: () => Record<string, unknown> | null;
       engageControls: () => void;
@@ -111,6 +113,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
   window.__dustlineQa__ = {
     openMap: (mapId, mode) => app.debugOpenMap(mapId, mode),
     setTeamPreference: (teamPreference) => app.debugSetTeamPreference(teamPreference),
+    setBotDifficulty: (botDifficulty) => app.debugSetBotDifficulty(botDifficulty),
     returnToCatalog: () => app.debugReturnToCatalog(),
     getState: () => app.debugGetState(),
     engageControls: () => app.debugEngageControls(),

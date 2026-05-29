@@ -7,7 +7,7 @@ Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The cu
 - Teams: `Amber Vanguard` and `Cobalt Reach`
 - Modes:
   - `Shared Room`: same-map tab-to-tab sync through `BroadcastChannel`, including roster, round, remote aim, and remote fire feedback
-  - `Solo Round`: local play with a lightweight enemy fireteam
+  - `Solo Round`: local play with a lightweight enemy fireteam and a browser-saved `easy` / `medium` / `hard` bot selector (`medium` default)
 - Round shell:
   - briefing
   - active round
@@ -100,6 +100,7 @@ The current originality and asset-policy record is `docs/assets.md`. The project
 ## Known Limitations
 
 - Shared-room multiplayer is intentionally same-browser and same-machine only; it is not networked matchmaking.
+- Solo bot difficulty is currently a solo-local setting only; shared-room sessions remain human-only across tabs.
 - Tactical AI verification is focused on solo-local rounds, not on shared-room opponent bots.
 - The live art direction is intentionally flatter than the richer reference paintings, especially on walls and ground materials.
 - `src/game/localMatch.ts` remains the largest gameplay file and the first refactor target if the prototype expands further.

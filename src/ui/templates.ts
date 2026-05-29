@@ -1,3 +1,8 @@
+import {
+  BOT_DIFFICULTIES,
+  botDifficultyLabel,
+  type BotDifficulty,
+} from "../game/botDifficulty";
 import { missionBadges } from "../game/missions";
 import type { MatchMode } from "../game/multiplayerRoom";
 import { TEAM_ORDER, getTeamDefinition, teamPreferenceLabel } from "../game/teams";
@@ -47,6 +52,56 @@ function renderTeamPicker(teamPreference: TeamPreference): string {
       <div class="team-picks">
         ${teamPreferenceButton("auto", teamPreference)}
         ${TEAM_ORDER.map((teamId) => teamPreferenceButton(teamId, teamPreference)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function botDifficultyButton(
+  difficulty: BotDifficulty,
+  activeDifficulty: BotDifficulty,
+  compact = false,
+): string {
+  return `
+    <button
+      class="difficulty-pick ${activeDifficulty === difficulty ? "difficulty-pick--active" : ""}"
+      data-action="set-bot-difficulty"
+      data-bot-difficulty="${difficulty}"
+      aria-pressed="${activeDifficulty === difficulty}"
+    >
+      <strong>${escapeHtml(botDifficultyLabel(difficulty))}</strong>
+      ${
+        compact
+          ? ""
+          : `<span>${escapeHtml(
+              difficulty === "medium"
+                ? "Default solo fireteam level."
+                : "Stored for solo rounds in this browser.",
+            )}</span>`
+      }
+    </button>
+  `;
+}
+
+function renderBotDifficultyControls(
+  activeDifficulty: BotDifficulty,
+  note: string,
+  compact = false,
+): string {
+  return `
+    <section class="${compact ? "difficulty-strip" : "difficulty-panel panel"}">
+      <div class="panel__header ${compact ? "panel__header--compact" : ""}">
+        <p>Solo Fireteam</p>
+        <span class="chip chip--primary" data-ui="bot-difficulty-current">${escapeHtml(botDifficultyLabel(activeDifficulty))}</span>
+      </div>
+      ${
+        compact
+          ? ""
+          : `<h2>Set Bot Difficulty</h2>`
+      }
+      <p class="${compact ? "difficulty-strip__note" : "panel__text"}" data-ui="bot-difficulty-note">${escapeHtml(note)}</p>
+      <div class="difficulty-picks">
+        ${BOT_DIFFICULTIES.map((difficulty) => botDifficultyButton(difficulty, activeDifficulty, compact)).join("")}
       </div>
     </section>
   `;
@@ -119,7 +174,11 @@ function controlHint(label: string, text: string, dataUi?: string): string {
   `;
 }
 
-export function renderMenu(map: MapDefinition, teamPreference: TeamPreference): string {
+export function renderMenu(
+  map: MapDefinition,
+  teamPreference: TeamPreference,
+  botDifficulty: BotDifficulty,
+): string {
   const missionLabels = missionBadges(map);
 
   return `
@@ -150,6 +209,10 @@ export function renderMenu(map: MapDefinition, teamPreference: TeamPreference): 
             <p class="brief-panel__note">${missionLabels.map(missionChip).join("")}</p>
           </div>
           ${renderTeamPicker(teamPreference)}
+          ${renderBotDifficultyControls(
+            botDifficulty,
+            "Best-effort saved in this browser. Applies to solo rounds only. Shared Room stays human-only across tabs.",
+          )}
         </section>
 
         <section class="hero-grid__preview panel">
@@ -164,7 +227,11 @@ export function renderMenu(map: MapDefinition, teamPreference: TeamPreference): 
   `;
 }
 
-export function renderCatalog(maps: MapDefinition[], teamPreference: TeamPreference): string {
+export function renderCatalog(
+  maps: MapDefinition[],
+  teamPreference: TeamPreference,
+  botDifficulty: BotDifficulty,
+): string {
   return `
     <section class="screen screen--catalog">
       <header class="masthead panel">
@@ -183,6 +250,10 @@ export function renderCatalog(maps: MapDefinition[], teamPreference: TeamPrefere
       </header>
 
       ${renderTeamPicker(teamPreference)}
+      ${renderBotDifficultyControls(
+        botDifficulty,
+        "Best-effort saved in this browser. Applies to solo rounds only. Shared Room stays human-only across tabs.",
+      )}
 
       <div class="map-grid">
         ${maps.map(mapCard).join("")}
@@ -197,11 +268,16 @@ export function renderMapStage(
   mode: MatchMode,
   teamPreference: TeamPreference,
   classicCrouchAlias: boolean,
+  botDifficulty: BotDifficulty,
 ): string {
   const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Round";
   const switchModeLabel = mode === "shared" ? "Switch to Solo Round" : "Switch to Shared Room";
   const switchMode = mode === "shared" ? "local" : "shared";
   const crouchLabel = crouchControlLabel(classicCrouchAlias);
+  const botDifficultyNote =
+    mode === "local"
+      ? "Applies to this solo-local fireteam only."
+      : "Stored for solo rounds only. Shared Room stays human-only across tabs.";
 
   return `
     <section class="screen screen--match">
@@ -336,6 +412,7 @@ export function renderMapStage(
             <p class="masthead__eyebrow">${modeEyebrow}</p>
             <h2>Match Options</h2>
             <p class="panel__text">Hold Tab inside the viewport for roster, mission detail, objective state, and controls. Use the corner button or Alt+Enter for viewport fullscreen.</p>
+            ${renderBotDifficultyControls(botDifficulty, botDifficultyNote, true)}
           </div>
           <div class="match-console__actions">
             <button class="button" data-action="show-catalog">Change Map</button>

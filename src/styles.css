@@ -278,10 +278,22 @@ p {
   padding: 22px;
 }
 
+.difficulty-panel {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+}
+
 .team-picks {
   display: grid;
   gap: 12px;
   margin-top: 16px;
+}
+
+.difficulty-picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
 }
 
 .team-pick {
@@ -317,6 +329,46 @@ p {
 
 .team-pick[data-team-tone="cobalt"].team-pick--active {
   background: rgba(111, 143, 170, 0.14);
+}
+
+.difficulty-pick {
+  display: grid;
+  gap: 5px;
+  min-height: 82px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  text-align: left;
+  transition:
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.difficulty-pick:hover,
+.difficulty-pick--active {
+  transform: translateY(-1px);
+  border-color: rgba(226, 197, 138, 0.28);
+  background: rgba(197, 159, 99, 0.12);
+}
+
+.difficulty-pick strong {
+  font-size: 0.92rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.difficulty-pick span,
+.difficulty-strip__note {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.difficulty-strip {
+  display: grid;
+  gap: 10px;
 }
 
 .map-grid {
@@ -1163,6 +1215,10 @@ p {
   gap: 10px;
 }
 
+.match-console__copy .difficulty-strip {
+  margin-top: 4px;
+}
+
 .match-console__actions {
   display: flex;
   flex-wrap: wrap;
@@ -1220,7 +1276,8 @@ p {
 
   .button,
   .focus-chip,
-  .ribbon-map {
+  .ribbon-map,
+  .difficulty-pick {
     width: 100%;
   }
 

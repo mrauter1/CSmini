@@ -3,6 +3,7 @@ import { PointerLockControls } from "three/examples/jsm/controls/PointerLockCont
 
 import type { MapDefinition, TeamId, TeamPreference } from "../types";
 import { createPrimitiveMesh, disposeObject } from "../world/primitives";
+import type { BotDifficulty } from "./botDifficulty";
 import {
   buildRoomId,
   createRoomIdentity,
@@ -196,6 +197,7 @@ export interface LocalMatchSnapshot {
 interface LocalMatchOptions {
   mode: MatchMode;
   teamPreference: TeamPreference;
+  botDifficulty: BotDifficulty;
   classicCrouchAlias: boolean;
   onActionRequest?: (action: "catalog" | "menu") => void;
   onSnapshot: (snapshot: LocalMatchSnapshot) => void;
@@ -324,6 +326,7 @@ export class LocalMatch {
   private readonly localTeamPreference: TeamPreference;
   private readonly localTeamId: TeamId;
   private readonly enemyTeamId: TeamId;
+  private botDifficulty: BotDifficulty;
 
   private sharedRoom?: SharedRoomSession;
   private activeMode: MatchMode = "local";
@@ -377,6 +380,7 @@ export class LocalMatch {
     this.localTeamPreference = options.teamPreference;
     this.localTeamId = resolveTeamPreference(options.teamPreference, []);
     this.enemyTeamId = opposingTeam(this.localTeamId);
+    this.botDifficulty = options.botDifficulty;
     this.movementState = createPlayerMovementState();
     this.playerEyeHeight = currentEyeHeight(this.movementState);
     this.roundState = createInitialRoundState(map, this.roundNow());
@@ -505,6 +509,7 @@ export class LocalMatch {
       mapName: this.map.name,
       requestedMode: this.options.mode,
       activeMode: this.activeMode,
+      botDifficulty: this.botDifficulty,
       roomId: this.activeMode === "shared" ? this.roomId : null,
       scoreboardVisible: this.scoreboardVisible,
       fullscreen: {
@@ -579,6 +584,7 @@ export class LocalMatch {
           resolutionSeconds: Number(ROUND_DURATIONS.resolution.toFixed(1)),
         },
         ai: {
+          botDifficulty: this.botDifficulty,
           enemySpeed: Number(ENEMY_SPEED.toFixed(2)),
           fireInterval: Number(ENEMY_FIRE_INTERVAL.toFixed(2)),
           engageDistance: Number(ENEMY_ENGAGE_DISTANCE.toFixed(1)),
@@ -851,6 +857,11 @@ export class LocalMatch {
       this.movementKeys.delete("ControlRight");
     }
 
+    this.emitSnapshot();
+  }
+
+  setBotDifficulty(difficulty: BotDifficulty): void {
+    this.botDifficulty = difficulty;
     this.emitSnapshot();
   }
 

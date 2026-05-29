@@ -1,5 +1,13 @@
 import { featuredMap, getMapById, mapCatalog } from "../data/maps";
 import {
+  BOT_DIFFICULTIES,
+  botDifficultyLabel,
+  isBotDifficulty,
+  readStoredBotDifficulty,
+  writeStoredBotDifficulty,
+  type BotDifficulty,
+} from "../game/botDifficulty";
+import {
   CLASSIC_CROUCH_STORAGE_KEY,
   crouchControlLabel,
 } from "../game/controls";
@@ -32,6 +40,7 @@ export class TacticalShellApp {
   private activeMapId = featuredMap.id;
   private activeMode: MatchMode = "shared";
   private teamPreference: TeamPreference = "auto";
+  private botDifficulty = readStoredBotDifficulty();
   private classicCrouchAlias = readClassicCrouchAlias();
   private match?: LocalMatch;
   private renderToken = 0;
@@ -70,6 +79,7 @@ export class TacticalShellApp {
     const mapId = actionButton.dataset.mapId;
     const mode = this.readMode(actionButton.dataset.mode);
     const team = this.readTeamPreference(actionButton.dataset.team);
+    const botDifficulty = this.readBotDifficulty(actionButton.dataset.botDifficulty);
 
     switch (action) {
       case "show-menu":
@@ -99,6 +109,13 @@ export class TacticalShellApp {
 
         this.teamPreference = team;
         this.render();
+        return;
+      case "set-bot-difficulty":
+        if (!botDifficulty) {
+          return;
+        }
+
+        this.applyBotDifficulty(botDifficulty);
         return;
       case "open-map":
       case "swap-map":
@@ -132,12 +149,16 @@ export class TacticalShellApp {
     this.teardownMatch();
 
     if (this.screen === "menu") {
-      this.root.innerHTML = renderMenu(getMapById(this.activeMapId), this.teamPreference);
+      this.root.innerHTML = renderMenu(
+        getMapById(this.activeMapId),
+        this.teamPreference,
+        this.botDifficulty,
+      );
       return;
     }
 
     if (this.screen === "catalog") {
-      this.root.innerHTML = renderCatalog(mapCatalog, this.teamPreference);
+      this.root.innerHTML = renderCatalog(mapCatalog, this.teamPreference, this.botDifficulty);
       return;
     }
 
@@ -148,6 +169,7 @@ export class TacticalShellApp {
       this.activeMode,
       this.teamPreference,
       this.classicCrouchAlias,
+      this.botDifficulty,
     );
 
     const host = this.root.querySelector<HTMLElement>("[data-world-host]");
@@ -181,6 +203,7 @@ export class TacticalShellApp {
       match = new LocalMatch(host, map, {
         mode: this.activeMode,
         teamPreference: this.teamPreference,
+        botDifficulty: this.botDifficulty,
         classicCrouchAlias: this.classicCrouchAlias,
         onActionRequest: (action) => {
           if (token !== this.renderToken) {
@@ -387,6 +410,7 @@ export class TacticalShellApp {
     });
 
     this.syncClassicCrouchUi();
+    this.syncBotDifficultyUi();
   }
 
   private syncClassicCrouchUi(): void {
@@ -401,6 +425,53 @@ export class TacticalShellApp {
       toggle.textContent = `Ctrl Crouch ${this.classicCrouchAlias ? "On" : "Off"}`;
       toggle.setAttribute("aria-pressed", String(this.classicCrouchAlias));
     }
+  }
+
+  private syncBotDifficultyUi(): void {
+    const label = botDifficultyLabel(this.botDifficulty);
+    const note = this.botDifficultyNote();
+
+    this.root.querySelectorAll<HTMLElement>('[data-ui="bot-difficulty-current"]').forEach((node) => {
+      node.textContent = label;
+    });
+
+    this.root.querySelectorAll<HTMLElement>('[data-ui="bot-difficulty-note"]').forEach((node) => {
+      node.textContent = note;
+    });
+
+    this.root
+      .querySelectorAll<HTMLButtonElement>('[data-action="set-bot-difficulty"]')
+      .forEach((button) => {
+        const difficulty = this.readBotDifficulty(button.dataset.botDifficulty);
+        const active = difficulty === this.botDifficulty;
+        button.classList.toggle("difficulty-pick--active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+  }
+
+  private applyBotDifficulty(difficulty: BotDifficulty): void {
+    this.botDifficulty = difficulty;
+    writeStoredBotDifficulty(this.botDifficulty);
+    this.match?.setBotDifficulty(this.botDifficulty);
+
+    if (this.screen === "stage" && this.match) {
+      this.syncBotDifficultyUi();
+      return;
+    }
+
+    this.render();
+  }
+
+  private botDifficultyNote(): string {
+    if (this.screen !== "stage") {
+      return "Best-effort saved in this browser. Applies to solo rounds only. Shared Room stays human-only across tabs.";
+    }
+
+    if (this.activeMode === "local") {
+      return "Applies to this solo-local fireteam only.";
+    }
+
+    return "Stored for solo rounds only. Shared Room stays human-only across tabs.";
   }
 
   private escapeHtml(value: string): string {
@@ -433,13 +504,26 @@ export class TacticalShellApp {
     this.render();
   }
 
+  debugSetBotDifficulty(botDifficulty: BotDifficulty): void {
+    this.applyBotDifficulty(botDifficulty);
+  }
+
   debugReturnToCatalog(): void {
     this.screen = "catalog";
     this.render();
   }
 
   debugGetState(): Record<string, unknown> | null {
-    return this.match?.debugSnapshot() ?? null;
+    return {
+      screen: this.screen,
+      activeMapId: this.activeMapId,
+      activeMode: this.activeMode,
+      teamPreference: this.teamPreference,
+      classicCrouchAlias: this.classicCrouchAlias,
+      botDifficulty: this.botDifficulty,
+      availableBotDifficulties: [...BOT_DIFFICULTIES],
+      ...(this.match?.debugSnapshot() ?? {}),
+    };
   }
 
   debugEngageControls(): void {
@@ -590,5 +674,9 @@ export class TacticalShellApp {
     }
 
     return undefined;
+  }
+
+  private readBotDifficulty(value: string | undefined): BotDifficulty | undefined {
+    return isBotDifficulty(value) ? value : undefined;
   }
 }

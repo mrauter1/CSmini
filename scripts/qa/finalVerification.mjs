@@ -309,32 +309,50 @@ class CdpPage {
   }
 }
 
-async function createPage(url, initScript) {
+async function waitForQaReady(page) {
+  await page.waitForExpression("document.readyState === 'complete'");
+  await page.waitForExpression(
+    `
+      typeof window.__dustlineQa__?.getState === 'function'
+        && typeof window.__dustlineQa__?.setTeamPreference === 'function'
+        && typeof window.__dustlineQa__?.setBotDifficulty === 'function'
+        && typeof window.__dustlineQa__?.openMap === 'function'
+    `,
+    15_000,
+  );
+}
+
+async function createPage(url, initScript, options = {}) {
+  const { resetStorage = true } = options;
   const target = await requestJsonNew("about:blank");
   const page = new CdpPage(target.webSocketDebuggerUrl);
   await page.enablePage();
 
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `
+      ${
+        resetStorage
+          ? `
       try {
         localStorage.removeItem("dustline.classicCrouchAlias");
+        localStorage.removeItem("dustline.soloBotDifficulty");
       } catch {}
+      `
+          : ""
+      }
 
       ${initScript ?? ""}
     `,
   });
 
   await page.send("Page.navigate", { url });
-  await page.waitForExpression("document.readyState === 'complete'");
-  await page.waitForExpression(
-    `
-      typeof window.__dustlineQa__?.getState === 'function'
-        && typeof window.__dustlineQa__?.setTeamPreference === 'function'
-        && typeof window.__dustlineQa__?.openMap === 'function'
-    `,
-    15_000,
-  );
+  await waitForQaReady(page);
   return page;
+}
+
+async function reloadPage(page) {
+  await page.send("Page.reload", { ignoreCache: true });
+  await waitForQaReady(page);
 }
 
 async function click(page, selector) {
@@ -479,6 +497,27 @@ async function setTeamPreference(page, teamPreference) {
     `window.__dustlineQa__.setTeamPreference(${JSON.stringify(teamPreference)})`,
   );
   await delay(120);
+}
+
+async function setBotDifficulty(page, botDifficulty) {
+  await page.evaluate(
+    `window.__dustlineQa__.setBotDifficulty(${JSON.stringify(botDifficulty)})`,
+  );
+  await delay(120);
+}
+
+async function readBotDifficultyUi(page) {
+  return page.evaluate(`
+    (() => {
+      const activeButton = document.querySelector('[data-action="set-bot-difficulty"][aria-pressed="true"]');
+      return {
+        count: document.querySelectorAll('[data-action="set-bot-difficulty"]').length,
+        active: activeButton?.getAttribute('data-bot-difficulty') ?? null,
+        current: document.querySelector('[data-ui="bot-difficulty-current"]')?.textContent?.trim() ?? '',
+        note: document.querySelector('[data-ui="bot-difficulty-note"]')?.textContent?.trim() ?? '',
+      };
+    })()
+  `);
 }
 
 async function returnToCatalog(page) {
@@ -901,6 +940,7 @@ async function main() {
 
   try {
     const summary = {
+      botDifficulty: {},
       mapCards: 0,
       mapChecks: [],
       movement: {},
@@ -924,10 +964,185 @@ async function main() {
     await localPage.bringToFront();
     await localPage.waitForExpression("Boolean(document.querySelector('.screen--menu'))");
     await captureScreenshot(localPage, "01-menu-briefing.png", capturedScreenshots);
+
+    const defaultDifficultyState = await getState(localPage);
+    const defaultDifficultyUi = await readBotDifficultyUi(localPage);
+    assert(
+      defaultDifficultyState?.botDifficulty === "medium",
+      `Expected default solo bot difficulty to be medium, saw ${defaultDifficultyState?.botDifficulty}`,
+    );
+    assert(defaultDifficultyUi.count === 3, `Expected 3 solo bot difficulty controls, saw ${defaultDifficultyUi.count}`);
+    assert(
+      defaultDifficultyUi.active === "medium",
+      `Expected medium difficulty button to be active by default, saw ${defaultDifficultyUi.active}`,
+    );
+    assert(
+      /solo rounds only/i.test(defaultDifficultyUi.note) &&
+        /human-only/i.test(defaultDifficultyUi.note),
+      `Expected solo/shared scope note for bot difficulty, saw "${defaultDifficultyUi.note}"`,
+    );
+
+    await click(
+      localPage,
+      '[data-action="set-bot-difficulty"][data-bot-difficulty="hard"]',
+    );
+    const hardMenuState = await getState(localPage);
+    const hardStoredValue = await localPage.evaluate(`
+      (() => {
+        try {
+          return localStorage.getItem('dustline.soloBotDifficulty');
+        } catch {
+          return null;
+        }
+      })()
+    `);
+    assert(
+      hardMenuState?.botDifficulty === "hard",
+      `Expected hard difficulty selection to update shell state, saw ${hardMenuState?.botDifficulty}`,
+    );
+    assert(
+      hardStoredValue === "hard",
+      `Expected hard difficulty to persist in localStorage, saw ${hardStoredValue}`,
+    );
+
+    await setBotDifficulty(localPage, "medium");
+    const restoredMenuState = await getState(localPage);
+    assert(
+      restoredMenuState?.botDifficulty === "medium",
+      `Expected explicit medium selection to restore shell state, saw ${restoredMenuState?.botDifficulty}`,
+    );
+
     await click(localPage, '[data-action="show-catalog"]');
     summary.mapCards = await localPage.waitForExpression("document.querySelectorAll('.map-card').length");
     assert(summary.mapCards === 5, `Expected 5 map cards, saw ${summary.mapCards}`);
     await captureScreenshot(localPage, "02-map-select-roster.png", capturedScreenshots);
+
+    const catalogDifficultyUi = await readBotDifficultyUi(localPage);
+    assert(
+      catalogDifficultyUi.active === "medium",
+      `Expected catalog difficulty state to stay on medium after restore, saw ${catalogDifficultyUi.active}`,
+    );
+
+    await click(
+      localPage,
+      '[data-action="set-bot-difficulty"][data-bot-difficulty="hard"]',
+    );
+    await openMap(localPage, "sandline-foundry", "local");
+    const hardMatchState = await getState(localPage);
+    const hardStageDifficultyUi = await readBotDifficultyUi(localPage);
+    assert(
+      hardMatchState?.botDifficulty === "hard",
+      `Expected hard difficulty to flow into live local match debug state, saw ${hardMatchState?.botDifficulty}`,
+    );
+    assert(
+      /solo-local fireteam/i.test(hardStageDifficultyUi.note),
+      `Expected live local difficulty note to stay solo-local, saw "${hardStageDifficultyUi.note}"`,
+    );
+
+    await setBotDifficulty(localPage, "easy");
+    const easyMatchState = await getState(localPage);
+    assert(
+      easyMatchState?.botDifficulty === "easy",
+      `Expected easy difficulty hook to update live local match debug state, saw ${easyMatchState?.botDifficulty}`,
+    );
+
+    await returnToCatalog(localPage);
+    await setBotDifficulty(localPage, "medium");
+    const mediumCatalogState = await getState(localPage);
+    assert(
+      mediumCatalogState?.botDifficulty === "medium",
+      `Expected explicit medium difficulty hook to restore catalog state, saw ${mediumCatalogState?.botDifficulty}`,
+    );
+
+    const persistencePage = await createPage(
+      `${ROOT_URL}?qa=1`,
+      `
+        try {
+          if (!sessionStorage.getItem("qa-bot-difficulty-reset")) {
+            localStorage.removeItem("dustline.classicCrouchAlias");
+            localStorage.removeItem("dustline.soloBotDifficulty");
+            sessionStorage.setItem("qa-bot-difficulty-reset", "1");
+          }
+        } catch {}
+      `,
+      { resetStorage: false },
+    );
+    pages.push(persistencePage);
+
+    await persistencePage.bringToFront();
+    await persistencePage.waitForExpression("Boolean(document.querySelector('.screen--menu'))");
+    const persistenceInitialState = await getState(persistencePage);
+    assert(
+      persistenceInitialState?.botDifficulty === "medium",
+      `Expected persistence test page to start from medium, saw ${persistenceInitialState?.botDifficulty}`,
+    );
+    await setBotDifficulty(persistencePage, "hard");
+    await reloadPage(persistencePage);
+    await persistencePage.waitForExpression("Boolean(document.querySelector('.screen--menu'))");
+    const persistenceReloadedState = await getState(persistencePage);
+    assert(
+      persistenceReloadedState?.botDifficulty === "hard",
+      `Expected hard difficulty to survive reload, saw ${persistenceReloadedState?.botDifficulty}`,
+    );
+
+    const blockedStoragePage = await createPage(
+      `${ROOT_URL}?qa=1`,
+      `
+        (() => {
+          const originalGetItem = Storage.prototype.getItem;
+          const originalSetItem = Storage.prototype.setItem;
+          Storage.prototype.getItem = function (key) {
+            if (key === "dustline.soloBotDifficulty") {
+              throw new Error("Blocked by QA");
+            }
+            return originalGetItem.call(this, key);
+          };
+          Storage.prototype.setItem = function (key, value) {
+            if (key === "dustline.soloBotDifficulty") {
+              throw new Error("Blocked by QA");
+            }
+            return originalSetItem.call(this, key, value);
+          };
+        })();
+      `,
+    );
+    pages.push(blockedStoragePage);
+
+    await blockedStoragePage.bringToFront();
+    await blockedStoragePage.waitForExpression("Boolean(document.querySelector('.screen--menu'))");
+    const blockedStorageDefaultState = await getState(blockedStoragePage);
+    assert(
+      blockedStorageDefaultState?.botDifficulty === "medium",
+      `Expected blocked storage fallback to keep medium default, saw ${blockedStorageDefaultState?.botDifficulty}`,
+    );
+    await setBotDifficulty(blockedStoragePage, "easy");
+    await openMap(blockedStoragePage, "sandline-foundry", "local");
+    const blockedStorageMatchState = await getState(blockedStoragePage);
+    assert(
+      blockedStorageMatchState?.botDifficulty === "easy",
+      `Expected blocked storage page to keep live easy selection in memory, saw ${blockedStorageMatchState?.botDifficulty}`,
+    );
+    assert(
+      blockedStorageMatchState?.mapId === "sandline-foundry" &&
+        blockedStorageMatchState?.activeMode === "local",
+      "Expected blocked storage page to keep local match startup working",
+    );
+
+    summary.botDifficulty = {
+      defaultValue: defaultDifficultyState?.botDifficulty ?? null,
+      menuActive: defaultDifficultyUi.active,
+      catalogRestoredValue: mediumCatalogState?.botDifficulty ?? null,
+      liveHardValue: hardMatchState?.botDifficulty ?? null,
+      liveEasyValue: easyMatchState?.botDifficulty ?? null,
+      persistenceReloadedValue: persistenceReloadedState?.botDifficulty ?? null,
+      blockedStorageDefaultValue: blockedStorageDefaultState?.botDifficulty ?? null,
+      blockedStorageLiveValue: blockedStorageMatchState?.botDifficulty ?? null,
+      scopeNote: hardStageDifficultyUi.note,
+    };
+
+    await persistencePage.close();
+    await blockedStoragePage.close();
+    await localPage.bringToFront();
 
     const mapIds = [
       "sandline-foundry",
