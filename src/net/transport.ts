@@ -30,6 +30,25 @@ export interface RoomTransportSendOptions {
   latestStateOnlyIfBuffered?: boolean;
 }
 
+export interface RoomTransportPeerStats {
+  peerId: string;
+  phase: string;
+  sampledAt: number;
+  bytesSent: number;
+  bytesReceived: number;
+  localCandidateType: string;
+  remoteCandidateType: string;
+  localProtocol: string;
+  remoteProtocol: string;
+  usingRelay: boolean;
+}
+
+export interface RoomTransportDebugSnapshot {
+  peers: RoomTransportPeerStats[];
+  directFirstIce: boolean;
+  relayCandidateDelayMs: number;
+}
+
 export interface RoomTransport {
   readonly kind: RoomTransportKind;
   readonly localPeerId: string;
@@ -43,4 +62,5 @@ export interface RoomTransport {
   disconnectPeer?(peerId: string, reason?: string): void;
   close(reason?: string): void;
   getStatus(): RoomTransportStatus;
+  getDebugSnapshot?(): RoomTransportDebugSnapshot;
 }

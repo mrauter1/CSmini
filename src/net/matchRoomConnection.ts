@@ -10,6 +10,7 @@ import {
   encodeRoomMessage,
   getRoomMessageLane,
   getRoomMessageSequenceScope,
+  type HostSnapshotEncodingMode,
   type HostRoomSnapshot,
   MAX_ROOM_INVALID_MESSAGES,
   MAX_ROOM_MESSAGE_BYTES,
@@ -28,6 +29,7 @@ import {
 } from "./protocol";
 import type {
   RoomTransport,
+  RoomTransportDebugSnapshot,
   RoomTransportMessageEvent,
   RoomTransportPhase,
   RoomTransportSendOptions,
@@ -37,6 +39,8 @@ import { WebRtcRoomTransport } from "./webrtcTransport";
 
 const HEARTBEAT_PULSE_MS = 900;
 const SNAPSHOT_PULSE_MS = 85;
+const SNAPSHOT_KEEPALIVE_MS = 1_000;
+const FULL_SNAPSHOT_PULSE_MS = 8_000;
 const STALE_PEER_MS = 60_000;
 export const MAX_ROOM_PARTICIPANTS = 14;
 export const MAX_ROOM_GUESTS = MAX_ROOM_PARTICIPANTS - 1;
@@ -102,6 +106,9 @@ export interface RoomConnectionDebugSnapshot extends RoomConnectionUiSnapshot {
   peerCount: number;
   peerIds: string[];
   lastSnapshotId: number;
+  lastSnapshotBytes: number;
+  lastSnapshotEncoding: HostSnapshotEncodingMode | "none";
+  transport: RoomTransportDebugSnapshot | null;
   latestStateQa: {
     inbound: LatestStateQaDebugSnapshot;
     outbound: LatestStateQaDebugSnapshot;
@@ -470,10 +477,16 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   protected readonly transport: RoomTransport;
   protected lastHeartbeatAt = 0;
   protected lastSnapshotSentAt = 0;
+  protected lastLatestStateSentAt = 0;
   protected nextSeq = 1;
   protected joined = false;
   protected roomClosed = false;
   protected uiState: RoomConnectionUiSnapshot;
+  private pendingSnapshotSignature = "";
+  private lastSentSnapshotSignature = "";
+  private lastFullSnapshotSentAt = 0;
+  private lastSnapshotBytes = 0;
+  private lastSnapshotEncoding: HostSnapshotEncodingMode | "none" = "none";
   private readonly latestStateQa = {
     inbound: createLatestStateQaController(),
     outbound: createLatestStateQaController(),
@@ -518,14 +531,24 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     }
 
     this.latestSnapshot = snapshot;
+    this.pendingSnapshotSignature = hostSnapshotTrafficSignature(snapshot);
 
     const now = Date.now();
-    if (!force && now - this.lastSnapshotSentAt < SNAPSHOT_PULSE_MS) {
-      this.refreshBufferedSnapshot();
+    if (force) {
+      this.flushSnapshot(now, "full");
       return;
     }
 
-    this.flushSnapshot(now);
+    const changed = this.pendingSnapshotSignature !== this.lastSentSnapshotSignature;
+    if (!changed && now - this.lastSnapshotSentAt < SNAPSHOT_KEEPALIVE_MS) {
+      return;
+    }
+
+    if (!force && now - this.lastSnapshotSentAt < SNAPSHOT_PULSE_MS) {
+      return;
+    }
+
+    this.flushSnapshot(now, this.snapshotEncodingMode(now));
   }
 
   sendInputTick(input: RoomInputTick): boolean {
@@ -558,12 +581,17 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     if (
       this.role === "host" &&
       this.latestSnapshot &&
-      now - this.lastSnapshotSentAt >= SNAPSHOT_PULSE_MS
+      now - this.lastSnapshotSentAt >= SNAPSHOT_PULSE_MS &&
+      (this.pendingSnapshotSignature !== this.lastSentSnapshotSignature ||
+        now - this.lastSnapshotSentAt >= SNAPSHOT_KEEPALIVE_MS)
     ) {
-      this.flushSnapshot(now);
+      this.flushSnapshot(now, this.snapshotEncodingMode(now));
     }
 
-    if (now - this.lastHeartbeatAt >= HEARTBEAT_PULSE_MS) {
+    if (
+      now - this.lastHeartbeatAt >= HEARTBEAT_PULSE_MS &&
+      now - this.lastLatestStateSentAt >= HEARTBEAT_PULSE_MS
+    ) {
       const phase = this.latestSnapshot?.phase ?? this.defaultLifecyclePhase();
       this.sendMessage("heartbeat", {
         rosterCount: this.participants.size,
@@ -598,6 +626,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       peerCount: this.remoteParticipants().length,
       peerIds: this.remoteParticipants().map((participant) => participant.id),
       lastSnapshotId: this.latestSnapshot?.snapshotId ?? 0,
+      lastSnapshotBytes: this.lastSnapshotBytes,
+      lastSnapshotEncoding: this.lastSnapshotEncoding,
+      transport: this.transport.getDebugSnapshot?.() ?? null,
       latestStateQa: {
         inbound: this.snapshotLatestStateQa("inbound"),
         outbound: this.snapshotLatestStateQa("outbound"),
@@ -780,6 +811,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     payload: Extract<RoomMessage, { type: Type }>["payload"],
     toPeerId?: string,
     transportOptions?: RoomTransportSendOptions,
+    encodeOptions?: { hostSnapshotMode?: HostSnapshotEncodingMode },
   ): boolean {
     const message = {
       protocol: ROOM_PROTOCOL,
@@ -793,17 +825,21 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       payload,
     } as Extract<RoomMessage, { type: Type }>;
 
-    const raw = encodeRoomMessage(message);
+    const raw = encodeRoomMessage(message, encodeOptions);
     if (measureRoomMessageBytes(raw) > MAX_ROOM_MESSAGE_BYTES) {
       return false;
     }
 
     const lane = getRoomMessageLane(type);
-    if (lane === "latest-state") {
-      return this.dispatchLatestStateOutbound(raw, toPeerId, transportOptions);
+    const sent =
+      lane === "latest-state"
+        ? this.dispatchLatestStateOutbound(raw, toPeerId, transportOptions)
+        : this.transport.send(raw, toPeerId, lane, transportOptions);
+    if (sent && lane === "latest-state") {
+      this.lastLatestStateSentAt = message.sentAt;
     }
 
-    return this.transport.send(raw, toPeerId, lane, transportOptions);
+    return sent;
   }
 
   protected rememberParticipant(participant: ParticipantRecord): void {
@@ -1179,24 +1215,47 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     }
   }
 
-  private flushSnapshot(now: number): void {
+  private flushSnapshot(now: number, encoding: HostSnapshotEncodingMode): void {
     if (!this.latestSnapshot) {
       return;
     }
 
-    if (this.sendMessage("host-snapshot", this.latestSnapshot)) {
+    const raw = encodeRoomMessage(
+      {
+        protocol: ROOM_PROTOCOL,
+        version: ROOM_PROTOCOL_VERSION,
+        type: "host-snapshot",
+        roomId: this.roomId,
+        fromPeerId: this.identity.id,
+        seq: this.nextSeq,
+        sentAt: now,
+        payload: this.latestSnapshot,
+      },
+      { hostSnapshotMode: encoding },
+    );
+    this.lastSnapshotBytes = measureRoomMessageBytes(raw);
+
+    if (
+      this.sendMessage(
+        "host-snapshot",
+        this.latestSnapshot,
+        undefined,
+        undefined,
+        { hostSnapshotMode: encoding },
+      )
+    ) {
       this.lastSnapshotSentAt = now;
+      this.lastSentSnapshotSignature =
+        this.pendingSnapshotSignature || hostSnapshotTrafficSignature(this.latestSnapshot);
+      this.lastSnapshotEncoding = encoding;
+      if (encoding === "full") {
+        this.lastFullSnapshotSentAt = now;
+      }
     }
   }
 
-  private refreshBufferedSnapshot(): void {
-    if (!this.latestSnapshot) {
-      return;
-    }
-
-    this.sendMessage("host-snapshot", this.latestSnapshot, undefined, {
-      latestStateOnlyIfBuffered: true,
-    });
+  private snapshotEncodingMode(now: number): HostSnapshotEncodingMode {
+    return now - this.lastFullSnapshotSentAt >= FULL_SNAPSHOT_PULSE_MS ? "full" : "delta";
   }
 
   private readonly handleRawMessage = (event: RoomTransportMessageEvent): void => {
@@ -1251,7 +1310,10 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return;
     }
 
-    const message = decodeRoomMessage(event.raw);
+    const message = decodeRoomMessage(event.raw, {
+      participants: this.participants,
+      latestSnapshot: this.latestSnapshot,
+    });
     if (!message) {
       this.noteInvalidRoomMessage(event.fromPeerId, "A peer sent repeated malformed room messages.");
       return;
@@ -1356,6 +1418,28 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         return "Manual WebRTC Join";
     }
   }
+}
+
+function hostSnapshotTrafficSignature(snapshot: HostRoomSnapshot): string {
+  return [
+    snapshot.phase,
+    snapshot.roundPhase,
+    snapshot.objective.phase,
+    snapshot.objective.value ?? "",
+    ...snapshot.roster.map((entry) =>
+      [
+        entry.id,
+        entry.health,
+        entry.eliminations,
+        entry.deaths,
+        entry.status,
+        entry.position.join(","),
+        entry.look.join(","),
+        entry.respawnAt,
+        entry.lastProcessedInputSequence,
+      ].join(":"),
+    ),
+  ].join("|");
 }
 
 class BroadcastMatchRoomConnection extends BaseMatchRoomConnection {

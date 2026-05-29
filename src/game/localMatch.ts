@@ -77,7 +77,9 @@ const SHOT_MAX_RANGE = 72;
 const SHOT_REWIND_DRIFT_MS = 180;
 const MAX_REMOTE_INPUT_AXIS = 1.01;
 const MAX_REMOTE_INPUT_VECTOR_LENGTH = Math.SQRT2 + 0.01;
-const GUEST_INPUT_PULSE_SECONDS = 1 / 30;
+const GUEST_ACTIVE_INPUT_PULSE_SECONDS = 1 / 30;
+const GUEST_IDLE_INPUT_PULSE_SECONDS = 0.2;
+const GUEST_RECENT_ACTIVE_INPUT_SECONDS = 0.25;
 const HOST_FRAME_STALL_MS = 1_500;
 const HOST_FRAME_STALL_NOTICE_SECONDS = 2.4;
 // Guests resend their latest state at a fixed 30 Hz, so 320 ms tolerates several delayed
@@ -275,6 +277,7 @@ export class LocalMatch {
   private debugInputState?: DebugInputState;
   private debugPauseInputTicks = false;
   private lastInputSentAt = 0;
+  private lastActiveInputAt = 0;
   private lastSentInputSequence = 0;
   private nextInputSequence = 1;
   private lastInputSignature = "";
@@ -427,7 +430,8 @@ export class LocalMatch {
         lastAcknowledgedInputSequence: this.lastAcknowledgedInputSequence,
         pendingInputCount: this.localInputHistory.length,
         pendingReplayDeltaCount: this.localReplayDeltas.length,
-        inputSendIntervalMs: Math.round(GUEST_INPUT_PULSE_SECONDS * 1000),
+        activeInputSendIntervalMs: Math.round(GUEST_ACTIVE_INPUT_PULSE_SECONDS * 1000),
+        idleInputSendIntervalMs: Math.round(GUEST_IDLE_INPUT_PULSE_SECONDS * 1000),
       },
       hostAvailability:
         this.activeMode === "shared" && this.sharedRole === "host"
@@ -2110,7 +2114,11 @@ export class LocalMatch {
     const sent = this.sharedRoom.sendInputTick({
       tick,
       sequence,
-      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
+      look: [
+        quantizeLook(this.tempLook.x),
+        quantizeLook(this.tempLook.y),
+        quantizeLook(this.tempLook.z),
+      ],
       movement: [movementX, movementZ],
       actions,
     });
@@ -2130,18 +2138,27 @@ export class LocalMatch {
 
     this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
     const movement = this.currentMovementState();
+    const reloadActive = this.reloadEndsAt > now;
+    if (movement.active || reloadActive) {
+      this.lastActiveInputAt = now;
+    }
 
     const signature = [
       movement.moveX.toFixed(2),
       movement.moveZ.toFixed(2),
       movement.sprint ? "sprint" : "",
+      reloadActive ? "reload" : "",
       this.tempLook.x.toFixed(2),
       this.tempLook.z.toFixed(2),
     ].join("|");
+    const pulseSeconds =
+      movement.active || reloadActive || now - this.lastActiveInputAt < GUEST_RECENT_ACTIVE_INPUT_SECONDS
+        ? GUEST_ACTIVE_INPUT_PULSE_SECONDS
+        : GUEST_IDLE_INPUT_PULSE_SECONDS;
 
     if (
       signature === this.lastInputSignature &&
-      now - this.lastInputSentAt < GUEST_INPUT_PULSE_SECONDS
+      now - this.lastInputSentAt < pulseSeconds
     ) {
       return;
     }
@@ -2835,8 +2852,16 @@ export class LocalMatch {
       eliminations: this.playerEliminations,
       deaths: this.playerDeaths,
       status: this.playerDead ? "respawning" : "alive",
-      position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
-      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
+      position: [
+        quantizePosition(this.camera.position.x),
+        quantizePosition(this.camera.position.y),
+        quantizePosition(this.camera.position.z),
+      ],
+      look: [
+        quantizeLook(this.tempLook.x),
+        quantizeLook(this.tempLook.y),
+        quantizeLook(this.tempLook.z),
+      ],
       respawnAt: this.playerDead ? this.authoritativeRespawnAtMs : 0,
       lastProcessedInputSequence: 0,
       updatedAt: now,
@@ -2857,8 +2882,12 @@ export class LocalMatch {
       eliminations: actor.eliminations,
       deaths: actor.deaths,
       status: actor.status,
-      position: [actor.targetPosition.x, PLAYER_EYE_HEIGHT, actor.targetPosition.z],
-      look: [actor.forward.x, 0, actor.forward.z],
+      position: [
+        quantizePosition(actor.targetPosition.x),
+        quantizePosition(PLAYER_EYE_HEIGHT),
+        quantizePosition(actor.targetPosition.z),
+      ],
+      look: [quantizeLook(actor.forward.x), 0, quantizeLook(actor.forward.z)],
       respawnAt: actor.respawnAt,
       lastProcessedInputSequence: actor.lastProcessedInputSequence,
       updatedAt: now,
@@ -2953,4 +2982,12 @@ export class LocalMatch {
     const hit = this.raycaster.intersectObjects(this.environmentRaycastMeshes, false)[0];
     return !hit || hit.distance >= distance - 0.8;
   }
+}
+
+function quantizePosition(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function quantizeLook(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }

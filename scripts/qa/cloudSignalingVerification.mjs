@@ -558,6 +558,39 @@ async function main() {
       await cadencePage.evaluate("window.__dustlineQa__.clearInputState()");
     }
 
+    await hostPage.bringToFront();
+    const hostSnapshotIdBeforeDelta = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection?.lastSnapshotId ?? 0",
+    );
+    if (joinPages[0]) {
+      for (let index = 0; index < 4; index += 1) {
+        const sent = await joinPages[0].evaluate("window.__dustlineQa__.sendInputTick(0, 1, false)");
+        assert(sent === true, "Guest manual input tick should send while the host tab is active.");
+        await delay(60);
+      }
+    }
+    await hostPage.waitForExpression(
+      `(() => {
+        const connection = window.__dustlineQa__?.getState()?.match?.roomConnection;
+        return (
+          connection?.lastSnapshotEncoding === "delta" &&
+          (connection?.lastSnapshotBytes ?? 0) > 0 &&
+          (connection?.lastSnapshotId ?? 0) > ${hostSnapshotIdBeforeDelta}
+        );
+      })()`,
+      10_000,
+    );
+    await hostPage.waitForExpression(
+      `(() => {
+        const peers = window.__dustlineQa__?.getState()?.match?.roomConnection?.transport?.peers;
+        return Array.isArray(peers) && peers.length > 0 && (peers[0]?.sampledAt ?? 0) > 0;
+      })()`,
+      12_000,
+    );
+    const hostRoomConnectionDebug = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection ?? null",
+    );
+
     const summary = {
       roomCode,
       guestCount: GUEST_COUNT,
@@ -585,6 +618,9 @@ async function main() {
         ),
       ),
       guestInputCadenceTicks,
+      hostSnapshotEncoding: hostRoomConnectionDebug?.lastSnapshotEncoding ?? null,
+      hostSnapshotBytes: hostRoomConnectionDebug?.lastSnapshotBytes ?? null,
+      hostTransport: hostRoomConnectionDebug?.transport ?? null,
     };
 
     if (guardrails && joinPages[0]) {

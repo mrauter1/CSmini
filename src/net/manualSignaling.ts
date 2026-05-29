@@ -1,6 +1,9 @@
 import type { ParticipantIdentity } from "./protocol";
 
 const SIGNAL_VERSION = 1 as const;
+const ICE_GATHERING_STABLE_MS = 1_500;
+const ICE_GATHERING_MIN_MS = 1_000;
+const ICE_GATHERING_RELAY_GRACE_MS = 6_000;
 
 interface SignalEnvelopeBase<Role extends string> {
   version: typeof SIGNAL_VERSION;
@@ -63,21 +66,44 @@ export function decodeSignalEnvelope(raw: string): ManualSignalEnvelope | null {
 
 export async function waitForIceGatheringComplete(
   connection: RTCPeerConnection,
-  timeoutMs = 8_000,
+  timeoutMs = 20_000,
 ): Promise<void> {
   if (connection.iceGatheringState === "complete") {
     return;
   }
 
   await new Promise<void>((resolve, reject) => {
+    const startedAt = Date.now();
+    let latestCandidateAt = startedAt;
+    let stableCheckTimer = 0;
+    let settled = false;
     const timeout = window.setTimeout(() => {
+      if (hasLocalIceCandidate(connection)) {
+        finish();
+        return;
+      }
+
       cleanup();
       reject(new Error("Timed out while collecting ICE candidates."));
     }, timeoutMs);
 
     const cleanup = (): void => {
       window.clearTimeout(timeout);
+      if (stableCheckTimer) {
+        window.clearTimeout(stableCheckTimer);
+      }
       connection.removeEventListener("icegatheringstatechange", handleStateChange);
+      connection.removeEventListener("icecandidate", handleIceCandidate);
+    };
+
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve();
     };
 
     const handleStateChange = (): void => {
@@ -85,12 +111,70 @@ export async function waitForIceGatheringComplete(
         return;
       }
 
-      cleanup();
-      resolve();
+      finish();
+    };
+
+    const handleIceCandidate = (event: RTCPeerConnectionIceEvent): void => {
+      if (!event.candidate) {
+        finish();
+        return;
+      }
+
+      latestCandidateAt = Date.now();
+      scheduleStableCheck();
+    };
+
+    const scheduleStableCheck = (): void => {
+      if (stableCheckTimer) {
+        window.clearTimeout(stableCheckTimer);
+      }
+
+      stableCheckTimer = window.setTimeout(checkStableCandidates, ICE_GATHERING_STABLE_MS);
+    };
+
+    const checkStableCandidates = (): void => {
+      stableCheckTimer = 0;
+      if (settled) {
+        return;
+      }
+
+      if (connection.iceGatheringState === "complete") {
+        finish();
+        return;
+      }
+
+      if (!hasLocalIceCandidate(connection)) {
+        return;
+      }
+
+      const now = Date.now();
+      const elapsed = now - startedAt;
+      const stableFor = now - latestCandidateAt;
+      if (elapsed < ICE_GATHERING_MIN_MS || stableFor < ICE_GATHERING_STABLE_MS) {
+        scheduleStableCheck();
+        return;
+      }
+
+      if (hasRelayIceCandidate(connection) || elapsed >= ICE_GATHERING_RELAY_GRACE_MS) {
+        finish();
+      }
     };
 
     connection.addEventListener("icegatheringstatechange", handleStateChange);
+    connection.addEventListener("icecandidate", handleIceCandidate);
+    handleStateChange();
+    if (hasLocalIceCandidate(connection)) {
+      scheduleStableCheck();
+    }
   });
+}
+
+function hasLocalIceCandidate(connection: RTCPeerConnection): boolean {
+  return /(?:^|\r?\n)a=candidate:/m.test(connection.localDescription?.sdp ?? "");
+}
+
+function hasRelayIceCandidate(connection: RTCPeerConnection): boolean {
+  return / typ relay(?: |\r?\n)/.test(connection.localDescription?.sdp ?? "");
 }
 
 function parseSignalEnvelope(value: unknown): ManualSignalEnvelope | null {

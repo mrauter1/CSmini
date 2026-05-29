@@ -9,14 +9,17 @@ import {
   MAX_SIGNALING_INVALID_MESSAGES,
   MAX_SIGNALING_RAW_MESSAGE_BYTES,
   MAX_TRANSPORT_BUFFERED_BYTES,
+  DIRECT_FIRST_RELAY_DELAY_MS,
   isValidSignalingParticipant,
   isValidSignalingPeerId,
   sanitizeSignalingDescription,
   sanitizeSignalingIceCandidate,
+  shouldUseDirectFirstIce,
   toSignalingSocketUrl,
   utf8ByteLength,
   validateSignalingClientContext,
 } from "./signalingConfig";
+import { samplePeerConnectionStats } from "./webrtcStats";
 import {
   DEFAULT_ICE_SERVERS,
   loadIceServers,
@@ -28,8 +31,10 @@ import {
 } from "./webrtcTransport";
 import type {
   RoomTransport,
+  RoomTransportDebugSnapshot,
   RoomTransportEvents,
   RoomTransportLane,
+  RoomTransportPeerStats,
   RoomTransportSendOptions,
   RoomTransportStatus,
 } from "./transport";
@@ -113,6 +118,9 @@ interface PeerConnectionState {
   connection: RTCPeerConnection;
   pendingRemoteCandidates: RTCIceCandidateInit[];
   pendingLatestStateRaw?: string;
+  pendingRelayCandidates: RTCIceCandidateInit[];
+  relayCandidateTimer?: number;
+  stats?: RoomTransportPeerStats;
   phase: PeerPhase;
   reliableChannel?: RTCDataChannel;
   reliableChannelListeners?: PeerChannelListeners;
@@ -180,6 +188,8 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   private events: RoomTransportEvents;
   private iceServers: RTCIceServer[] = DEFAULT_ICE_SERVERS;
   private readonly iceServersPromise: Promise<RTCIceServer[]>;
+  private readonly directFirstIce = shouldUseDirectFirstIce();
+  private telemetryTimer = 0;
   private closed = false;
   private signalingInvalidMessages = 0;
 
@@ -247,6 +257,16 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     return this.status;
   }
 
+  getDebugSnapshot(): RoomTransportDebugSnapshot {
+    return {
+      peers: [...this.peers.values()]
+        .map((peer) => peer.stats)
+        .filter((stats): stats is RoomTransportPeerStats => Boolean(stats)),
+      directFirstIce: this.directFirstIce,
+      relayCandidateDelayMs: this.directFirstIce ? DIRECT_FIRST_RELAY_DELAY_MS : 0,
+    };
+  }
+
   getRemoteParticipant(): ParticipantIdentity | undefined {
     return this.firstPeer()?.participant;
   }
@@ -267,6 +287,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.setStatus("signaling", "Loading WebRTC relay configuration.");
     this.iceServers = await this.iceServersPromise;
     if (!this.closed) {
+      this.startTelemetry();
       this.openSocket();
     }
   }
@@ -314,6 +335,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
 
     this.closed = true;
+    this.stopTelemetry();
     for (const peer of [...this.peers.values()]) {
       this.closePeer(peer, reason, false);
     }
@@ -340,6 +362,36 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.shutdown("error", detail, reason);
   }
 
+  private startTelemetry(): void {
+    if (this.telemetryTimer) {
+      return;
+    }
+
+    this.telemetryTimer = window.setInterval(() => {
+      this.sampleTelemetry();
+    }, 2_000);
+    this.sampleTelemetry();
+  }
+
+  private stopTelemetry(): void {
+    if (!this.telemetryTimer) {
+      return;
+    }
+
+    window.clearInterval(this.telemetryTimer);
+    this.telemetryTimer = 0;
+  }
+
+  private sampleTelemetry(): void {
+    for (const peer of this.peers.values()) {
+      void samplePeerConnectionStats(peer.connection, peer.peerId, peer.phase).then((stats) => {
+        if (stats && this.peers.get(peer.peerId) === peer) {
+          peer.stats = stats;
+        }
+      });
+    }
+  }
+
   private ensurePeer(peerId: string, participant?: ParticipantIdentity): PeerConnectionState {
     const existing = this.peers.get(peerId);
     if (existing) {
@@ -357,6 +409,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
         bundlePolicy: "max-bundle",
       }),
       pendingRemoteCandidates: [],
+      pendingRelayCandidates: [],
       phase: "new",
     };
 
@@ -676,6 +729,10 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     const wasTracked = this.peers.has(peer.peerId);
     const reliableChannel = peer.reliableChannel;
     const latestStateChannel = peer.latestStateChannel;
+    if (peer.relayCandidateTimer) {
+      window.clearTimeout(peer.relayCandidateTimer);
+      peer.relayCandidateTimer = undefined;
+    }
     this.unbindChannel(peer, "reliable");
     this.unbindChannel(peer, "latest-state");
     peer.phase = "closed";
@@ -1039,11 +1096,18 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
       return;
     }
 
+    const candidate = event.candidate.toJSON();
+    if (this.shouldHoldRelayCandidate(peer, event.candidate)) {
+      peer.pendingRelayCandidates.push(candidate);
+      this.scheduleRelayCandidateFlush(peer);
+      return;
+    }
+
     if (
       !this.sendSignal({
         type: "ice-candidate",
         toPeerId: peer.peerId,
-        candidate: event.candidate.toJSON(),
+        candidate,
       })
     ) {
       peer.phase = "error";
@@ -1051,9 +1115,61 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
   }
 
+  private shouldHoldRelayCandidate(peer: PeerConnectionState, candidate: RTCIceCandidate): boolean {
+    return (
+      this.directFirstIce &&
+      !this.isPeerConnected(peer) &&
+      (candidate.type === "relay" || /\btyp relay\b/.test(candidate.candidate))
+    );
+  }
+
+  private scheduleRelayCandidateFlush(peer: PeerConnectionState): void {
+    if (peer.relayCandidateTimer) {
+      return;
+    }
+
+    peer.relayCandidateTimer = window.setTimeout(() => {
+      peer.relayCandidateTimer = undefined;
+      this.flushRelayCandidates(peer);
+    }, DIRECT_FIRST_RELAY_DELAY_MS);
+  }
+
+  private flushRelayCandidates(peer: PeerConnectionState): void {
+    if (this.closed || this.isPeerConnected(peer)) {
+      peer.pendingRelayCandidates.length = 0;
+      return;
+    }
+
+    while (peer.pendingRelayCandidates.length > 0) {
+      const candidate = peer.pendingRelayCandidates.shift();
+      if (!candidate) {
+        continue;
+      }
+
+      if (
+        !this.sendSignal({
+          type: "ice-candidate",
+          toPeerId: peer.peerId,
+          candidate,
+        })
+      ) {
+        peer.phase = "error";
+        this.updateAggregateStatus("Client-side signaling guard rejected the delayed relay candidate.");
+        return;
+      }
+    }
+  }
+
   private handleChannelOpen(peer: PeerConnectionState, lane: RoomTransportLane): void {
     if (lane === "latest-state") {
       this.flushLatestStateChannel(peer);
+    }
+    if (this.isPeerConnected(peer)) {
+      peer.pendingRelayCandidates.length = 0;
+      if (peer.relayCandidateTimer) {
+        window.clearTimeout(peer.relayCandidateTimer);
+        peer.relayCandidateTimer = undefined;
+      }
     }
     peer.phase = this.isPeerConnected(peer) ? "connected" : "connecting";
     this.updateAggregateStatus();

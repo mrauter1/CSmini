@@ -2,6 +2,7 @@ import type { ParticipantIdentity } from "./protocol";
 
 const DEFAULT_SIGNALING_URL = "https://csmini-signaling.csmini.workers.dev";
 const SIGNALING_URL_STORAGE_KEY = "dustline.signaling-url";
+const DIRECT_FIRST_ICE_STORAGE_KEY = "dustline.direct-first-ice";
 const SAFE_SIGNALING_ROOM_ID = /^[a-zA-Z0-9:._-]{3,96}$/;
 const SAFE_SIGNALING_PEER_ID = /^[a-zA-Z0-9:._-]{3,96}$/;
 const SAFE_SIGNALING_MAP_ID = /^[a-z0-9-]{3,64}$/;
@@ -17,10 +18,12 @@ export const MAX_SIGNALING_DESCRIPTION_BYTES = 12 * 1024;
 export const MAX_SIGNALING_ICE_CANDIDATE_BYTES = 2 * 1024;
 export const MAX_SIGNALING_INVALID_MESSAGES = 4;
 export const MAX_TRANSPORT_BUFFERED_BYTES = 256 * 1024;
+export const DIRECT_FIRST_RELAY_DELAY_MS = 1_500;
 
 declare global {
   interface Window {
     __DUSTLINE_SIGNALING_URL__?: string;
+    __DUSTLINE_DIRECT_FIRST_ICE__?: boolean;
   }
 }
 
@@ -38,6 +41,32 @@ export function toSignalingSocketUrl(baseUrl: string, roomId: string): string {
   const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
   url.pathname = `${basePath}/room/${encodeURIComponent(roomId)}`;
   return url.toString();
+}
+
+export function shouldUseDirectFirstIce(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  if (window.__DUSTLINE_DIRECT_FIRST_ICE__ === true) {
+    return true;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const queryValue = params.get("directFirstIce");
+    if (queryValue) {
+      return isTruthyFlag(queryValue);
+    }
+  } catch {
+    // Ignore URL parsing failures and use the stored/default value.
+  }
+
+  try {
+    return isTruthyFlag(localStorage.getItem(DIRECT_FIRST_ICE_STORAGE_KEY) ?? "");
+  } catch {
+    return false;
+  }
 }
 
 export function utf8ByteLength(value: string): number {
@@ -166,6 +195,11 @@ function readStoredSignalingUrl(): string {
 function normalizeSignalingUrl(value: string): string {
   const trimmed = value.trim();
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+function isTruthyFlag(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 function normalizeDisplayText(value: string, maxLength: number): string {

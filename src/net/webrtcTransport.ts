@@ -9,10 +9,13 @@ import { DEFAULT_ICE_SERVERS, loadIceServers } from "./iceServers";
 import type { ParticipantIdentity } from "./protocol";
 import { MAX_ROOM_MESSAGE_BYTES, measureRoomMessageBytes } from "./protocol";
 import { MAX_TRANSPORT_BUFFERED_BYTES } from "./signalingConfig";
+import { samplePeerConnectionStats } from "./webrtcStats";
 import type {
   RoomTransport,
+  RoomTransportDebugSnapshot,
   RoomTransportEvents,
   RoomTransportLane,
+  RoomTransportPeerStats,
   RoomTransportSendOptions,
   RoomTransportStatus,
 } from "./transport";
@@ -61,6 +64,8 @@ export class WebRtcRoomTransport implements RoomTransport {
   private remoteParticipant?: ParticipantIdentity;
   private status: RoomTransportStatus;
   private events: RoomTransportEvents;
+  private stats?: RoomTransportPeerStats;
+  private telemetryTimer = 0;
   private closed = false;
 
   constructor(
@@ -205,6 +210,7 @@ export class WebRtcRoomTransport implements RoomTransport {
 
   close(reason = "closed"): void {
     this.closed = true;
+    this.stopTelemetry();
     this.unbindChannel("reliable");
     this.unbindChannel("latest-state");
     this.connection?.close();
@@ -213,6 +219,14 @@ export class WebRtcRoomTransport implements RoomTransport {
 
   getStatus(): RoomTransportStatus {
     return this.status;
+  }
+
+  getDebugSnapshot(): RoomTransportDebugSnapshot {
+    return {
+      peers: this.stats ? [this.stats] : [],
+      directFirstIce: false,
+      relayCandidateDelayMs: 0,
+    };
   }
 
   getRemoteParticipant(): ParticipantIdentity | undefined {
@@ -232,7 +246,45 @@ export class WebRtcRoomTransport implements RoomTransport {
     }
 
     this.connection = connection;
+    this.startTelemetry();
     return connection;
+  }
+
+  private startTelemetry(): void {
+    if (this.telemetryTimer) {
+      return;
+    }
+
+    this.telemetryTimer = window.setInterval(() => {
+      this.sampleTelemetry();
+    }, 2_000);
+    this.sampleTelemetry();
+  }
+
+  private stopTelemetry(): void {
+    if (!this.telemetryTimer) {
+      return;
+    }
+
+    window.clearInterval(this.telemetryTimer);
+    this.telemetryTimer = 0;
+  }
+
+  private sampleTelemetry(): void {
+    const connection = this.connection;
+    if (!connection) {
+      return;
+    }
+
+    void samplePeerConnectionStats(
+      connection,
+      this.remoteParticipant?.id ?? "manual-peer",
+      this.status.phase,
+    ).then((stats) => {
+      if (stats && this.connection === connection) {
+        this.stats = stats;
+      }
+    });
   }
 
   private createConnection(iceServers: RTCIceServer[]): RTCPeerConnection {

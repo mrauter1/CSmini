@@ -496,7 +496,12 @@ async function main() {
     await clearInputState(joinPage);
     await setInputState(joinPage, 0, 1, false);
     await joinPage.bringToFront();
-    await delay(180);
+    await joinPage.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0) >= ${
+        guestInputSequenceBeforeCadence + 3
+      }`,
+      2_000,
+    );
     const guestInputSequenceAfterCadence = await joinPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0",
     );
@@ -504,7 +509,7 @@ async function main() {
       guestInputSequenceAfterCadence - guestInputSequenceBeforeCadence >= 3,
       `Guest fixed input cadence only advanced ${
         guestInputSequenceAfterCadence - guestInputSequenceBeforeCadence
-      } ticks in 180ms.`,
+      } ticks before the host-room cadence timeout.`,
     );
     await clearInputState(joinPage);
     await hostPage.bringToFront();

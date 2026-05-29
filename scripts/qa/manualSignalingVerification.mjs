@@ -195,7 +195,7 @@ class CdpPage {
         }
         this.pending.delete(id);
         reject(new Error(`Timed out waiting for CDP ${method}`));
-      }, 10_000).unref?.();
+      }, 30_000).unref?.();
     });
   }
 
