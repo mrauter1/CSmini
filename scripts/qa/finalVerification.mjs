@@ -345,24 +345,43 @@ async function getState(page) {
 
 async function readHud(page) {
   return page.evaluate(`
-    (() => ({
-      mapName: document.querySelector('[data-ui="map-name"]')?.textContent?.trim() ?? '',
-      modeNotice: document.querySelector('[data-ui="mode-notice"]')?.textContent?.trim() ?? '',
-      roundNumber: document.querySelector('[data-ui="round-number"]')?.textContent?.trim() ?? '',
-      roundPhase: document.querySelector('[data-ui="round-phase"]')?.textContent?.trim() ?? '',
-      roundTimer: document.querySelector('[data-ui="round-timer"]')?.textContent?.trim() ?? '',
-      missionLabel: document.querySelector('[data-ui="mission-label"]')?.textContent?.trim() ?? '',
-      objectiveLabel: document.querySelector('[data-ui="objective-label"]')?.textContent?.trim() ?? '',
-      missionSummary: document.querySelector('[data-ui="mission-summary"]')?.textContent?.trim() ?? '',
-      objectiveStatus: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
-      objectiveProgress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? '',
-      teamName: document.querySelector('[data-ui="team-name"]')?.textContent?.trim() ?? '',
-      aliveState: document.querySelector('[data-ui="alive-state"]')?.textContent?.trim() ?? '',
-      firingStatus: document.querySelector('[data-ui="firing-status"]')?.textContent?.trim() ?? '',
-      health: document.querySelector('[data-ui="health"]')?.textContent?.trim() ?? '',
-      ammo: document.querySelector('[data-ui="ammo"]')?.textContent?.trim() ?? '',
-      playerCount: document.querySelector('[data-ui="player-count"]')?.textContent?.trim() ?? '',
-    }))()
+    (() => {
+      const visible = (selector) => {
+        const node = document.querySelector(selector);
+        if (!node || node.hidden) {
+          return false;
+        }
+        const style = window.getComputedStyle(node);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      };
+
+      return {
+        mapName: document.querySelector('[data-ui="map-name"]')?.textContent?.trim() ?? '',
+        modeNotice: document.querySelector('[data-ui="mode-notice"]')?.textContent?.trim() ?? '',
+        roundNumber: document.querySelector('[data-ui="round-number"]')?.textContent?.trim() ?? '',
+        roundPhase: document.querySelector('[data-ui="round-phase"]')?.textContent?.trim() ?? '',
+        roundTimer: document.querySelector('[data-ui="round-timer"]')?.textContent?.trim() ?? '',
+        missionLabel: document.querySelector('[data-ui="mission-label"]')?.textContent?.trim() ?? '',
+        objectiveLabel: document.querySelector('[data-ui="objective-label"]')?.textContent?.trim() ?? '',
+        missionSummary: document.querySelector('[data-ui="mission-summary"]')?.textContent?.trim() ?? '',
+        objectiveStatus: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
+        objectiveProgress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? '',
+        teamName: document.querySelector('[data-ui="team-name"]')?.textContent?.trim() ?? '',
+        aliveState: document.querySelector('[data-ui="alive-state"]')?.textContent?.trim() ?? '',
+        firingStatus: document.querySelector('[data-ui="firing-status"]')?.textContent?.trim() ?? '',
+        health: document.querySelector('[data-ui="health"]')?.textContent?.trim() ?? '',
+        ammo: document.querySelector('[data-ui="ammo"]')?.textContent?.trim() ?? '',
+        playerCount: document.querySelector('[data-ui="player-count"]')?.textContent?.trim() ?? '',
+        promptVisible: visible('[data-ui="prompt-panel"]'),
+        deathVisible: visible('[data-ui="death-panel"]'),
+        scoreboardVisible: visible('[data-ui="scoreboard-panel"]'),
+        debugScoreboardVisible: Boolean(window.__dustlineQa__?.getState()?.scoreboardVisible),
+        legacyHudSurfaces: document.querySelectorAll('.hud-card, .hud-overlay').length,
+        teamCountsText: document.querySelector('[data-ui="team-counts"]')?.textContent?.trim() ?? '',
+        rosterText: document.querySelector('[data-ui="roster"]')?.textContent?.trim() ?? '',
+        controlsText: document.querySelector('[data-ui="scoreboard-panel"] .scoreboard-controls')?.textContent?.trim() ?? '',
+      };
+    })()
   `);
 }
 
@@ -645,9 +664,49 @@ async function main() {
 
     await setTeamPreference(localPage, "amber");
     await openMap(localPage, "sandline-foundry", "local");
+    const unarmedHud = await readHud(localPage);
+    assert(unarmedHud.legacyHudSurfaces === 0, "Expected old large HUD card/overlay surfaces to be absent");
+    assert(!unarmedHud.scoreboardVisible, "Expected Tab info panel to be hidden before controls are armed");
+    const unarmedTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab");
+    assert(!unarmedTabPrevented, "Expected Tab to keep browser defaults before controls are armed");
+    const unarmedTabHud = await readHud(localPage);
+    assert(
+      !unarmedTabHud.scoreboardVisible && !unarmedTabHud.debugScoreboardVisible,
+      "Expected unarmed Tab press not to open the gameplay info panel",
+    );
+
     const unarmedSpacePrevented = await keyboardDefaultPrevented(localPage, "keydown", "Space", " ", true);
     assert(!unarmedSpacePrevented, "Expected Space to keep browser defaults before controls are armed");
     await engageControls(localPage);
+    const compactDefaultHud = await readHud(localPage);
+    assert(compactDefaultHud.legacyHudSurfaces === 0, "Expected compact HUD to avoid legacy card/overlay classes");
+    assert(!compactDefaultHud.promptVisible, "Expected compact startup hint to disappear after controls are armed");
+    assert(!compactDefaultHud.scoreboardVisible, "Expected Tab info panel to stay hidden by default");
+    assert(compactDefaultHud.health, "Expected compact bottom-left health to be present");
+    assert(compactDefaultHud.ammo, "Expected compact bottom-right ammo to be present");
+    assert(compactDefaultHud.roundTimer, "Expected compact top round timer to be present");
+
+    const armedTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab");
+    assert(armedTabPrevented, "Expected Tab to prevent browser focus navigation while controls are armed");
+    const tabOpenHud = await readHud(localPage);
+    assert(tabOpenHud.scoreboardVisible, "Expected held Tab to show the info panel");
+    assert(tabOpenHud.debugScoreboardVisible, "Expected debug snapshot to expose scoreboardVisible=true");
+    assert(tabOpenHud.teamCountsText, "Expected Tab panel to include team counts");
+    assert(tabOpenHud.rosterText, "Expected Tab panel to include roster rows");
+    assert(tabOpenHud.missionSummary, "Expected Tab panel to include detailed mission text");
+    assert(tabOpenHud.controlsText.includes("WASD"), "Expected Tab panel to include controls");
+
+    const repeatTabPrevented = await keyboardDefaultPrevented(localPage, "keydown", "Tab", "Tab", true);
+    assert(repeatTabPrevented, "Expected repeated Tab keydown to stay browser-safe while armed");
+    const repeatedTabHud = await readHud(localPage);
+    assert(repeatedTabHud.scoreboardVisible, "Expected repeated Tab keydown not to toggle the panel closed");
+
+    const tabKeyUpPrevented = await keyboardDefaultPrevented(localPage, "keyup", "Tab", "Tab");
+    assert(tabKeyUpPrevented, "Expected Tab keyup to prevent focus navigation while controls are armed");
+    const tabClosedHud = await readHud(localPage);
+    assert(!tabClosedHud.scoreboardVisible, "Expected Tab panel to hide after keyup");
+    assert(!tabClosedHud.debugScoreboardVisible, "Expected debug snapshot to expose scoreboardVisible=false after keyup");
+
     const armedSpacePrevented = await keyboardDefaultPrevented(localPage, "keydown", "Space", " ", true);
     assert(armedSpacePrevented, "Expected Space to prevent browser defaults while controls are armed");
     await delay(180);

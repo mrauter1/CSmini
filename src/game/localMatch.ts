@@ -186,6 +186,7 @@ export interface LocalMatchSnapshot {
   objectiveProgressLabel: string;
   aliveState: string;
   teamCounts: TeamHudCount[];
+  scoreboardVisible: boolean;
 }
 
 interface LocalMatchOptions {
@@ -328,6 +329,7 @@ export class LocalMatch {
   private damageFlashUntil = 0;
   private feedMessage?: FeedMessage;
   private fallbackLookEnabled = false;
+  private scoreboardVisible = false;
   private jumpRequested = false;
   private interactHeld = false;
   private classicCrouchAlias: boolean;
@@ -452,6 +454,7 @@ export class LocalMatch {
       requestedMode: this.options.mode,
       activeMode: this.activeMode,
       roomId: this.activeMode === "shared" ? this.roomId : null,
+      scoreboardVisible: this.scoreboardVisible,
       localPlayer: {
         id: this.playerIdentity.id,
         name: this.playerIdentity.name,
@@ -720,6 +723,12 @@ export class LocalMatch {
   }
 
   debugSetKey(code: string, active: boolean): void {
+    if (code === "Tab") {
+      this.scoreboardVisible = active && this.inputCaptured();
+      this.emitSnapshot();
+      return;
+    }
+
     if (active) {
       if (code === "Space") {
         if (this.inputCaptured() && !this.playerDead) {
@@ -1542,6 +1551,14 @@ export class LocalMatch {
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     this.preventDefaultWhenInputCaptured(event);
 
+    if (event.code === "Tab") {
+      if (this.inputCaptured()) {
+        this.scoreboardVisible = true;
+        this.emitSnapshot();
+      }
+      return;
+    }
+
     if (event.repeat) {
       return;
     }
@@ -1587,6 +1604,14 @@ export class LocalMatch {
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
     this.preventDefaultWhenInputCaptured(event);
+
+    if (event.code === "Tab") {
+      if (this.scoreboardVisible) {
+        this.scoreboardVisible = false;
+        this.emitSnapshot();
+      }
+      return;
+    }
 
     if (event.code === "KeyE") {
       this.interactHeld = false;
@@ -1657,6 +1682,7 @@ export class LocalMatch {
     this.primaryFireHeld = false;
     this.jumpRequested = false;
     this.interactHeld = false;
+    this.scoreboardVisible = false;
     this.movementKeys.clear();
     if (releaseFallbackLook) {
       this.fallbackLookEnabled = false;
@@ -3148,9 +3174,7 @@ export class LocalMatch {
     const teamCounts = this.teamCountsSnapshot();
     const roster = this.rosterSnapshot();
     const objectiveHud = this.objectiveHudSnapshot(roundNow);
-    const deathLine = this.playerDead
-      ? "Down for the rest of the round. Wait for the next reset or press M to reopen map select."
-      : "";
+    const deathLine = this.playerDead ? "Down for the round." : "";
 
     const statusLine =
       this.playerDead
@@ -3204,6 +3228,7 @@ export class LocalMatch {
       objectiveProgressLabel: objectiveHud.progressLabel,
       aliveState: this.playerDead ? "Down" : "Alive",
       teamCounts: this.hudTeamCounts(teamCounts),
+      scoreboardVisible: this.scoreboardVisible,
     });
   }
 

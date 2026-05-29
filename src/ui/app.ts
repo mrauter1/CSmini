@@ -212,7 +212,7 @@ export class TacticalShellApp {
     }
 
     this.root
-      .querySelectorAll<HTMLElement>(".match-hud, .hud-overlay")
+      .querySelectorAll<HTMLElement>(".match-hud, .hud-hint, .hud-downline")
       .forEach((node) => {
         node.hidden = true;
       });
@@ -237,11 +237,9 @@ export class TacticalShellApp {
 
   private syncMatchUi(snapshot: LocalMatchSnapshot): void {
     const setText = (key: string, value: string): void => {
-      const node = this.root.querySelector<HTMLElement>(`[data-ui="${key}"]`);
-
-      if (node) {
+      this.root.querySelectorAll<HTMLElement>(`[data-ui="${key}"]`).forEach((node) => {
         node.textContent = value;
-      }
+      });
     };
 
     setText("map-name", snapshot.mapName);
@@ -275,9 +273,18 @@ export class TacticalShellApp {
       deathPanel.hidden = snapshot.deathLine.length === 0;
     }
 
+    const scoreboardPanel = this.root.querySelector<HTMLElement>('[data-ui="scoreboard-panel"]');
+    if (scoreboardPanel) {
+      scoreboardPanel.hidden = !snapshot.scoreboardVisible;
+    }
+
     const worldShell = this.root.querySelector<HTMLElement>("[data-world-shell]");
     if (worldShell) {
       worldShell.classList.toggle("world-stage__viewport--locked", snapshot.pointerLocked);
+      worldShell.classList.toggle(
+        "world-stage__viewport--scoreboard",
+        snapshot.scoreboardVisible,
+      );
       worldShell.dataset.team = snapshot.teamId;
     }
 
@@ -327,18 +334,14 @@ export class TacticalShellApp {
         .join("");
     }
 
-    const objectiveProgress = this.root.querySelector<HTMLElement>('[data-ui="objective-progress"]');
-    const objectiveProgressFill = this.root.querySelector<HTMLElement>(
-      '[data-ui="objective-progress-fill"]',
-    );
     const showObjectiveProgress =
       snapshot.objectiveProgressLabel.length > 0 || snapshot.objectiveProgress > 0;
-    if (objectiveProgress) {
+    this.root.querySelectorAll<HTMLElement>('[data-ui="objective-progress"]').forEach((objectiveProgress) => {
       objectiveProgress.hidden = !showObjectiveProgress;
-    }
-    if (objectiveProgressFill) {
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-ui="objective-progress-fill"]').forEach((objectiveProgressFill) => {
       objectiveProgressFill.style.width = `${Math.max(0, Math.min(1, snapshot.objectiveProgress)) * 100}%`;
-    }
+    });
 
     this.syncClassicCrouchUi();
   }

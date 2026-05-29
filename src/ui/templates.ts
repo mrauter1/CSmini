@@ -201,7 +201,6 @@ export function renderMapStage(
   const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Round";
   const switchModeLabel = mode === "shared" ? "Switch to Solo Round" : "Switch to Shared Room";
   const switchMode = mode === "shared" ? "local" : "shared";
-  const missionLabels = missionBadges(map);
   const crouchLabel = crouchControlLabel(classicCrouchAlias);
 
   return `
@@ -212,75 +211,26 @@ export function renderMapStage(
             <div class="world-stage__match-host" data-world-host></div>
 
             <div class="match-hud">
-              <div class="hud-card hud-card--map">
-                <p class="hud-label">Map</p>
-                <h1 class="hud-map" data-ui="map-name">${escapeHtml(map.name)}</h1>
-                <p class="hud-note" data-ui="mode-notice">
-                  ${mode === "shared" ? `Shared room armed for ${escapeHtml(map.name)}.` : "Solo round armed."}
-                </p>
+              <div class="hud-round-strip" aria-live="polite">
+                <span data-ui="round-number">Round 1</span>
+                <strong data-ui="round-timer">00:00</strong>
+                <span data-ui="round-phase">Briefing</span>
+                <small><span data-ui="mission-label">Relay Charge</span> / <span data-ui="objective-label">Objective</span></small>
               </div>
 
-              <div class="hud-card hud-card--round">
-                <p class="hud-label">Round</p>
-                <div class="hud-round__topline">
-                  <strong data-ui="round-number">Round 1</strong>
-                  <span data-ui="round-phase">Briefing</span>
-                </div>
-                <h2 class="hud-round__clock" data-ui="round-timer">00:00</h2>
-                <p class="hud-round__mission"><span data-ui="mission-label">Relay Charge</span> · <span data-ui="objective-label">Objective</span></p>
-                <p class="hud-note" data-ui="mission-summary">Mission briefing pending.</p>
-                <p class="hud-note hud-note--accent" data-ui="objective-status"></p>
-                <div class="hud-progress" data-ui="objective-progress" hidden>
-                  <div class="hud-progress__bar">
-                    <span data-ui="objective-progress-fill"></span>
-                  </div>
-                  <small data-ui="objective-progress-label"></small>
-                </div>
+              <div class="hud-vital hud-vital--health">
+                <span>Health</span>
+                <strong data-ui="health">100</strong>
+                <small><span data-ui="team-name">${escapeHtml(teamPreferenceLabel(teamPreference))}</span> / <span data-ui="alive-state">Alive</span></small>
               </div>
 
-              <div class="hud-card hud-card--stats">
-                <div class="hud-stat">
-                  <span>Team</span>
-                  <strong data-ui="team-name">${escapeHtml(teamPreferenceLabel(teamPreference))}</strong>
-                </div>
-                <div class="hud-stat">
-                  <span>State</span>
-                  <strong data-ui="alive-state">Alive</strong>
-                </div>
-                <div class="hud-stat">
-                  <span>Status</span>
-                  <strong data-ui="firing-status">Hold</strong>
-                </div>
-                <div class="hud-stat">
-                  <span>Health</span>
-                  <strong data-ui="health">100</strong>
-                </div>
-                <div class="hud-stat">
-                  <span>Ammo</span>
-                  <strong data-ui="ammo">24 / 120</strong>
-                </div>
+              <div class="hud-vital hud-vital--ammo">
+                <span>Ammo</span>
+                <strong data-ui="ammo">24 / 120</strong>
+                <small data-ui="firing-status">Hold</small>
               </div>
 
-              <div class="hud-card hud-card--teams">
-                <div class="panel__header panel__header--compact">
-                  <p>Team Counts</p>
-                  <span class="chip" data-ui="player-count">1 operator</span>
-                </div>
-                <div class="hud-team-counts" data-ui="team-counts"></div>
-              </div>
-
-              <div class="hud-card hud-card--roster">
-                <div class="panel__header panel__header--compact">
-                  <p>Roster</p>
-                  <span class="chip" data-ui="team-banner">${escapeHtml(teamPreferenceLabel(teamPreference))}</span>
-                </div>
-                <div class="hud-roster" data-ui="roster"></div>
-              </div>
-
-              <div class="hud-card hud-card--status">
-                <p class="hud-label">Status Feed</p>
-                <p data-ui="status">Round feed pending.</p>
-              </div>
+              <div class="hud-status-line" data-ui="status">Round feed pending.</div>
 
               <div class="hud-crosshair" data-hit-indicator>
                 <span class="hud-crosshair__h"></span>
@@ -290,36 +240,90 @@ export function renderMapStage(
 
               <div class="hud-damage" data-damage-overlay></div>
 
-              <div class="hud-overlay" data-ui="prompt-panel">
-                <p class="hud-label">Deploy Controls</p>
-                <h2>Pointer Lock Ready</h2>
+              <div class="hud-hint" data-ui="prompt-panel">
                 <p data-ui="prompt">
-                  Click the viewport to lock the mouse. WASD moves, ${escapeHtml(crouchLabel)} crouches, Space jumps, E interacts with objectives, left click fires, R reloads, and M reopens map select.
+                  Click viewport or lock controls. WASD move, ${escapeHtml(crouchLabel)} crouch, Space jump, E objective, Mouse1 fire, R reload, M map, hold Tab info.
                 </p>
-                <div class="hud-overlay__actions">
+                <div class="hud-hint__actions">
                   <button class="button button--primary" data-action="lock-match">Lock Controls</button>
-                  <button class="button" data-action="open-map" data-mode="${switchMode}" data-map-id="${map.id}">${switchModeLabel}</button>
-                  <button class="button" data-action="show-catalog">Map Roster</button>
                 </div>
               </div>
 
-              <div class="hud-overlay hud-overlay--death" data-ui="death-panel" hidden>
-                <p class="hud-label">Operator Down</p>
-                <h2 data-ui="death">Down for the round.</h2>
-                <p>Stay out until the next reset or press <strong>M</strong> to reopen the roster.</p>
+              <div class="hud-downline" data-ui="death-panel" hidden>
+                <strong data-ui="death">Down for the round.</strong>
+                <span>Wait for reset or press M for map roster.</span>
+              </div>
+
+              <div class="hud-info-panel" data-ui="scoreboard-panel" hidden>
+                <div class="hud-info-panel__header">
+                  <div>
+                    <p>Operations Board</p>
+                    <h2 data-ui="map-name">${escapeHtml(map.name)}</h2>
+                  </div>
+                  <div>
+                    <span data-ui="round-number">Round 1</span>
+                    <strong data-ui="round-timer">00:00</strong>
+                    <small data-ui="round-phase">Briefing</small>
+                  </div>
+                </div>
+
+                <div class="hud-info-grid">
+                  <section class="hud-info-section hud-info-section--mission">
+                    <p class="hud-label">Mission</p>
+                    <strong><span data-ui="mission-label">Relay Charge</span> / <span data-ui="objective-label">Objective</span></strong>
+                    <span data-ui="mode-notice">
+                      ${mode === "shared" ? `Shared room armed for ${escapeHtml(map.name)}.` : "Solo round armed."}
+                    </span>
+                    <span data-ui="mission-summary">Mission briefing pending.</span>
+                    <span class="hud-note--accent" data-ui="objective-status"></span>
+                    <div class="hud-progress" data-ui="objective-progress" hidden>
+                      <div class="hud-progress__bar">
+                        <span data-ui="objective-progress-fill"></span>
+                      </div>
+                      <small data-ui="objective-progress-label"></small>
+                    </div>
+                  </section>
+
+                  <section class="hud-info-section">
+                    <div class="hud-info-section__title">
+                      <p class="hud-label">Team Counts</p>
+                      <span class="chip" data-ui="player-count">1 operator</span>
+                    </div>
+                    <div class="hud-team-counts" data-ui="team-counts"></div>
+                  </section>
+
+                  <section class="hud-info-section hud-info-section--roster">
+                    <div class="hud-info-section__title">
+                      <p class="hud-label">Roster</p>
+                      <span class="chip" data-ui="team-banner">${escapeHtml(teamPreferenceLabel(teamPreference))}</span>
+                    </div>
+                    <div class="hud-roster" data-ui="roster"></div>
+                  </section>
+
+                  <section class="hud-info-section hud-info-section--controls">
+                    <p class="hud-label">Controls</p>
+                    <div class="scoreboard-controls">
+                      ${controlHint("Move", "WASD")}
+                      ${controlHint("Crouch", crouchLabel, "crouch-control")}
+                      ${controlHint("Jump", "Space")}
+                      ${controlHint("Interact", "E")}
+                      ${controlHint("Fire", "Mouse1")}
+                      ${controlHint("Reload", "R")}
+                      ${controlHint("Info", "Hold Tab")}
+                      ${controlHint("Map", "M")}
+                    </div>
+                  </section>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="match-console panel">
+        <div class="match-console match-console--compact panel">
           <div class="match-console__copy">
             <p class="masthead__eyebrow">${modeEyebrow}</p>
-            <h2>${escapeHtml(map.shortDescription)}</h2>
-            <p class="panel__text">${escapeHtml(map.tacticalSummary)}</p>
-            <div class="map-card__chips">
-              ${missionLabels.map(missionChip).join("")}
-            </div>
+            <h2>Match Options</h2>
+            <p class="panel__text">Hold Tab inside the viewport for roster, mission detail, objective state, and controls.</p>
           </div>
           <div class="match-console__actions">
             <button class="button" data-action="show-catalog">Change Map</button>
@@ -327,17 +331,6 @@ export function renderMapStage(
             <button class="button" data-action="toggle-classic-crouch" data-ui="classic-crouch-toggle" aria-pressed="${classicCrouchAlias}">Ctrl Crouch ${classicCrouchAlias ? "On" : "Off"}</button>
             <button class="button button--primary" data-action="show-menu">Return to Briefing</button>
           </div>
-          <div class="control-grid">
-            ${controlHint("Move", "WASD")}
-            ${controlHint("Crouch", crouchLabel, "crouch-control")}
-            ${controlHint("Jump", "Space")}
-            ${controlHint("Interact", "E")}
-            ${controlHint("Shoot", "Left Click")}
-            ${controlHint("Reload", "R")}
-            ${controlHint("Map Select", "M")}
-            ${controlHint("Mode", mode === "shared" ? "Same-map room sync" : "Local round shell")}
-          </div>
-          ${renderTeamPicker(teamPreference)}
         </div>
 
         <div class="map-ribbon panel">
