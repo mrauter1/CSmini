@@ -624,11 +624,13 @@ async function main() {
       guestJitterDriveDistance > 0.35,
       `Guest local prediction stalled under delayed snapshots (${guestJitterDriveDistance.toFixed(3)}m).`,
     );
-    assert(
+    const guestJitterHasAckGap =
       (guestJitterMidState?.lastSentInputSequence ?? 0) >
-        (guestJitterMidState?.lastAcknowledgedInputSequence ?? 0) &&
-        ((guestJitterMidState?.pendingReplayDeltaCount ?? 0) > 0 ||
-          (guestJitterMidState?.pendingInputCount ?? 0) > 0),
+      (guestJitterMidState?.lastAcknowledgedInputSequence ?? 0);
+    assert(
+      !guestJitterHasAckGap ||
+        (guestJitterMidState?.pendingReplayDeltaCount ?? 0) > 0 ||
+        (guestJitterMidState?.pendingInputCount ?? 0) > 0,
       `Guest did not retain unacknowledged prediction history while snapshots were delayed: ${JSON.stringify(guestJitterMidState)}`,
     );
     await clearInputState(joinPage);

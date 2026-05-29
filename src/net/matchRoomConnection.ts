@@ -545,6 +545,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     }
 
     if (!force && now - this.lastSnapshotSentAt < SNAPSHOT_PULSE_MS) {
+      if (changed) {
+        this.refreshBufferedSnapshot(now, this.snapshotEncodingMode(now));
+      }
       return;
     }
 
@@ -1245,6 +1248,44 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       )
     ) {
       this.lastSnapshotSentAt = now;
+      this.lastSentSnapshotSignature =
+        this.pendingSnapshotSignature || hostSnapshotTrafficSignature(this.latestSnapshot);
+      this.lastSnapshotEncoding = encoding;
+      if (encoding === "full") {
+        this.lastFullSnapshotSentAt = now;
+      }
+    }
+  }
+
+  private refreshBufferedSnapshot(now: number, encoding: HostSnapshotEncodingMode): void {
+    if (!this.latestSnapshot) {
+      return;
+    }
+
+    const raw = encodeRoomMessage(
+      {
+        protocol: ROOM_PROTOCOL,
+        version: ROOM_PROTOCOL_VERSION,
+        type: "host-snapshot",
+        roomId: this.roomId,
+        fromPeerId: this.identity.id,
+        seq: this.nextSeq,
+        sentAt: now,
+        payload: this.latestSnapshot,
+      },
+      { hostSnapshotMode: encoding },
+    );
+
+    if (
+      this.sendMessage(
+        "host-snapshot",
+        this.latestSnapshot,
+        undefined,
+        { latestStateOnlyIfBuffered: true },
+        { hostSnapshotMode: encoding },
+      )
+    ) {
+      this.lastSnapshotBytes = measureRoomMessageBytes(raw);
       this.lastSentSnapshotSignature =
         this.pendingSnapshotSignature || hostSnapshotTrafficSignature(this.latestSnapshot);
       this.lastSnapshotEncoding = encoding;
