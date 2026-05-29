@@ -138,7 +138,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - A QA-only `stageAiSightlineCase()` hook staged `enemy-0` behind the named blocker `Crate stack west`, with the player hidden on the `Generator Hall` side and a clear fallback pose at `Water Tower Court`.
 - In the blocked pose, the debug state reported `visibility: 0` and `canSeePlayer: false`.
 - Firing once from the blocked pose drew the enemy into `investigate`, but the same debug state kept `shotsFired: 0`, proving the bot reacted to sound without shooting through the crate stack.
-- Moving to the clear pose advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `4` shots and split them into `2` hits and `2` misses.
+- Moving to the clear pose on `hard` advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `6` shots over `2.07s` and split them into `3` hits and `3` misses.
 - A deterministic bot jump sample for that same enemy started grounded, entered an airborne phase, peaked at feet `0.97` / eye `2.59`, then landed safely back at eye `1.62` after `0.767s`.
 - A staged blocked-traversal recovery case triggered a live `stuck-recovery` jump before repath, lifting the same enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract.
 - A QA-only live jump request lifted the same engaged enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract, then landed back at `feetY 0` without breaking posture or aim separation.
@@ -152,7 +152,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - A deterministic difficulty sample on the same geometry produced ordered danger without changing locomotion:
   - `easy`: `reaction 0.487s`, `spread 7.124`, `hitChance 0.407`
   - `medium`: `reaction 0.377s`, `spread 6.037`, `hitChance 0.537`
-  - `hard`: `reaction 0.317s`, `spread 5.434`, `hitChance 0.617`
+  - `hard`: `reaction 0.237s`, `spread 4.951`, `hitChance 0.657`
 - An enemy-side bomb-pressure case staged the attacking carrier onto `Kiln Yard`; the same live solo round moved through `planting` into `planted`, then resolved by breach as `Copper-2 breached Kiln Yard.`
 - The shared shot model was sampled through the QA hook with three profiles:
   - close standing target: `hitChance 0.722`, `missChance 0.278`, `spread 3.479`

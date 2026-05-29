@@ -3799,9 +3799,13 @@ export class LocalMatch {
         targetPosition = enemy.ai.forcedTargetPosition.clone();
         targetLabel = enemy.ai.forcedTargetLabel ?? "Recovery angle";
       } else if (canSeePlayer) {
+        const recentlyFinishedBurst =
+          enemy.ai.lastShotAt > Number.NEGATIVE_INFINITY &&
+          enemy.ai.burstShotsRemaining <= 0 &&
+          now - enemy.ai.lastShotAt <= tuning.postContactRepositionSeconds;
         const underPressure =
           now - enemy.ai.lastDamagedAt <= tuning.postContactRepositionSeconds ||
-          now - enemy.ai.lastShotAt <= tuning.postContactRepositionSeconds ||
+          recentlyFinishedBurst ||
           now - enemy.ai.lastLostSightAt <= tuning.postContactRepositionSeconds;
         const repositionChoice =
           underPressure ||
@@ -3834,18 +3838,20 @@ export class LocalMatch {
           targetPosition = fallbackAnchor.position.clone();
           targetLabel = fallbackAnchor.label;
           enemy.ai.repositionReason = repositionChoice?.reason ?? "angle";
+          shouldShoot = visibility >= tuning.engageVisibilityThreshold;
         } else if (repositionChoice) {
           behavior = "reposition";
           stance = repositionChoice.reason === "cover" ? "crouched" : "standing";
           targetPosition = repositionChoice.anchor.position.clone();
           targetLabel = repositionChoice.anchor.label;
           enemy.ai.repositionReason = repositionChoice.reason;
+          shouldShoot = visibility >= tuning.engageVisibilityThreshold;
         } else if (playerDistance > 11.5) {
           behavior = "pursue";
           stance = "standing";
           targetPosition = playerFeet.clone();
           targetLabel = "Last seen angle";
-          shouldShoot = visibility >= tuning.clearShotVisibilityThreshold;
+          shouldShoot = visibility >= tuning.engageVisibilityThreshold;
         } else {
           behavior = "engage";
           stance = visibility < tuning.clearShotVisibilityThreshold ? "crouched" : "standing";

@@ -70,6 +70,7 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 - Medium post-contact reposition window: `1.2s`
 - Medium squad-contact delay: `0.62s`
 - Medium burst size / cooldown: `2-3 shots` / `0.28s`
+- Hard burst size / cooldown: `4-6 shots` / `0.12s`
 - Medium behavior hold: `0.72s`
 - Medium stuck-recovery window: `0.78s`
 - Close standing reaction sample: `0.269s`, hit chance `0.722`
@@ -78,7 +79,8 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 - Difficulty comparison sample at the same pose:
   - `easy`: `0.487s` reaction, `7.124` spread, `0.407` hit chance
   - `medium`: `0.377s` reaction, `6.037` spread, `0.537` hit chance
-  - `hard`: `0.317s` reaction, `5.434` spread, `0.617` hit chance
+  - `hard`: `0.237s` reaction, `4.951` spread, `0.657` hit chance
+- Staged hard combat cadence: `6` shots over `2.07s`, with `3` hits and `3` misses
 
 Rationale: the solo fireteam now closes space, crouches, jumps, lands, and triggers a constrained stuck-recovery hop through the same grounded movement rules as the player, so the threat comes from angle choice, timing, delayed communication, burst discipline, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, recover, reposition, and pressure objectives without snapping instantly into perfect hits.
 

@@ -1930,7 +1930,7 @@ async function main() {
         mediumDifficultyState.tuning?.botMovement?.walkSpeed === hardDifficultyState.tuning?.botMovement?.walkSpeed,
       "Expected all bot difficulties to keep the same movement tuning",
     );
-    await setBotDifficulty(localPage, "medium");
+    await setBotDifficulty(localPage, "hard");
 
     await setView(localPage, sightlineCase.blockedPlayerPosition, {
       x: sightlineCase.blockedPlayerPosition.x + 2,
@@ -1958,6 +1958,7 @@ async function main() {
       "Expected the blocked-sight investigate case to withhold fire through geometry",
     );
 
+    const hardShotsBeforeClear = investigateEnemy.ai.shotsFired;
     await setView(localPage, sightlineCase.clearPlayerPosition, sightlineCase.enemyPosition);
     await localPage.waitForExpression(
       `
@@ -1976,15 +1977,27 @@ async function main() {
           const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
             .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
           return enemy?.ai?.canSeePlayer === true
-            && enemy?.ai?.shotsFired >= 4
+            && enemy?.ai?.shotsFired >= ${hardShotsBeforeClear + 6}
             && enemy?.ai?.shotHits >= 1
             && enemy?.ai?.shotMisses >= 1;
         })()
       `,
-      12_000,
+      6_000,
     );
     const engageState = await getState(localPage);
     const engageEnemy = engageState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
+    const hardShotEvents = shotEvents(engageState, "enemy")
+      .filter((event) => event.sourceId === sightlineCase.enemyId)
+      .slice(-6);
+    assert(
+      hardShotEvents.length >= 6,
+      `Expected at least 6 hard-bot shot events, saw ${hardShotEvents.length}`,
+    );
+    const hardShotSpan = hardShotEvents.at(-1).at - hardShotEvents[0].at;
+    assert(
+      hardShotSpan <= 2.2,
+      `Expected hard bot to sustain a human-like burst cadence, saw 6 shots over ${hardShotSpan.toFixed(2)}s`,
+    );
     assert(
       engageEnemy?.ai?.behavior === "engage" || engageEnemy?.ai?.behavior === "reposition",
       `Expected the staged AI to take a clear-shot combat state, saw ${engageEnemy?.ai?.behavior}`,
@@ -2000,6 +2013,7 @@ async function main() {
         aiWorldFire.outputGain >= aiWorldFire.gain,
       `Expected AI shot audio to carry distance-normalized gain, saw ${JSON.stringify(aiWorldFire)}`,
     );
+    await setBotDifficulty(localPage, "medium");
 
     await requestEnemyJump(localPage, sightlineCase.enemyId);
     await localPage.waitForExpression(
@@ -2234,6 +2248,10 @@ async function main() {
         fired: engageEnemy.ai.shotsFired,
         hits: engageEnemy.ai.shotHits,
         misses: engageEnemy.ai.shotMisses,
+      },
+      hardCadence: {
+        sixShotSpanSeconds: Number(hardShotSpan.toFixed(2)),
+        shots: hardShotEvents.length,
       },
       closeStandingShot,
       farMovingShot,
