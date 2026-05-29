@@ -9,7 +9,7 @@ Dustline keeps the frontend deployable as a plain static site while still allowi
 - The deployed app is still just HTML, CSS, and client-side JavaScript.
 - Room setup defaults to a Cloudflare Workers signaling service with one Durable Object per room code.
 - The signaling service exchanges room presence, SDP offers/answers, and ICE candidates only.
-- The signaling Worker also exposes `/turn-credentials`, which returns browser ICE server config from a Metered TURN credential when Worker secrets are configured, or default STUN servers otherwise.
+- The signaling Worker also exposes `/turn-credentials`, which creates a short-lived Metered TURN credential server-side when Worker secrets and the Metered plan allow it, fetches the browser ICE server config with that temporary credential, and otherwise falls back to a configured static Metered credential or default STUN servers.
 - The WebRTC peer connection is still created directly between browsers; gameplay messages do not flow through Cloudflare.
 - Manual copy-paste signaling remains available as a backend-free fallback.
 - There is no always-on match server, relay, database, or paid authoritative backend in the current implementation.
@@ -77,7 +77,7 @@ Current threshold rationale:
 - `2` offers and `2` answers per peer pair allow the initial exchange plus one retry or restart, while `64` ICE candidates per pair leaves headroom for noisy candidate gathering without permitting endless trickle spam.
 - Close codes follow the WebSocket intent: `1008` for policy and protocol breaches, `1009` for oversized frames, and `1011` for internal send failures.
 
-These controls harden signaling abuse and bandwidth amplification. They are not gameplay anti-cheat and do not authenticate browser identities beyond the room protocol itself. Strict NAT traversal depends on the configured TURN provider.
+These controls harden signaling abuse and bandwidth amplification. They are not gameplay anti-cheat and do not authenticate browser identities beyond the room protocol itself. Strict NAT traversal depends on the configured TURN provider, and the Metered secret key must stay in Worker secrets only.
 
 ## Host Authority
 

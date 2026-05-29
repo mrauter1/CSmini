@@ -185,6 +185,7 @@ async function probeTurnCredentials() {
     count: body.length,
     hasTurn: flattenedUrls.some((url) => /^turns?:/.test(url)),
     source: response.headers.get("x-ice-servers-source") ?? "unknown",
+    expiresIn: response.headers.get("x-turn-credential-expires-in") ?? null,
   };
 }
 

@@ -5,6 +5,8 @@ const MAX_REQUEST_URL_LENGTH = 512;
 const MAX_QUERY_LENGTH = 256;
 const MAX_ROOM_PATH_LENGTH = 128;
 const MAX_TURN_CREDENTIAL_RESPONSE_BYTES = 16 * 1024;
+const MAX_TURN_CREATE_CREDENTIAL_RESPONSE_BYTES = 8 * 1024;
+const TURN_CREDENTIAL_EXPIRY_SECONDS = 2 * 60 * 60;
 const MAX_ICE_SERVER_COUNT = 12;
 const MAX_ICE_URLS_PER_SERVER = 8;
 const MAX_ICE_URL_LENGTH = 256;
@@ -62,6 +64,7 @@ const SAFE_MAP_ID = /^[a-z0-9-]{3,64}$/;
 const SAFE_ACCENT_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const SAFE_METERED_APP_NAME = /^[a-zA-Z0-9-]{3,63}$/;
 const SAFE_METERED_API_KEY = /^[a-zA-Z0-9_-]{16,128}$/;
+const SAFE_METERED_SECRET_KEY = /^[a-zA-Z0-9_-]{16,256}$/;
 const SAFE_ICE_URL = /^(stun|stuns|turn|turns):[^"'<>\\\s]+$/i;
 const UTF8 = new TextEncoder();
 
@@ -775,14 +778,95 @@ export default {
 
 async function handleTurnCredentialsRequest(env) {
   const appName = normalizeToken(env.METERED_APP_NAME, SAFE_METERED_APP_NAME);
-  const apiKey = normalizeToken(env.METERED_TURN_API_KEY, SAFE_METERED_API_KEY);
-  if (!appName || !apiKey) {
+  const secretKey = normalizeToken(env.METERED_SECRET_KEY, SAFE_METERED_SECRET_KEY);
+  const fallbackApiKey = normalizeToken(env.METERED_TURN_API_KEY, SAFE_METERED_API_KEY);
+  if (!appName || (!secretKey && !fallbackApiKey)) {
     return json(DEFAULT_ICE_SERVERS, 200, {
       "cache-control": "no-store",
       "x-ice-servers-source": "default-stun",
     });
   }
 
+  if (secretKey) {
+    const credential = await createExpiringMeteredCredential(appName, secretKey);
+    if (credential) {
+      const iceServers = await fetchMeteredIceServers(appName, credential.apiKey);
+      if (iceServers) {
+        return json(iceServers, 200, {
+          "cache-control": "no-store",
+          "x-ice-servers-source": "metered-expiring",
+          "x-turn-credential-expires-in": String(credential.expiryInSeconds),
+        });
+      }
+    }
+  }
+
+  if (fallbackApiKey) {
+    const iceServers = await fetchMeteredIceServers(appName, fallbackApiKey);
+    if (iceServers) {
+      return json(iceServers, 200, {
+        "cache-control": "no-store",
+        "x-ice-servers-source": "metered-static-fallback",
+      });
+    }
+  }
+
+  return json({ ok: false, error: "Could not fetch TURN credential ICE servers." }, 502, {
+    "cache-control": "no-store",
+  });
+}
+
+async function createExpiringMeteredCredential(appName, secretKey) {
+  const upstreamUrl = new URL(`https://${appName}.metered.live/api/v1/turn/credential`);
+  upstreamUrl.searchParams.set("secretKey", secretKey);
+
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl.toString(), {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        expiryInSeconds: TURN_CREDENTIAL_EXPIRY_SECONDS,
+        label: createMeteredCredentialLabel(),
+      }),
+    });
+  } catch {
+    return null;
+  }
+
+  if (!upstream.ok) {
+    return null;
+  }
+
+  const raw = await upstream.text();
+  if (UTF8.encode(raw).byteLength > MAX_TURN_CREATE_CREDENTIAL_RESPONSE_BYTES) {
+    return null;
+  }
+
+  const credential = parseJson(raw);
+  if (typeof credential !== "object" || credential === null) {
+    return null;
+  }
+
+  const apiKey = normalizeToken(credential.apiKey, SAFE_METERED_API_KEY);
+  if (!apiKey) {
+    return null;
+  }
+
+  const expiryInSeconds = Number.isInteger(credential.expiryInSeconds)
+    ? credential.expiryInSeconds
+    : TURN_CREDENTIAL_EXPIRY_SECONDS;
+
+  return {
+    apiKey,
+    expiryInSeconds,
+  };
+}
+
+async function fetchMeteredIceServers(appName, apiKey) {
   const upstreamUrl = new URL(`https://${appName}.metered.live/api/v1/turn/credentials`);
   upstreamUrl.searchParams.set("apiKey", apiKey);
 
@@ -792,35 +876,32 @@ async function handleTurnCredentialsRequest(env) {
       headers: { accept: "application/json" },
     });
   } catch {
-    return json({ ok: false, error: "Could not reach TURN credential provider." }, 502, {
-      "cache-control": "no-store",
-    });
+    return null;
   }
 
   if (!upstream.ok) {
-    return json({ ok: false, error: "TURN credential provider rejected the request." }, 502, {
-      "cache-control": "no-store",
-    });
+    return null;
   }
 
   const raw = await upstream.text();
   if (UTF8.encode(raw).byteLength > MAX_TURN_CREDENTIAL_RESPONSE_BYTES) {
-    return json({ ok: false, error: "TURN credential response is too large." }, 502, {
-      "cache-control": "no-store",
-    });
+    return null;
   }
 
   const iceServers = sanitizeIceServers(parseJson(raw));
   if (!iceServers) {
-    return json({ ok: false, error: "TURN credential response is invalid." }, 502, {
-      "cache-control": "no-store",
-    });
+    return null;
   }
 
-  return json(iceServers, 200, {
-    "cache-control": "no-store",
-    "x-ice-servers-source": "metered",
-  });
+  return iceServers;
+}
+
+function createMeteredCredentialLabel() {
+  const suffix =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `csmini-${Date.now().toString(36)}-${suffix}`;
 }
 
 function isWebSocketUpgrade(request) {
