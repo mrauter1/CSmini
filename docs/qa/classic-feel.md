@@ -39,7 +39,7 @@ Rationale: the walk speed keeps rounds moving, but there is no sprint layer; the
 - Standing recoil kick: `0.8`
 - Crouched recoil kick: `0.58`
 - Airborne recoil penalty: `0.12`
-- Player damage: `34`
+- Rifle damage: `34` for both player and bot hits
 
 Rationale: the rifle cadence supports short controlled bursts instead of permanent full-speed spray, and crouch meaningfully steadies the weapon without removing the need to commit to cover.
 
@@ -63,13 +63,13 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 - Crouched bot stride sample: `4.816u/s`
 - Bot jump sample: feet peak `0.97`, eye peak `2.59`, landed eye `1.62`, airtime `0.767s`
 - Live recovery hop sample: `stuck-recovery` reached feet `0.355` before the same bot repathed
-- Enemy fire interval: `0.92s`
+- Enemy fire interval: `0.18s`
 - Engage distance: `20u`
 - Medium investigation window: `3.8s`
 - Medium pursuit window: `4.8s`
 - Medium post-contact reposition window: `1.2s`
 - Medium squad-contact delay: `0.62s`
-- Medium burst size / cooldown: `2-3 shots` / `0.76s`
+- Medium burst size / cooldown: `2-3 shots` / `0.28s`
 - Medium behavior hold: `0.72s`
 - Medium stuck-recovery window: `0.78s`
 - Close standing reaction sample: `0.269s`, hit chance `0.722`
@@ -100,7 +100,7 @@ Test surfaces used for the checklist:
 - Jump readability: `pass`
   Evidence: the live jump sample peaked at `2.59`, landed back at `1.62`, stayed airborne for `0.767s`, and a real stuck-recovery hop lifted live bot feet to `0.355` before repath, which reads as a committed hop rather than floaty traversal.
 - Weapon timing/readability: `pass`
-  Evidence: player fire interval stayed at `0.18s`, reload at `1.05s`, clip at `24`, and the live HUD kept `24 / 120` ammo plus `Ready` status visible during the round.
+  Evidence: player and bot fire intervals both stayed at `0.18s`, player and bot damage both stayed at `34`, reload at `1.05s`, clip at `24`, and the live HUD kept `24 / 120` ammo plus `Ready` status visible during the round.
 - Short round pacing: `pass`
   Evidence: the round shell stays at `4.5s` briefing / `72s` live / `5.5s` reset, while bomb fuse timing stays in the `11.9-12.6s` range and hostage secure/extract stays at `1.45s` / `1.8s`.
 - Objective pressure: `pass`

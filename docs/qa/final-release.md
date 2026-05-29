@@ -108,6 +108,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - pressure on the staged enemy produced a real `reposition` with reason `angle`, then a `pursue` state after lost sight
   - a blocked traversal case recovered through `repath` instead of teleporting
   - ordered difficulty danger stayed fair: `easy` `0.487s / 7.124 / 0.407`, `medium` `0.377s / 6.037 / 0.537`, `hard` `0.317s / 5.434 / 0.617`
+  - bot fire interval now matches the player fire interval at `0.18s`, and enemy damage now matches player damage at `34`
   - an enemy-side `Kiln Yard` plant case proved objective-aware pressure and bounded solo-round resolution without deadlock
   - shot model produced both hits and misses, with hit-chance dropping from `0.722` close-standing to `0.262` far-moving and `0.449` crouched-partial
   - enemy live fire emitted a playable distance-normalized world-fire audio event

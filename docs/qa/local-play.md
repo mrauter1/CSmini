@@ -143,6 +143,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - A staged blocked-traversal recovery case triggered a live `stuck-recovery` jump before repath, lifting the same enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract.
 - A QA-only live jump request lifted the same engaged enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract, then landed back at `feetY 0` without breaking posture or aim separation.
 - The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility after the user-gesture unlock pulse armed the audio context.
+- The live debug tuning reported bot fire interval `0.18s` and enemy damage `34`, matching the player fire interval and player damage while still applying difficulty-specific reaction, spread, hit chance, and burst pacing.
 - Stale opponent-fire audio is not replayed after a late browser audio unlock; blocked shots are dropped rather than played out of time.
 - After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then dropped into `pursue` after the player ducked back behind cover.
 - A staged observer/receiver pair proved squad contact stayed delayed: the receiver held `patrol` before delivery, then entered `pursue` only after the shared-contact lag elapsed.

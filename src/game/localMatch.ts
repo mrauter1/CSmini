@@ -127,8 +127,8 @@ const RELOAD_DURATION = 1.05;
 const CLIP_SIZE = 24;
 const RESERVE_AMMO = 120;
 const PLAYER_DAMAGE = 34;
-const ENEMY_DAMAGE = 14;
-const ENEMY_FIRE_INTERVAL = 0.92;
+const ENEMY_DAMAGE = PLAYER_DAMAGE;
+const ENEMY_FIRE_INTERVAL = FIRE_INTERVAL;
 const ENEMY_ENGAGE_DISTANCE = 20;
 const HIT_INDICATOR_DURATION = 0.16;
 const DAMAGE_FLASH_DURATION = 0.2;
@@ -634,6 +634,7 @@ export class LocalMatch {
           recoilKickCrouched: 0.58,
           airborneRecoilPenalty: 0.12,
           playerDamage: PLAYER_DAMAGE,
+          enemyDamage: ENEMY_DAMAGE,
         },
         round: {
           briefingSeconds: Number(ROUND_DURATIONS.briefing.toFixed(1)),

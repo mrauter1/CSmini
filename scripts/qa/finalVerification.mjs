@@ -1526,6 +1526,14 @@ async function main() {
       localBombStart.bomb?.carrierId === localBombStart.localPlayer.id,
       "Expected the attacking local operator to carry the relay charge",
     );
+    assert(
+      localBombStart.tuning?.ai?.fireInterval === localBombStart.tuning?.weapon?.fireInterval,
+      `Expected bot base fire interval ${localBombStart.tuning?.ai?.fireInterval}s to match player fire interval ${localBombStart.tuning?.weapon?.fireInterval}s`,
+    );
+    assert(
+      localBombStart.tuning?.weapon?.enemyDamage === localBombStart.tuning?.weapon?.playerDamage,
+      `Expected bot damage ${localBombStart.tuning?.weapon?.enemyDamage} to match player damage ${localBombStart.tuning?.weapon?.playerDamage}`,
+    );
 
     const site = localBombStart.bomb.sitePosition;
     await localPage.evaluate(
@@ -2717,7 +2725,7 @@ async function main() {
         },
         weaponTimingReadability: {
           result: "pass",
-          evidence: `Player fire interval ${localBombStart.tuning.weapon.fireInterval}s, reload ${localBombStart.tuning.weapon.reloadDuration}s, clip ${localBombStart.tuning.weapon.clipSize}; HUD kept ammo ${localBombHudShell.ammo} and status ${localBombHudShell.firingStatus} readable in live play.`,
+          evidence: `Player and bot fire interval ${localBombStart.tuning.weapon.fireInterval}s, damage ${localBombStart.tuning.weapon.playerDamage}; reload ${localBombStart.tuning.weapon.reloadDuration}s, clip ${localBombStart.tuning.weapon.clipSize}; HUD kept ammo ${localBombHudShell.ammo} and status ${localBombHudShell.firingStatus} readable in live play.`,
         },
         shortRoundPacing: {
           result: "pass",
