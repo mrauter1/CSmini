@@ -473,6 +473,9 @@ async function main() {
     await syncGuestLookToShot(hostPage, joinPage, clearLayout);
     const acceptedBeforeId = await currentResultId(joinPage);
     const acceptedBeforeCount = await currentResultCount(joinPage);
+    const guestLastSentInputSequenceBeforeClaim = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0",
+    );
     const acceptedSent = await joinPage.evaluate(
       `window.__dustlineQa__.submitShotClaim({
         origin: ${JSON.stringify(clearLayout.guest)},
@@ -487,7 +490,18 @@ async function main() {
     const acceptedClaimTick = await joinPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.sharedCombat?.lastShotClaim?.tick ?? 0",
     );
+    const guestLastSentInputSequence = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastSentInputSequence ?? 0",
+    );
+    const guestLastShotClaim = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.sharedCombat?.lastShotClaim ?? null",
+    );
     assert(acceptedClaimTick > 0, "Guest did not record the accepted claim tick.");
+    assert(
+      (guestLastShotClaim?.inputSequence ?? 0) >= guestLastSentInputSequenceBeforeClaim &&
+        (guestLastShotClaim?.inputSequence ?? 0) <= guestLastSentInputSequence,
+      `Guest shot claim input sequence ${guestLastShotClaim?.inputSequence} was outside the sent-input window ${guestLastSentInputSequenceBeforeClaim}-${guestLastSentInputSequence}.`,
+    );
     const forgedSent = await joinPage.evaluate(
       `window.__dustlineQa__.submitShotClaim({
         tick: ${acceptedClaimTick} + 40,
@@ -544,9 +558,9 @@ async function main() {
       hostHealthAfterAccepted: acceptedHostHealth,
       guestAmmoAfterAccepted,
       guestAmmoAfterFireRate,
-      guestLastShotClaim: await joinPage.evaluate(
-        "window.__dustlineQa__?.getState()?.match?.sharedCombat?.lastShotClaim ?? null",
-      ),
+      guestLastSentInputSequenceBeforeClaim,
+      guestLastSentInputSequence,
+      guestLastShotClaim,
       guestLastShotResult: await joinPage.evaluate(
         "window.__dustlineQa__?.getState()?.match?.sharedCombat?.lastShotResult ?? null",
       ),

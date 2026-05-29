@@ -61,6 +61,7 @@ export interface RoomIdentity extends ParticipantIdentity {}
 export interface RoomInputEvent extends RoomInputTick {
   peerId: string;
   sentAt: number;
+  receivedAt: number;
 }
 
 export interface RoomShotClaimEvent extends RoomShotClaim {
@@ -1038,6 +1039,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         this.handlers.onInput({
           peerId: message.fromPeerId,
           sentAt: message.sentAt,
+          receivedAt: event.receivedAt,
           ...message.payload,
         });
         return;

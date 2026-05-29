@@ -77,6 +77,14 @@ const SHOT_MAX_RANGE = 72;
 const SHOT_REWIND_DRIFT_MS = 180;
 const MAX_REMOTE_INPUT_AXIS = 1.01;
 const MAX_REMOTE_INPUT_VECTOR_LENGTH = Math.SQRT2 + 0.01;
+// Guests resend their latest state roughly every 120 ms, so 320 ms tolerates a couple of delayed
+// state ticks before the host clamps stale movement after a lost release.
+const REMOTE_INPUT_DEADMAN_MS = 320;
+const LOCAL_INPUT_HISTORY_MAX_ENTRIES = 40;
+const LOCAL_INPUT_HISTORY_MAX_AGE_MS = 4_000;
+const LOCAL_REPLAY_DELTA_MAX_ENTRIES = 180;
+const LOCAL_REPLAY_DELTA_MAX_AGE_MS = 4_000;
+const LOCAL_RECONCILE_SNAP_DISTANCE = 2;
 
 const ENEMY_NAMES = ["Copper-2", "Vale-3", "Rook-4"];
 const ENEMY_ACCENTS = ["#6F8FAA", "#819B58", "#B86E4E"];
@@ -153,9 +161,24 @@ interface RemoteActor {
   moveBlend: number;
   hitFlashUntil: number;
   lastSeenAt: number;
+  lastInputReceivedAt: number;
   lastInputSequence: number;
+  lastProcessedInputSequence: number;
   inputMovement: THREE.Vector2;
   inputSprint: boolean;
+}
+
+interface LocalInputHistoryEntry {
+  sequence: number;
+  tick: number;
+  movement: THREE.Vector2;
+  sprint: boolean;
+}
+
+interface LocalReplayDeltaEntry {
+  sequence: number;
+  recordedAt: number;
+  delta: THREE.Vector3;
 }
 
 interface FeedMessage {
@@ -219,6 +242,8 @@ export class LocalMatch {
   private readonly remoteWeaponStates = new Map<string, SharedWeaponState>();
   private readonly pendingShotClaims = new Map<number, PendingShotClaim>();
   private readonly recentShotResults: RoomShotResultEvent[] = [];
+  private readonly localInputHistory: LocalInputHistoryEntry[] = [];
+  private readonly localReplayDeltas: LocalReplayDeltaEntry[] = [];
 
   private sharedRoom?: MatchRoomConnection;
   private activeMode: MatchMode = "local";
@@ -244,9 +269,12 @@ export class LocalMatch {
   private feedMessage?: FeedMessage;
   private fallbackLookEnabled = false;
   private debugInputState?: DebugInputState;
+  private debugPauseInputTicks = false;
   private lastInputSentAt = 0;
+  private lastSentInputSequence = 0;
   private nextInputSequence = 1;
   private lastInputSignature = "";
+  private lastAcknowledgedInputSequence = 0;
   private reloadSequence = 0;
   private spreadIndex = 0;
   private nextShotClaimId = 1;
@@ -375,6 +403,10 @@ export class LocalMatch {
           y: Number(this.camera.position.y.toFixed(2)),
           z: Number(this.camera.position.z.toFixed(2)),
         },
+        lastSentInputSequence: this.lastSentInputSequence,
+        lastAcknowledgedInputSequence: this.lastAcknowledgedInputSequence,
+        pendingInputCount: this.localInputHistory.length,
+        pendingReplayDeltaCount: this.localReplayDeltas.length,
       },
       roster: this.rosterSnapshot(),
       roomConnection: this.sharedRoom?.debugSnapshot() ?? null,
@@ -385,6 +417,8 @@ export class LocalMatch {
         status: actor.status,
         health: actor.health,
         lastInputSequence: actor.lastInputSequence,
+        lastProcessedInputSequence: actor.lastProcessedInputSequence,
+        lastInputReceivedAt: actor.lastInputReceivedAt,
         inputMovement: {
           x: Number(actor.inputMovement.x.toFixed(2)),
           z: Number(actor.inputMovement.y.toFixed(2)),
@@ -594,30 +628,27 @@ export class LocalMatch {
     };
   }
 
+  debugSetInputTickPaused(paused: boolean): void {
+    this.debugPauseInputTicks = paused;
+  }
+
   debugSendInputTick(movementX: number, movementZ: number, sprint = false): boolean {
-    if (this.sharedRole !== "guest" || !this.sharedRoom) {
+    if (this.sharedRole !== "guest" || !this.sharedRoom || this.debugPauseInputTicks) {
       return false;
     }
 
     this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
-    const actions: string[] = [];
-    if (sprint) {
-      actions.push("sprint");
-    }
-    if (this.reloadEndsAt > performance.now() / 1000) {
-      actions.push("reload");
-    }
 
     this.lastInputSignature = "";
     this.lastInputSentAt = 0;
 
-    return this.sharedRoom.sendInputTick({
-      tick: Date.now(),
-      sequence: this.nextInputSequence++,
-      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
-      movement: [movementX, movementZ],
-      actions,
-    });
+    return this.sendGuestInputTickPayload(
+      Date.now(),
+      performance.now() / 1000,
+      movementX,
+      movementZ,
+      sprint,
+    );
   }
 
   debugClearInputState(): void {
@@ -1030,7 +1061,9 @@ export class LocalMatch {
       moveBlend: 0,
       hitFlashUntil: 0,
       lastSeenAt: Date.now(),
+      lastInputReceivedAt: Date.now(),
       lastInputSequence: 0,
+      lastProcessedInputSequence: 0,
       inputMovement: new THREE.Vector2(),
       inputSprint: false,
     };
@@ -1055,6 +1088,9 @@ export class LocalMatch {
       existing.targetPosition.set(presence.position[0], 0, presence.position[2]);
       existing.forward.set(presence.look[0], 0, presence.look[2]).normalize();
       existing.lastSeenAt = presence.updatedAt;
+      existing.lastInputReceivedAt = presence.updatedAt;
+      existing.lastInputSequence = presence.lastProcessedInputSequence;
+      existing.lastProcessedInputSequence = presence.lastProcessedInputSequence;
       return;
     }
 
@@ -1086,7 +1122,9 @@ export class LocalMatch {
       moveBlend: 0,
       hitFlashUntil: 0,
       lastSeenAt: presence.updatedAt,
-      lastInputSequence: 0,
+      lastInputReceivedAt: presence.updatedAt,
+      lastInputSequence: presence.lastProcessedInputSequence,
+      lastProcessedInputSequence: presence.lastProcessedInputSequence,
       inputMovement: new THREE.Vector2(),
       inputSprint: false,
     });
@@ -1132,9 +1170,11 @@ export class LocalMatch {
     }
 
     actor.lastInputSequence = event.sequence;
+    actor.lastProcessedInputSequence = event.sequence;
     actor.inputMovement.set(movementX, movementZ);
     actor.inputSprint = event.actions.includes("sprint");
-    actor.lastSeenAt = event.sentAt;
+    actor.lastSeenAt = event.receivedAt;
+    actor.lastInputReceivedAt = event.receivedAt;
 
     const weaponState = this.remoteWeaponStates.get(event.peerId);
     if (weaponState) {
@@ -1192,11 +1232,31 @@ export class LocalMatch {
     this.authoritativeRespawnAtMs = presence.respawnAt;
     this.playerRespawnsAt =
       presence.respawnAt > 0 ? now + Math.max(0, presence.respawnAt - nowMs) / 1000 : 0;
+    this.lastAcknowledgedInputSequence = Math.max(
+      this.lastAcknowledgedInputSequence,
+      presence.lastProcessedInputSequence,
+    );
+    this.pruneLocalPredictionHistory(nowMs);
 
     if (!this.authoritativePosition) {
       this.authoritativePosition = new THREE.Vector3();
     }
-    this.authoritativePosition.set(presence.position[0], PLAYER_EYE_HEIGHT, presence.position[2]);
+    const errorX = presence.position[0] - this.camera.position.x;
+    const errorZ = presence.position[2] - this.camera.position.z;
+    const correctionDistance = Math.hypot(errorX, errorZ);
+    const shouldSnap =
+      this.playerDead ||
+      wasDead !== this.playerDead ||
+      correctionDistance > LOCAL_RECONCILE_SNAP_DISTANCE ||
+      this.lastHostSnapshotId <= 1;
+    if (shouldSnap) {
+      this.resetLocalPredictionHistory(presence.lastProcessedInputSequence);
+      this.camera.position.x = presence.position[0];
+      this.camera.position.z = presence.position[2];
+      this.authoritativePosition.set(presence.position[0], PLAYER_EYE_HEIGHT, presence.position[2]);
+    } else {
+      this.authoritativePosition.copy(this.buildReconciledAuthoritativePosition(presence.position));
+    }
 
     if (presence.health < previousHealth && !this.playerDead) {
       this.damageFlashUntil = now + DAMAGE_FLASH_DURATION;
@@ -1204,9 +1264,11 @@ export class LocalMatch {
     }
 
     if (!wasDead && this.playerDead) {
+      this.resetLocalPredictionHistory(presence.lastProcessedInputSequence);
       this.audio.death();
       this.weaponRig.setVisible(false);
     } else if (wasDead && !this.playerDead) {
+      this.resetLocalPredictionHistory(presence.lastProcessedInputSequence);
       this.audio.respawn();
       this.reloadEndsAt = 0;
       this.ammoInClip = CLIP_SIZE;
@@ -1352,12 +1414,13 @@ export class LocalMatch {
     const delta = Math.min(0.04, this.clock.getDelta());
     const now = performance.now() / 1000;
 
+    if (this.activeMode === "shared" && this.sharedRole === "guest") {
+      this.sendLocalInputTick(now);
+    }
     this.updatePlayer(delta, now);
     if (this.activeMode === "shared") {
       if (this.sharedRole === "host") {
         this.updateAuthoritativeRemoteActors(delta);
-      } else {
-        this.sendLocalInputTick(now);
       }
       this.updateRemoteActors(delta, now);
       if (this.sharedRole === "guest") {
@@ -1448,6 +1511,8 @@ export class LocalMatch {
     }
 
     const movement = this.currentMovementState();
+    const previousX = this.camera.position.x;
+    const previousZ = this.camera.position.z;
 
     if (movement.active) {
       this.tempForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
@@ -1472,6 +1537,10 @@ export class LocalMatch {
       );
       this.camera.position.x = next.x;
       this.camera.position.z = next.z;
+    }
+
+    if (this.activeMode === "shared" && this.sharedRole === "guest") {
+      this.recordLocalReplayDelta(this.camera.position.x - previousX, this.camera.position.z - previousZ);
     }
 
     if (this.primaryFireHeld && this.inputCaptured() && now >= this.nextShotAt) {
@@ -1592,7 +1661,7 @@ export class LocalMatch {
       reserveAmmo: overrides.reserveAmmo ?? this.reserveAmmo,
       reloadSequence: overrides.reloadSequence ?? this.reloadSequence,
       spreadIndex: overrides.spreadIndex ?? this.spreadIndex,
-      inputSequence: overrides.inputSequence ?? Math.max(0, this.nextInputSequence - 1),
+      inputSequence: overrides.inputSequence ?? this.lastSentInputSequence,
       weaponId: overrides.weaponId ?? SHARED_WEAPON_ID,
     };
   }
@@ -1916,9 +1985,15 @@ export class LocalMatch {
   }
 
   private updateAuthoritativeRemoteActors(delta: number): void {
+    const nowMs = Date.now();
     for (const actor of this.remoteActors.values()) {
       if (actor.status !== "alive") {
         continue;
+      }
+
+      if (nowMs - actor.lastInputReceivedAt > REMOTE_INPUT_DEADMAN_MS) {
+        actor.inputMovement.set(0, 0);
+        actor.inputSprint = false;
       }
 
       const inputLength = actor.inputMovement.length();
@@ -1953,25 +2028,54 @@ export class LocalMatch {
     }
   }
 
-  private sendLocalInputTick(now: number): void {
+  private sendGuestInputTickPayload(
+    tick: number,
+    now: number,
+    movementX: number,
+    movementZ: number,
+    sprint: boolean,
+  ): boolean {
     if (!this.sharedRoom || this.sharedRole !== "guest") {
-      return;
+      return false;
     }
 
-    this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
-    const movement = this.currentMovementState();
     const actions: string[] = [];
-    if (movement.sprint) {
+    if (sprint) {
       actions.push("sprint");
     }
     if (this.reloadEndsAt > now) {
       actions.push("reload");
     }
 
+    const sequence = this.nextInputSequence++;
+    const sent = this.sharedRoom.sendInputTick({
+      tick,
+      sequence,
+      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
+      movement: [movementX, movementZ],
+      actions,
+    });
+    if (!sent) {
+      return false;
+    }
+
+    this.lastSentInputSequence = sequence;
+    this.recordLocalInputHistory(sequence, tick, movementX, movementZ, sprint);
+    return true;
+  }
+
+  private sendLocalInputTick(now: number): void {
+    if (!this.sharedRoom || this.sharedRole !== "guest" || this.debugPauseInputTicks) {
+      return;
+    }
+
+    this.tempLook.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    const movement = this.currentMovementState();
+
     const signature = [
       movement.moveX.toFixed(2),
       movement.moveZ.toFixed(2),
-      actions.join(","),
+      movement.sprint ? "sprint" : "",
       this.tempLook.x.toFixed(2),
       this.tempLook.z.toFixed(2),
     ].join("|");
@@ -1980,15 +2084,107 @@ export class LocalMatch {
       return;
     }
 
+    if (!this.sendGuestInputTickPayload(Date.now(), now, movement.moveX, movement.moveZ, movement.sprint)) {
+      return;
+    }
+
     this.lastInputSignature = signature;
     this.lastInputSentAt = now;
-    this.sharedRoom.sendInputTick({
-      tick: Date.now(),
-      sequence: this.nextInputSequence++,
-      look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
-      movement: [movement.moveX, movement.moveZ],
-      actions,
+  }
+
+  private recordLocalInputHistory(
+    sequence: number,
+    tick: number,
+    movementX: number,
+    movementZ: number,
+    sprint: boolean,
+  ): void {
+    this.localInputHistory.push({
+      sequence,
+      tick,
+      movement: new THREE.Vector2(movementX, movementZ),
+      sprint,
     });
+    this.pruneLocalPredictionHistory();
+  }
+
+  private recordLocalReplayDelta(deltaX: number, deltaZ: number): void {
+    if (Math.hypot(deltaX, deltaZ) <= 0.0001 || this.localInputHistory.length === 0) {
+      return;
+    }
+
+    const sequence = this.localInputHistory[this.localInputHistory.length - 1]?.sequence ?? 0;
+    if (sequence <= this.lastAcknowledgedInputSequence) {
+      return;
+    }
+
+    this.localReplayDeltas.push({
+      sequence,
+      recordedAt: Date.now(),
+      delta: new THREE.Vector3(deltaX, 0, deltaZ),
+    });
+    this.pruneLocalPredictionHistory();
+  }
+
+  private pruneLocalPredictionHistory(nowMs = Date.now()): void {
+    while (this.localInputHistory.length > 0) {
+      const oldest = this.localInputHistory[0];
+      if (
+        oldest.sequence <= this.lastAcknowledgedInputSequence ||
+        nowMs - oldest.tick > LOCAL_INPUT_HISTORY_MAX_AGE_MS ||
+        this.localInputHistory.length > LOCAL_INPUT_HISTORY_MAX_ENTRIES
+      ) {
+        this.localInputHistory.shift();
+        continue;
+      }
+      break;
+    }
+
+    while (this.localReplayDeltas.length > 0) {
+      const oldest = this.localReplayDeltas[0];
+      if (
+        oldest.sequence <= this.lastAcknowledgedInputSequence ||
+        nowMs - oldest.recordedAt > LOCAL_REPLAY_DELTA_MAX_AGE_MS ||
+        this.localReplayDeltas.length > LOCAL_REPLAY_DELTA_MAX_ENTRIES
+      ) {
+        this.localReplayDeltas.shift();
+        continue;
+      }
+      break;
+    }
+  }
+
+  private resetLocalPredictionHistory(acknowledgedSequence = this.lastAcknowledgedInputSequence): void {
+    this.lastAcknowledgedInputSequence = Math.max(
+      this.lastAcknowledgedInputSequence,
+      acknowledgedSequence,
+    );
+    this.localInputHistory.length = 0;
+    this.localReplayDeltas.length = 0;
+  }
+
+  private buildReconciledAuthoritativePosition(
+    position: HostRoomSnapshot["roster"][number]["position"],
+  ): THREE.Vector3 {
+    const replayed = new THREE.Vector3(position[0], PLAYER_EYE_HEIGHT, position[2]);
+    this.pruneLocalPredictionHistory();
+
+    for (const entry of this.localReplayDeltas) {
+      if (entry.sequence <= this.lastAcknowledgedInputSequence) {
+        continue;
+      }
+
+      const next = resolveHorizontalMovement(
+        this.collisionWorld,
+        replayed,
+        entry.delta,
+        PLAYER_RADIUS,
+        PLAYER_BODY_HEIGHT,
+      );
+      replayed.set(next.x, PLAYER_EYE_HEIGHT, next.z);
+    }
+
+    return replayed;
   }
 
   private reconcileAuthoritativePosition(delta: number): void {
@@ -2000,7 +2196,7 @@ export class LocalMatch {
     const errorZ = this.authoritativePosition.z - this.camera.position.z;
     const distance = Math.hypot(errorX, errorZ);
 
-    if (distance > 2 || this.playerDead) {
+    if (distance > LOCAL_RECONCILE_SNAP_DISTANCE || this.playerDead) {
       this.camera.position.x = this.authoritativePosition.x;
       this.camera.position.z = this.authoritativePosition.z;
       return;
@@ -2426,6 +2622,7 @@ export class LocalMatch {
       position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
       look: [this.tempLook.x, this.tempLook.y, this.tempLook.z],
       respawnAt: this.playerDead ? this.authoritativeRespawnAtMs : 0,
+      lastProcessedInputSequence: 0,
       updatedAt: now,
     };
   }
@@ -2447,6 +2644,7 @@ export class LocalMatch {
       position: [actor.targetPosition.x, PLAYER_EYE_HEIGHT, actor.targetPosition.z],
       look: [actor.forward.x, 0, actor.forward.z],
       respawnAt: actor.respawnAt,
+      lastProcessedInputSequence: actor.lastProcessedInputSequence,
       updatedAt: now,
     };
   }

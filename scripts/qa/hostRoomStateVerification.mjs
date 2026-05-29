@@ -487,6 +487,41 @@ async function main() {
     const hostRemoteInputState = await hostPage.evaluate(
       "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0] ?? null",
     );
+    assert(
+      (hostRemoteInputState?.lastInputSequence ?? 0) > 0,
+      "Host never recorded the guest input sequence.",
+    );
+    const guestAckAfterMovement = await joinPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.lastAcknowledgedInputSequence ?? 0",
+    );
+
+    await joinPage.evaluate("window.__dustlineQa__.setInputTickPaused(true)");
+    await hostPage.waitForExpression(
+      `(() => {
+        const remote = window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0];
+        if (!remote) {
+          return false;
+        }
+        return (
+          Math.abs(remote.inputMovement?.x ?? 0) < 0.01 &&
+          Math.abs(remote.inputMovement?.z ?? 0) < 0.01 &&
+          remote.inputSprint === false
+        );
+      })()`,
+      5_000,
+    );
+    const hostRemoteAfterDeadman = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.remotePlayers?.[0] ?? null",
+    );
+    const hostRemoteAfterDeadmanPosition = await readRemotePosition(hostPage);
+    await delay(250);
+    const hostRemoteAfterDeadmanSettled = await readRemotePosition(hostPage);
+    const deadmanDrift = Math.hypot(
+      (hostRemoteAfterDeadmanSettled?.x ?? 0) - (hostRemoteAfterDeadmanPosition?.x ?? 0),
+      (hostRemoteAfterDeadmanSettled?.z ?? 0) - (hostRemoteAfterDeadmanPosition?.z ?? 0),
+    );
+    assert(deadmanDrift < 0.1, `Host deadman allowed remote drift of ${deadmanDrift.toFixed(3)}m.`);
+    await joinPage.evaluate("window.__dustlineQa__.setInputTickPaused(false)");
     await clearInputState(joinPage);
 
     const guestSnapshotBeforeHostMove = await joinPage.evaluate(
@@ -527,10 +562,13 @@ async function main() {
       guestRecoveryError: await joinPage.evaluate(
         "window.__dustlineQa__?.getState()?.roomSetup?.supportError ?? ''",
       ),
+      guestAckAfterMovement,
       guestSnapshotAfterHostMove,
       hostRemoteInputState,
       hostRemotePositionBeforeGuestInput: initialGuestOnHost,
       hostRemoteAfterGuestInput,
+      hostRemoteAfterDeadman,
+      deadmanDrift,
       guestRemoteAfterHostInput,
     };
 

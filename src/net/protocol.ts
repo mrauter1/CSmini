@@ -1,7 +1,7 @@
 import type { RoomTransportLane } from "./transport";
 
 export const ROOM_PROTOCOL = "dustline-room";
-export const ROOM_PROTOCOL_VERSION = 2 as const;
+export const ROOM_PROTOCOL_VERSION = 3 as const;
 export const ROOM_MESSAGE_STALE_MS = 12_000;
 export const ROOM_MESSAGE_FUTURE_SKEW_MS = 2_500;
 // Shared gameplay payloads stay comfortably below this in normal play, so 64 KiB prevents one
@@ -45,6 +45,7 @@ export interface RoomPresenceSnapshot extends ParticipantRecord {
   position: NetworkVector3;
   look: NetworkVector3;
   respawnAt: number;
+  lastProcessedInputSequence: number;
   updatedAt: number;
 }
 
@@ -463,6 +464,7 @@ function isRoomPresenceSnapshot(value: unknown): value is RoomPresenceSnapshot {
     isVector3(value.position) &&
     isVector3(value.look) &&
     isSafeNumber(value.respawnAt) &&
+    isSafeNumber(value.lastProcessedInputSequence) &&
     isSafeNumber(value.updatedAt)
   );
 }

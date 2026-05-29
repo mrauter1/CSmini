@@ -82,6 +82,7 @@ declare global {
       startReload: () => void;
       forcePlayerDeath: (attackerName?: string) => void;
       setInputState: (movementX: number, movementZ: number, sprint?: boolean) => void;
+      setInputTickPaused: (paused: boolean) => void;
       sendInputTick: (movementX: number, movementZ: number, sprint?: boolean) => boolean;
       clearInputState: () => void;
     };
@@ -129,6 +130,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),
     setInputState: (movementX, movementZ, sprint) =>
       app.debugSetInputState(movementX, movementZ, sprint),
+    setInputTickPaused: (paused) => app.debugSetInputTickPaused(paused),
     sendInputTick: (movementX, movementZ, sprint) =>
       app.debugSendInputTick(movementX, movementZ, sprint),
     clearInputState: () => app.debugClearInputState(),
