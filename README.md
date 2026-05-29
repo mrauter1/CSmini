@@ -68,7 +68,7 @@ Use `Manual Host` and `Manual Join` if the Cloudflare signaling service is unava
 - There are no authenticated accounts or trusted identities yet.
 - Manual offer and answer exchange is still available as a fallback.
 - The WebRTC transport asks the signaling Worker for ICE servers and falls back to Google STUN.
-- When configured with Metered Worker secrets and a plan that supports expiring credentials, the Worker creates short-lived TURN credentials server-side and returns only the browser ICE server config.
+- When configured with Metered Worker secrets, `METERED_USE_EXPIRING_CREDENTIALS=1`, and a plan that supports expiring credentials, the Worker creates short-lived TURN credentials server-side and returns only the browser ICE server config.
 - TURN relay credentials are required for strict NATs such as some Starlink, cellular, hotel, and corporate networks.
 - NAT or firewall combinations can still block connection establishment if TURN is unavailable.
 - Cloud Rooms support one host plus up to 13 guests; manual signaling remains a one-guest fallback.

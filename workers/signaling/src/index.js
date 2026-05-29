@@ -780,6 +780,7 @@ async function handleTurnCredentialsRequest(env) {
   const appName = normalizeToken(env.METERED_APP_NAME, SAFE_METERED_APP_NAME);
   const secretKey = normalizeToken(env.METERED_SECRET_KEY, SAFE_METERED_SECRET_KEY);
   const fallbackApiKey = normalizeToken(env.METERED_TURN_API_KEY, SAFE_METERED_API_KEY);
+  const useExpiringCredentials = env.METERED_USE_EXPIRING_CREDENTIALS === "1";
   if (!appName || (!secretKey && !fallbackApiKey)) {
     return json(DEFAULT_ICE_SERVERS, 200, {
       "cache-control": "no-store",
@@ -787,7 +788,7 @@ async function handleTurnCredentialsRequest(env) {
     });
   }
 
-  if (secretKey) {
+  if (secretKey && useExpiringCredentials) {
     const credential = await createExpiringMeteredCredential(appName, secretKey);
     if (credential) {
       const iceServers = await fetchMeteredIceServers(appName, credential.apiKey);

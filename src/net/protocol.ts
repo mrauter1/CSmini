@@ -2,8 +2,6 @@ import type { RoomTransportLane } from "./transport";
 
 export const ROOM_PROTOCOL = "dustline-room";
 export const ROOM_PROTOCOL_VERSION = 3 as const;
-export const ROOM_MESSAGE_STALE_MS = 12_000;
-export const ROOM_MESSAGE_FUTURE_SKEW_MS = 2_500;
 // Shared gameplay payloads stay comfortably below this in normal play, so 64 KiB prevents one
 // peer from turning a data channel into an unbounded blob sink without clipping snapshots.
 export const MAX_ROOM_MESSAGE_BYTES = 64 * 1024;
@@ -288,14 +286,6 @@ export function parseRoomMessage(value: unknown): RoomMessage | null {
     default:
       return null;
   }
-}
-
-export function isFreshRoomMessage(message: RoomMessage, now = Date.now()): boolean {
-  if (message.sentAt > now + ROOM_MESSAGE_FUTURE_SKEW_MS) {
-    return false;
-  }
-
-  return now - message.sentAt <= ROOM_MESSAGE_STALE_MS;
 }
 
 function isEnvelopeBase(value: unknown): value is RoomMessage {

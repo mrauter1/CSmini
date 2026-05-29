@@ -25,7 +25,6 @@ import {
   ROOM_PROTOCOL,
   ROOM_PROTOCOL_VERSION,
   type TeamAssignment,
-  isFreshRoomMessage,
 } from "./protocol";
 import type {
   RoomTransport,
@@ -1279,15 +1278,6 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     const ownershipError = this.validateInboundOwnership(message);
     if (ownershipError) {
       this.noteInvalidRoomMessage(message.fromPeerId, ownershipError);
-      return;
-    }
-
-    if (!isFreshRoomMessage(message)) {
-      if (event.lane === "latest-state") {
-        return;
-      }
-
-      this.noteInvalidRoomMessage(message.fromPeerId, "A peer sent stale room traffic.");
       return;
     }
 

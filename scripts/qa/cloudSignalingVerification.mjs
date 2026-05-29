@@ -376,6 +376,42 @@ async function probeMalformedRoomPeerFailure(hostPage, joinPage) {
   );
   assert(typeof hostPeerId === "string" && hostPeerId.length > 0, "Guest did not learn the host peer id.");
 
+  const guestPeerId = await joinPage.evaluate(
+    "window.__dustlineQa__?.getState()?.match?.localPlayer?.id ?? null",
+  );
+  const roomId = await joinPage.evaluate(
+    "window.__dustlineQa__?.getState()?.match?.roomId ?? null",
+  );
+  assert(typeof guestPeerId === "string" && guestPeerId.length > 0, "Guest peer id was unavailable.");
+  assert(typeof roomId === "string" && roomId.length > 0, "Room id was unavailable.");
+
+  for (let index = 0; index < 4; index += 1) {
+    const staleClockHeartbeat = JSON.stringify({
+      protocol: "dustline-room",
+      version: 3,
+      type: "heartbeat",
+      roomId,
+      fromPeerId: guestPeerId,
+      toPeerId: hostPeerId,
+      seq: 1_000_000 + index,
+      sentAt: Date.now() - 60_000,
+      payload: {
+        rosterCount: 2,
+        phase: "active",
+      },
+    });
+    const sent = await joinPage.evaluate(
+      `window.__dustlineQa__.sendRawRoomMessage(${JSON.stringify(staleClockHeartbeat)}, ${JSON.stringify(hostPeerId)})`,
+    );
+    assert(sent === true, "Clock-skewed heartbeat should traverse the open data channel.");
+  }
+
+  await delay(200);
+  const hostPeerCountAfterSkew = await hostPage.evaluate(
+    "window.__dustlineQa__?.getState()?.roomSetup?.connection?.peerCount ?? null",
+  );
+  assert(hostPeerCountAfterSkew === 1, "Clock-skewed but ordered reliable messages should not disconnect a peer.");
+
   for (let index = 0; index < 4; index += 1) {
     const sent = await joinPage.evaluate(
       `window.__dustlineQa__.sendRawRoomMessage(${JSON.stringify("{not-json}")}, ${JSON.stringify(hostPeerId)})`,
