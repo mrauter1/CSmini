@@ -1,6 +1,6 @@
 # Visual QA Report
 
-Date: 2026-05-29
+Date: 2026-05-30
 
 ## Scope
 
@@ -72,7 +72,9 @@ Results:
 
 Non-blocking note:
 
-- `vite build` emitted a chunk-size warning for the minified `localMatch` bundle at `602.06 kB`. This did not block runtime verification.
+- `vite build` emitted a chunk-size warning for the minified `localMatch` bundle at `636.70 kB`. This did not block runtime verification.
+
+The 2026-05-30 rerun did not change the accepted visual target. It refreshed the same screenshot set through `scripts/qa/finalVerification.mjs` after the multiplayer merge so the visual report still compares the current browser output against `docs/visual-target.md`.
 
 ## Visual Target Summary
 

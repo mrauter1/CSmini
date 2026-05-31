@@ -1,6 +1,6 @@
 # Local Play QA
 
-Date: 2026-05-29
+Date: 2026-05-30
 
 ## Scope
 
@@ -40,10 +40,18 @@ Targeted verification for `round-core-and-movement-foundation`, `bomb-mission-mo
 ```bash
 npm run typecheck
 npm run build
+npm run qa:local-flow
+npm run qa:final
 npm test
 ```
 
 `npm test` runs `node scripts/qa/finalVerification.mjs`, which starts `vite preview`, opens a WebGL-capable headless Chrome session, and drives the browser QA hooks exposed through `window.__dustlineQa__`.
+
+Fresh 2026-05-30 reruns passed for the local surfaces that can regress during multiplayer integration:
+
+- `npm run qa:local-flow`: 5 map cards, local ammo `24 -> 23`, hidden control prompt after engage, death line `Down for the round.`, catalog return, and zero leftover canvases
+- `npm run qa:final`: passed with solo bot difficulty default/persistence, canonical movement, HUD/Tab/fullscreen, solo bomb/hostage objective flows, AI, same-browser objective sync, fallback, and screenshot refresh
+- `npm test`: passed after rebuilding and rerunning the final browser harness
 
 ## Fresh Results
 

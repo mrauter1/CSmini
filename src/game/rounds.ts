@@ -184,6 +184,14 @@ export function shouldAdoptRoundState(
     return ROUND_PHASE_ORDER[remoteState.phase] > ROUND_PHASE_ORDER[localState.phase];
   }
 
+  if (
+    remoteState.phase === "resolution" &&
+    (remoteState.winnerTeamId !== localState.winnerTeamId ||
+      remoteState.resolutionLabel !== localState.resolutionLabel)
+  ) {
+    return true;
+  }
+
   return Math.abs(remoteState.phaseEndsAt - localState.phaseEndsAt) > 0.2;
 }
 

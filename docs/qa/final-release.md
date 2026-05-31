@@ -1,6 +1,6 @@
 # Final Release QA
 
-Date: `2026-05-29`
+Date: `2026-05-30`
 
 ## Scope
 
@@ -15,31 +15,48 @@ Final verification for the current presentation and release guardrail pass cover
 - first-person weapon alignment, upright combatant posture, third-person weapon pitch, and team-specific avatar uniforms
 - procedural opponent gunfire audio with a user-gesture unlock pulse and playable distance-normalized world-fire gain
 - final browser QA coverage for movement, rounds, missions, AI, and shared-room sync
+- Cloud/manual WebRTC room setup and in-arena host-authoritative multiplayer sync
+- signaling Worker guardrails, `/turn-credentials` fallback behavior, and one-host-plus-13-guests cap
+- guest prediction/reconciliation, host snapshots, latest-state backpressure, input timeout clearing, host-exit recovery, and host-side shot validation
 - originality and asset-policy confirmation
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh current-tree verifier reruns were completed on `2026-05-29`, including a standalone `npm run qa:final` screenshot-refresh pass.
+Fresh current-tree verifier reruns were completed on `2026-05-30`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper.
 
 ## Commands Run
 
 ```bash
 npm run typecheck
 npm run build
-npm test
+npm run qa:local-flow
+npm run qa:manual-signaling
+npm run qa:signaling-worker
+npm run qa:cloud-signaling
+npm run qa:cloud-signaling-14
+npm run qa:host-room
+npm run qa:shot-validation
 npm run qa:final
+npm test
 ```
 
 Results on the current tree:
 
 - `npm run typecheck`: passed
 - `npm run build`: passed and produced static `dist/` output
-- `npm test`: passed and returned successfully after rebuilding the app and running the full browser QA harness
+- `npm run qa:local-flow`: passed
+- `npm run qa:manual-signaling`: passed
+- `npm run qa:signaling-worker`: passed
+- `npm run qa:cloud-signaling`: passed
+- `npm run qa:cloud-signaling-14`: passed
+- `npm run qa:host-room`: passed
+- `npm run qa:shot-validation`: passed
 - `npm run qa:final`: passed and refreshed `assets/screenshots/` from the current `dist/` output
+- `npm test`: passed and returned successfully after rebuilding the app and running the full browser QA harness
 
 Non-blocking note:
 
-- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `602.06 kB`. This did not block verification.
+- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `636.70 kB`. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -115,11 +132,18 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - enemy live fire emitted a playable distance-normalized world-fire audio event
 - Shared-room fallback:
   - removing `BroadcastChannel` kept the app playable in local mode with a clear fallback notice instead of a crash
+- Cloud/manual multiplayer:
+  - manual offer/answer host and guest both reached `connected`, rosters reached `2`, and each page saw one remote operator
+  - Cloud Room host and guest reached `connected`, rosters reached `2`, each page saw one remote operator, guest input cadence advanced, and host snapshots used delta encoding
+  - 14-player Cloud Room verification connected one host plus 13 guests, all rosters reached `14`, host saw 13 remotes, each guest saw 13 remotes, and host snapshots stayed delta encoded
+  - host-room verification proved host receipt of guest input, input-timeout/deadman clearing, stale latest-state duplicate/drop tolerance, guest prediction/reconciliation under delayed snapshots, jump reconciliation, newest-held snapshot delivery, host movement snapshots, and host-exit recovery
+  - shared shot validation accepted a clear hit for `34` damage, rejected blocked line-of-sight, fire-rate, ammo-state, and reload-state claims, kept host health authoritative, and restored rejected guest weapon state
+  - signaling Worker verification kept gameplay off the Worker, enforced targeted offer/answer/ICE relay, rejected role violations and malformed/oversized/rate-abusive traffic, capped rooms at one host plus 13 guests, and returned default STUN servers from `/turn-credentials` when no TURN secrets were configured
 
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-29`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-30`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`
@@ -136,7 +160,10 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 
 ## Remaining Limitations
 
-- Shared-room multiplayer remains same-browser and same-machine only through `BroadcastChannel`.
+- Cloud/manual rooms are peer-hosted browser sessions, not public matchmaking; the host is authoritative but remains socially trusted.
+- Restrictive NAT/firewall cases may require external TURN service configuration. The repo contains no real TURN credentials or deployment secrets; no-secret `/turn-credentials` falls back to STUN.
+- Same-Browser Dev Room remains the local `BroadcastChannel` path and continues to provide deterministic shared objective QA evidence.
+- Cloud/manual objective state is serialized through host snapshots today; a future split can move every bomb/hostage mutation into dedicated reliable `objective-event` messages.
 - Solo bot difficulty remains a solo-local setting only; shared-room tabs remain human-only.
 - Tactical AI coverage is centered on solo-local rounds rather than shared-room bot opponents.
 - The live visuals remain intentionally flatter than the painted reference set, especially in walls and ground materials.

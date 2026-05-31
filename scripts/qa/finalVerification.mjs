@@ -724,6 +724,28 @@ async function stageSharedDuel(page, slot, aimOffsetY = 0) {
   return pose;
 }
 
+async function stageSharedRemotePose(hostPage, peerId, x, y, z, yaw = 0) {
+  const staged = await hostPage.evaluate(
+    `window.__dustlineQa__.stageSharedRemotePose(${JSON.stringify(peerId)}, ${x}, ${y}, ${z}, ${yaw})`,
+  );
+  assert(staged === true, `Could not stage shared remote pose for ${peerId}`);
+  await delay(180);
+}
+
+async function startSharedRemoteObjectiveAction(hostPage, peerId) {
+  const started = await hostPage.evaluate(
+    `window.__dustlineQa__.startSharedRemoteObjectiveAction(${JSON.stringify(peerId)})`,
+  );
+  assert(started === true, `Could not start shared remote objective action for ${peerId}`);
+}
+
+async function completeSharedRemoteObjectiveAction(hostPage, peerId) {
+  const completed = await hostPage.evaluate(
+    `window.__dustlineQa__.completeSharedRemoteObjectiveAction(${JSON.stringify(peerId)})`,
+  );
+  assert(completed === true, `Could not complete shared remote objective action for ${peerId}`);
+}
+
 async function forceDeath(page, attackerName) {
   await page.evaluate(`window.__dustlineQa__.forcePlayerDeath(${JSON.stringify(attackerName)})`);
 }
@@ -2475,6 +2497,14 @@ async function main() {
     await sharedPageTwo.evaluate(
       `window.__dustlineQa__.setCameraPose(${sharedSite.x}, ${sharedBombStartTwo.localPlayer.position.y}, ${sharedSite.z}, 0)`,
     );
+    await stageSharedRemotePose(
+      sharedPageOne,
+      sharedBombStartTwo.localPlayer.id,
+      sharedSite.x,
+      sharedBombStartTwo.localPlayer.position.y,
+      sharedSite.z,
+      0,
+    );
     await delay(220);
     await engageControls(sharedPageTwo);
     const sharedBombDefusePose = await getState(sharedPageTwo);
@@ -2485,10 +2515,13 @@ async function main() {
 
     await sharedPageTwo.bringToFront();
     await startObjectiveAction(sharedPageTwo);
+    await startSharedRemoteObjectiveAction(sharedPageOne, sharedBombStartTwo.localPlayer.id);
+    await sharedPageOne.bringToFront();
     await sharedPageTwo.waitForExpression(
       "window.__dustlineQa__?.getState()?.bomb?.phase === 'defusing'",
       5_000,
     );
+    await completeSharedRemoteObjectiveAction(sharedPageOne, sharedBombStartTwo.localPlayer.id);
     await sharedPageOne.waitForExpression(
       `
         (() => {
@@ -2498,15 +2531,43 @@ async function main() {
       `,
       10_000,
     );
-    await sharedPageTwo.waitForExpression(
-      `
-        (() => {
-          const state = window.__dustlineQa__?.getState();
-          return state?.round?.phase === 'resolution' && /disarmed/i.test(state?.round?.result ?? '');
-        })()
-      `,
-      10_000,
-    );
+    await sharedPageTwo.bringToFront();
+    try {
+      await sharedPageTwo.waitForExpression(
+        `
+          (() => {
+            const state = window.__dustlineQa__?.getState();
+            return state?.round?.phase === 'resolution' && /disarmed/i.test(state?.round?.result ?? '');
+          })()
+        `,
+        10_000,
+      );
+    } catch (error) {
+      const [hostState, guestState] = await Promise.all([
+        getState(sharedPageOne),
+        getState(sharedPageTwo),
+      ]);
+      console.error(
+        "Shared bomb disarm resolution did not reach guest:",
+        JSON.stringify(
+          {
+            host: {
+              round: hostState?.round,
+              bomb: hostState?.bomb,
+              roomConnection: hostState?.roomConnection,
+            },
+            guest: {
+              round: guestState?.round,
+              bomb: guestState?.bomb,
+              roomConnection: guestState?.roomConnection,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      throw error;
+    }
 
     const sharedBombResolvedOne = await getState(sharedPageOne);
     const sharedBombResolvedTwo = await getState(sharedPageTwo);
@@ -2553,8 +2614,12 @@ async function main() {
     };
 
     assert(sharedAfterTwo.round.missionType === "hostage", "Expected shared round two to rotate into hostage mode");
-    await forceRoundActive(sharedPageTwo);
+    await forceRoundActive(sharedPageOne);
     await sharedPageOne.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
+      5_000,
+    );
+    await sharedPageTwo.waitForExpression(
       "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
       5_000,
     );
@@ -2568,6 +2633,14 @@ async function main() {
     await sharedPageTwo.evaluate(
       `window.__dustlineQa__.setCameraPose(${sharedCluster.x}, ${sharedHostageStartTwo.localPlayer.position.y}, ${sharedCluster.z}, 0)`,
     );
+    await stageSharedRemotePose(
+      sharedPageOne,
+      sharedHostageStartTwo.localPlayer.id,
+      sharedCluster.x,
+      sharedHostageStartTwo.localPlayer.position.y,
+      sharedCluster.z,
+      0,
+    );
     await delay(220);
     await engageControls(sharedPageTwo);
     const sharedHostageSecurePose = await getState(sharedPageTwo);
@@ -2578,12 +2651,24 @@ async function main() {
 
     await sharedPageTwo.bringToFront();
     await startObjectiveAction(sharedPageTwo);
-    await sharedPageTwo.waitForExpression(
-      "window.__dustlineQa__?.getState()?.hostage?.phase === 'escorting'",
+    await startSharedRemoteObjectiveAction(sharedPageOne, sharedHostageStartTwo.localPlayer.id);
+    await sharedPageOne.bringToFront();
+    await sharedPageOne.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'securing'",
       5_000,
     );
+    await completeSharedRemoteObjectiveAction(sharedPageOne, sharedHostageStartTwo.localPlayer.id);
     await sharedPageOne.waitForExpression(
       `window.__dustlineQa__?.getState()?.hostage?.rescuerId === ${JSON.stringify(sharedHostageStartTwo.localPlayer.id)}`,
+      5_000,
+    );
+    await sharedPageTwo.bringToFront();
+    await sharedPageTwo.waitForExpression(
+      `(() => {
+        const state = window.__dustlineQa__?.getState();
+        return state?.hostage?.phase === 'escorting' &&
+          state?.hostage?.rescuerId === ${JSON.stringify(sharedHostageStartTwo.localPlayer.id)};
+      })()`,
       5_000,
     );
     const sharedHostageEscortOne = await getState(sharedPageOne);
@@ -2592,6 +2677,15 @@ async function main() {
     await sharedPageTwo.evaluate(
       `window.__dustlineQa__.setCameraPose(${sharedExtraction.x}, ${sharedHostageStartTwo.localPlayer.position.y}, ${sharedExtraction.z}, 0)`,
     );
+    await stageSharedRemotePose(
+      sharedPageOne,
+      sharedHostageStartTwo.localPlayer.id,
+      sharedExtraction.x,
+      sharedHostageStartTwo.localPlayer.position.y,
+      sharedExtraction.z,
+      0,
+    );
+    await sharedPageOne.bringToFront();
     await sharedPageOne.waitForExpression(
       `(window.__dustlineQa__?.getState()?.hostage?.hostages?.[0]?.pathIndex ?? 0) >= ${Math.min(2, sharedRouteLabels.length - 1)}`,
       18_000,
@@ -2622,6 +2716,7 @@ async function main() {
       `,
       12_000,
     );
+    await sharedPageTwo.bringToFront();
     await sharedPageTwo.waitForExpression(
       `
         (() => {

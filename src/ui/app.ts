@@ -12,12 +12,58 @@ import {
   crouchControlLabel,
 } from "../game/controls";
 import type { LocalMatch, LocalMatchSnapshot } from "../game/localMatch";
-import type { MatchMode } from "../game/multiplayerRoom";
-import { getTeamDefinition, isTeamId } from "../game/teams";
+import {
+  buildRoomId,
+  buildSignaledRoomId,
+  createBroadcastMatchRoomConnection,
+  createHostMatchRoomConnection,
+  createJoinMatchRoomConnection,
+  createRoomCode,
+  createRoomIdentity,
+  createSignaledHostMatchRoomConnection,
+  createSignaledJoinMatchRoomConnection,
+  detectSharedRoomSupport,
+  normalizeRoomCode,
+  type HostMatchRoomConnection,
+  type JoinMatchRoomConnection,
+  type LatestStateQaConfig,
+  type LatestStateQaDirection,
+  type MatchMode,
+  type MatchRoomConnection,
+  type RoomConnectionKind,
+  type SharedRoomHandlers,
+} from "../net/matchRoomConnection";
+import { getSignalingServiceUrl } from "../net/signalingConfig";
+import { getTeamDefinition, isTeamId, resolveTeamPreference, teamPreferenceLabel } from "../game/teams";
 import type { MapDefinition, TeamPreference } from "../types";
-import { renderCatalog, renderMapStage, renderMenu } from "./templates";
+import {
+  renderCatalog,
+  renderMapStage,
+  renderMenu,
+  renderRoomSetup,
+} from "./templates";
 
-type Screen = "menu" | "catalog" | "stage";
+type Screen = "menu" | "catalog" | "room" | "stage";
+
+interface RoomSetupState {
+  kind: RoomConnectionKind;
+  roomCode: string;
+  signalingUrl: string;
+  connection?: MatchRoomConnection;
+  supportError: string;
+  copyStatus: string;
+  unsubscribe?: () => void;
+}
+
+const NOOP_ROOM_HANDLERS: SharedRoomHandlers = {
+  onParticipant: () => undefined,
+  onLeave: () => undefined,
+  onInput: () => undefined,
+  onShotClaim: () => undefined,
+  onShotResult: () => undefined,
+  onSnapshot: () => undefined,
+  onRoomClosed: () => undefined,
+};
 
 function readClassicCrouchAlias(): boolean {
   try {
@@ -42,6 +88,8 @@ export class TacticalShellApp {
   private teamPreference: TeamPreference = "auto";
   private botDifficulty = readStoredBotDifficulty();
   private classicCrouchAlias = readClassicCrouchAlias();
+  private readonly operatorIdentity = createRoomIdentity();
+  private roomSetup?: RoomSetupState;
   private match?: LocalMatch;
   private renderToken = 0;
 
@@ -56,6 +104,7 @@ export class TacticalShellApp {
 
   dispose(): void {
     this.teardownMatch();
+    this.disposeRoomSetup();
     this.root.removeEventListener("click", this.handleClick);
     window.removeEventListener("keydown", this.handleFullscreenShortcut);
   }
@@ -83,12 +132,10 @@ export class TacticalShellApp {
 
     switch (action) {
       case "show-menu":
-        this.screen = "menu";
-        this.render();
+        this.exitMatchFlow("menu");
         return;
       case "show-catalog":
-        this.screen = "catalog";
-        this.render();
+        this.exitMatchFlow("catalog");
         return;
       case "lock-match":
         this.match?.requestPointerLock();
@@ -119,10 +166,31 @@ export class TacticalShellApp {
         return;
       case "open-map":
       case "swap-map":
-        this.activeMapId = getMapById(mapId ?? featuredMap.id).id;
-        this.activeMode = mode ?? this.activeMode;
-        this.screen = "stage";
-        this.render();
+        this.openMapRoute(getMapById(mapId ?? featuredMap.id), mode ?? this.activeMode);
+        return;
+      case "select-room-kind":
+        this.selectRoomKind(this.readRoomKind(actionButton.dataset.roomKind));
+        return;
+      case "room-generate-offer":
+        void this.generateRoomOffer();
+        return;
+      case "room-apply-answer":
+        void this.applyRoomAnswer();
+        return;
+      case "room-generate-answer":
+        void this.generateRoomAnswer();
+        return;
+      case "room-copy":
+        void this.copyRoomField(actionButton.dataset.field);
+        return;
+      case "room-connect-signaling":
+        this.connectSignalingRoom();
+        return;
+      case "enter-room-stage":
+        if (this.canEnterStage()) {
+          this.screen = "stage";
+          this.render();
+        }
         return;
       default:
         return;
@@ -159,6 +227,30 @@ export class TacticalShellApp {
 
     if (this.screen === "catalog") {
       this.root.innerHTML = renderCatalog(mapCatalog, this.teamPreference, this.botDifficulty);
+      return;
+    }
+
+    if (this.screen === "room") {
+      const map = getMapById(this.activeMapId);
+      this.root.innerHTML = renderRoomSetup(
+        map,
+        {
+          map,
+          selectedKind: this.roomSetup?.kind ?? "signal-host",
+          supportError: this.roomSetup?.supportError ?? "",
+          copyStatus: this.roomSetup?.copyStatus ?? "",
+          roomCode: this.roomSetup?.roomCode ?? "",
+          signalingUrl: this.roomSetup?.signalingUrl ?? getSignalingServiceUrl(),
+          connection: this.roomSetup?.connection?.uiSnapshot,
+          canEnterArena: this.canEnterStage(),
+          teamLabel: teamPreferenceLabel(this.teamPreference),
+          operatorName: this.operatorIdentity.name,
+          entryHint:
+            this.roomSetup?.kind === "broadcast"
+              ? "Same-browser dev rooms can enter the live arena immediately and keep host authority in the active tab."
+              : "Host rooms can enter the arena immediately. Joiners can enter once the transport reaches connected.",
+        },
+      );
       return;
     }
 
@@ -205,13 +297,21 @@ export class TacticalShellApp {
         teamPreference: this.teamPreference,
         botDifficulty: this.botDifficulty,
         classicCrouchAlias: this.classicCrouchAlias,
+        sharedRoom: this.activeMode === "shared" ? this.roomSetup?.connection : undefined,
+        sharedRoomFallbackReason: this.roomSetup?.supportError,
         onActionRequest: (action) => {
           if (token !== this.renderToken) {
             return;
           }
 
-          this.screen = action === "catalog" ? "catalog" : "menu";
-          this.render();
+          this.exitMatchFlow(action === "catalog" ? "catalog" : "menu");
+        },
+        onRoomEnded: (reason) => {
+          if (token !== this.renderToken) {
+            return;
+          }
+
+          this.handleRoomEnded(reason);
         },
         onSnapshot: (snapshot) => {
           if (token !== this.renderToken || this.screen !== "stage") {
@@ -413,6 +513,308 @@ export class TacticalShellApp {
     this.syncBotDifficultyUi();
   }
 
+  private openMapRoute(map: MapDefinition, mode: MatchMode): void {
+    this.activeMapId = map.id;
+
+    if (mode === "local") {
+      this.disposeRoomSetup();
+      this.activeMode = "local";
+      this.screen = "stage";
+      this.render();
+      return;
+    }
+
+    this.activeMode = "shared";
+    this.screen = "room";
+    this.selectRoomKind(this.roomSetup?.kind ?? "signal-host");
+  }
+
+  private selectRoomKind(kind: RoomConnectionKind): void {
+    const map = getMapById(this.activeMapId);
+
+    if (this.roomSetup?.kind === kind && this.roomSetup.connection) {
+      this.screen = "room";
+      this.render();
+      return;
+    }
+
+    const previousRoomCode = this.roomSetup?.roomCode ?? "";
+    this.disposeRoomSetup();
+
+    const support = detectSharedRoomSupport(kind);
+    const roomCode =
+      kind === "signal-host"
+        ? createRoomCode()
+        : kind === "signal-join"
+          ? previousRoomCode
+          : "";
+    const state: RoomSetupState = {
+      kind,
+      roomCode,
+      signalingUrl: getSignalingServiceUrl(),
+      supportError: support.supported ? "" : support.reason,
+      copyStatus: "",
+    };
+
+    if (support.supported && kind !== "signal-join") {
+      this.attachRoomConnection(state, this.createRoomConnection(kind, map, roomCode));
+    }
+
+    this.roomSetup = state;
+    this.screen = "room";
+    this.render();
+  }
+
+  private createRoomConnection(
+    kind: RoomConnectionKind,
+    map: MapDefinition,
+    roomCode = "",
+  ): MatchRoomConnection | undefined {
+    const preferredTeam = resolveTeamPreference(this.teamPreference, []);
+    switch (kind) {
+      case "signal-host": {
+        const normalizedCode = normalizeRoomCode(roomCode || createRoomCode());
+        return createSignaledHostMatchRoomConnection(
+          buildSignaledRoomId(map.id, normalizedCode),
+          map.id,
+          this.operatorIdentity,
+          NOOP_ROOM_HANDLERS,
+          `${map.name} Host Room`,
+          getSignalingServiceUrl(),
+          normalizedCode,
+          preferredTeam,
+        );
+      }
+      case "signal-join": {
+        const normalizedCode = normalizeRoomCode(roomCode);
+        if (!normalizedCode) {
+          return undefined;
+        }
+
+        return createSignaledJoinMatchRoomConnection(
+          buildSignaledRoomId(map.id, normalizedCode),
+          map.id,
+          this.operatorIdentity,
+          NOOP_ROOM_HANDLERS,
+          getSignalingServiceUrl(),
+          normalizedCode,
+          preferredTeam,
+        );
+      }
+      case "broadcast":
+        return createBroadcastMatchRoomConnection(
+          buildRoomId(map.id),
+          map.id,
+          this.operatorIdentity,
+          NOOP_ROOM_HANDLERS,
+          preferredTeam,
+        );
+      case "webrtc-host":
+        return createHostMatchRoomConnection(
+          buildRoomId(map.id),
+          map.id,
+          this.operatorIdentity,
+          NOOP_ROOM_HANDLERS,
+          `${map.name} Host Room`,
+          preferredTeam,
+        );
+      case "webrtc-join":
+        return createJoinMatchRoomConnection(
+          buildRoomId(map.id),
+          map.id,
+          this.operatorIdentity,
+          NOOP_ROOM_HANDLERS,
+          preferredTeam,
+        );
+    }
+  }
+
+  private attachRoomConnection(
+    state: RoomSetupState,
+    connection: MatchRoomConnection | undefined,
+  ): void {
+    state.unsubscribe?.();
+    state.connection = connection;
+    state.unsubscribe = connection?.subscribe(() => {
+      if (this.screen === "room") {
+        this.render();
+      }
+    });
+  }
+
+  private canEnterStage(): boolean {
+    if (this.activeMode !== "shared") {
+      return true;
+    }
+
+    if (!this.roomSetup?.connection) {
+      return false;
+    }
+
+    if (this.roomSetup.connection.role === "host") {
+      return this.roomSetup.connection.uiSnapshot.phase !== "error";
+    }
+
+    return this.roomSetup.connection.uiSnapshot.phase === "connected";
+  }
+
+  private async generateRoomOffer(): Promise<void> {
+    const connection = this.roomSetup?.connection;
+    if (!connection || connection.kind !== "webrtc-host") {
+      return;
+    }
+
+    try {
+      await (connection as HostMatchRoomConnection).createOfferCode();
+      this.setRoomCopyStatus("Offer ready.");
+    } catch (error) {
+      this.setRoomSupportError(error);
+    }
+  }
+
+  private connectSignalingRoom(roomCode?: string): void {
+    if (!this.roomSetup || this.roomSetup.kind !== "signal-join") {
+      return;
+    }
+
+    const field = this.root.querySelector<HTMLInputElement>('[data-room-field="room-code-input"]');
+    const normalizedCode = normalizeRoomCode(roomCode ?? field?.value ?? "");
+    if (!normalizedCode) {
+      this.setRoomSupportError("Enter the host room code before joining.");
+      return;
+    }
+
+    this.roomSetup.roomCode = normalizedCode;
+    this.roomSetup.copyStatus = "";
+    this.roomSetup.supportError = "";
+    this.roomSetup.connection?.dispose();
+    this.attachRoomConnection(
+      this.roomSetup,
+      this.createRoomConnection("signal-join", getMapById(this.activeMapId), normalizedCode),
+    );
+
+    if (this.screen === "room") {
+      this.render();
+    }
+  }
+
+  private async applyRoomAnswer(): Promise<void> {
+    const connection = this.roomSetup?.connection;
+    if (!connection || connection.kind !== "webrtc-host") {
+      return;
+    }
+
+    const field = this.root.querySelector<HTMLTextAreaElement>('[data-room-field="answer-input"]');
+    const value = field?.value.trim() ?? "";
+    if (!value) {
+      this.setRoomSupportError("Paste a guest answer before applying it.");
+      return;
+    }
+
+    try {
+      await (connection as HostMatchRoomConnection).applyAnswerCode(value);
+      this.setRoomCopyStatus("Answer applied.");
+    } catch (error) {
+      this.setRoomSupportError(error);
+    }
+  }
+
+  private async generateRoomAnswer(): Promise<void> {
+    const connection = this.roomSetup?.connection;
+    if (!connection || connection.kind !== "webrtc-join") {
+      return;
+    }
+
+    const field = this.root.querySelector<HTMLTextAreaElement>('[data-room-field="offer-input"]');
+    const value = field?.value.trim() ?? "";
+    if (!value) {
+      this.setRoomSupportError("Paste a host offer before generating the answer.");
+      return;
+    }
+
+    try {
+      await (connection as JoinMatchRoomConnection).acceptOfferCode(value);
+      this.setRoomCopyStatus("Answer generated.");
+    } catch (error) {
+      this.setRoomSupportError(error);
+    }
+  }
+
+  private async copyRoomField(field: string | undefined): Promise<void> {
+    if (!field) {
+      return;
+    }
+
+    const node = this.root.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      `[data-room-field="${field}"]`,
+    );
+    const value = node?.value.trim() ?? "";
+    if (!value) {
+      this.setRoomSupportError("Nothing is available to copy yet.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(value);
+      this.setRoomCopyStatus("Copied to clipboard.");
+    } catch {
+      node?.select();
+      this.setRoomCopyStatus("Clipboard access was blocked. The text is selected for manual copy.");
+    }
+  }
+
+  private setRoomSupportError(error: unknown): void {
+    if (!this.roomSetup) {
+      return;
+    }
+
+    this.roomSetup.supportError =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "Unexpected room error.";
+    this.roomSetup.copyStatus = "";
+    if (this.screen === "room") {
+      this.render();
+    }
+  }
+
+  private setRoomCopyStatus(message: string): void {
+    if (!this.roomSetup) {
+      return;
+    }
+
+    this.roomSetup.copyStatus = message;
+    this.roomSetup.supportError = "";
+    if (this.screen === "room") {
+      this.render();
+    }
+  }
+
+  private disposeRoomSetup(): void {
+    this.roomSetup?.unsubscribe?.();
+    this.roomSetup?.connection?.dispose();
+    this.roomSetup = undefined;
+  }
+
+  private handleRoomEnded(reason: string): void {
+    const kind = this.roomSetup?.kind ?? "signal-join";
+    this.teardownMatch();
+    this.disposeRoomSetup();
+    this.activeMode = "shared";
+    this.screen = "room";
+    this.selectRoomKind(kind);
+    this.setRoomSupportError(reason);
+  }
+
+  private exitMatchFlow(screen: "menu" | "catalog"): void {
+    this.teardownMatch();
+    this.disposeRoomSetup();
+    this.screen = screen;
+    this.render();
+  }
+
   private syncClassicCrouchUi(): void {
     const label = crouchControlLabel(this.classicCrouchAlias);
     const crouchHint = this.root.querySelector<HTMLElement>('[data-ui="crouch-control"] span');
@@ -493,10 +895,106 @@ export class TacticalShellApp {
   }
 
   debugOpenMap(mapId: string, mode: MatchMode): void {
+    const map = getMapById(mapId);
+    if (mode === "shared") {
+      this.activeMapId = map.id;
+      this.activeMode = "shared";
+      const support = detectSharedRoomSupport("broadcast");
+      if (!support.supported) {
+        this.disposeRoomSetup();
+        this.roomSetup = {
+          kind: "broadcast",
+          roomCode: "",
+          signalingUrl: getSignalingServiceUrl(),
+          supportError: support.reason,
+          copyStatus: "",
+        };
+      } else {
+        this.selectRoomKind("broadcast");
+      }
+      this.screen = "stage";
+      this.render();
+      return;
+    }
+
+    this.openMapRoute(map, mode);
+  }
+
+  debugOpenRoomSetup(mapId: string, kind: RoomConnectionKind = "signal-host"): void {
     this.activeMapId = getMapById(mapId).id;
-    this.activeMode = mode;
+    this.activeMode = "shared";
+    this.screen = "room";
+    this.selectRoomKind(kind);
+  }
+
+  debugGetRoomCode(): string | null {
+    return this.roomSetup?.roomCode || this.roomSetup?.connection?.uiSnapshot.roomCode || null;
+  }
+
+  debugJoinSignalingRoom(roomCode: string): boolean {
+    if (this.roomSetup?.kind !== "signal-join") {
+      return false;
+    }
+
+    this.connectSignalingRoom(roomCode);
+    return Boolean(this.roomSetup.connection);
+  }
+
+  debugSendRawRoomMessage(raw: string, toPeerId?: string): boolean {
+    return this.roomSetup?.connection?.debugSendRawRoomMessage?.(raw, toPeerId) ?? false;
+  }
+
+  debugConfigureLatestStateQa(
+    direction: LatestStateQaDirection,
+    config?: LatestStateQaConfig | null,
+  ): boolean {
+    return this.roomSetup?.connection?.debugConfigureLatestStateQa?.(direction, config) ?? false;
+  }
+
+  debugSendSignalingPayload(payload: Record<string, unknown>): boolean {
+    return this.roomSetup?.connection?.debugSendSignalingPayload?.(payload) ?? false;
+  }
+
+  debugInjectSignalingMessage(raw: string): boolean {
+    return this.roomSetup?.connection?.debugInjectSignalingMessage?.(raw) ?? false;
+  }
+
+  async debugCreateRoomOffer(): Promise<string | null> {
+    const connection = this.roomSetup?.connection;
+    if (!connection || connection.kind !== "webrtc-host") {
+      return null;
+    }
+
+    return (connection as HostMatchRoomConnection).createOfferCode();
+  }
+
+  async debugApplyRoomAnswer(answer: string): Promise<boolean> {
+    const connection = this.roomSetup?.connection;
+    if (!connection || connection.kind !== "webrtc-host") {
+      return false;
+    }
+
+    await (connection as HostMatchRoomConnection).applyAnswerCode(answer);
+    return true;
+  }
+
+  async debugGenerateRoomAnswer(offer: string): Promise<string | null> {
+    const connection = this.roomSetup?.connection;
+    if (!connection || connection.kind !== "webrtc-join") {
+      return null;
+    }
+
+    return (connection as JoinMatchRoomConnection).acceptOfferCode(offer);
+  }
+
+  debugEnterArena(): boolean {
+    if (!this.canEnterStage()) {
+      return false;
+    }
+
     this.screen = "stage";
     this.render();
+    return true;
   }
 
   debugSetTeamPreference(teamPreference: TeamPreference): void {
@@ -509,11 +1007,22 @@ export class TacticalShellApp {
   }
 
   debugReturnToCatalog(): void {
-    this.screen = "catalog";
-    this.render();
+    this.exitMatchFlow("catalog");
   }
 
   debugGetState(): Record<string, unknown> | null {
+    const matchState = this.match?.debugSnapshot() ?? null;
+    const roomSetupState = this.roomSetup
+      ? {
+          kind: this.roomSetup.kind,
+          supportError: this.roomSetup.supportError,
+          copyStatus: this.roomSetup.copyStatus,
+          phase: this.roomSetup.connection?.uiSnapshot.phase ?? "idle",
+          roomCode: this.roomSetup.connection?.uiSnapshot.roomCode ?? this.roomSetup.roomCode,
+          connection: this.roomSetup.connection?.debugSnapshot() ?? null,
+        }
+      : null;
+
     return {
       screen: this.screen,
       activeMapId: this.activeMapId,
@@ -522,7 +1031,9 @@ export class TacticalShellApp {
       classicCrouchAlias: this.classicCrouchAlias,
       botDifficulty: this.botDifficulty,
       availableBotDifficulties: [...BOT_DIFFICULTIES],
-      ...(this.match?.debugSnapshot() ?? {}),
+      roomSetup: roomSetupState,
+      match: matchState,
+      ...(matchState ?? {}),
     };
   }
 
@@ -536,6 +1047,18 @@ export class TacticalShellApp {
 
   debugSetCameraPose(x: number, y: number, z: number, yaw: number, pitch = 0): void {
     this.match?.debugSetCameraPose(x, y, z, yaw, pitch);
+  }
+
+  debugStageSharedRemotePose(peerId: string, x: number, y: number, z: number, yaw = 0): boolean {
+    return this.match?.debugStageSharedRemotePose(peerId, x, y, z, yaw) ?? false;
+  }
+
+  debugStartSharedRemoteObjectiveAction(peerId: string): boolean {
+    return this.match?.debugStartSharedRemoteObjectiveAction(peerId) ?? false;
+  }
+
+  debugCompleteSharedRemoteObjectiveAction(peerId: string): boolean {
+    return this.match?.debugCompleteSharedRemoteObjectiveAction(peerId) ?? false;
   }
 
   debugSetView(
@@ -558,12 +1081,54 @@ export class TacticalShellApp {
     return this.match?.debugStageSharedDuel(slot, aimOffsetY) ?? null;
   }
 
+  debugStageAuthoritativeSharedPair(kind: "clear" | "blocked"):
+    | {
+        host: { x: number; y: number; z: number };
+        guest: { x: number; y: number; z: number };
+        guestId: string;
+      }
+    | null {
+    return this.match?.debugStageAuthoritativeSharedPair(kind) ?? null;
+  }
+
   debugFire(): void {
     this.match?.debugFire();
   }
 
   debugForcePlayerDeath(attackerName?: string): void {
     this.match?.debugForcePlayerDeath(attackerName);
+  }
+
+  debugSetInputState(
+    movementX: number,
+    movementZ: number,
+    crouching = false,
+    jumpRequested = false,
+  ): void {
+    this.match?.debugSetInputState(movementX, movementZ, crouching, jumpRequested);
+  }
+
+  debugSetInputTickPaused(paused: boolean): void {
+    this.match?.debugSetInputTickPaused(paused);
+  }
+
+  debugSendInputTick(
+    movementX: number,
+    movementZ: number,
+    crouching = false,
+    jumpRequested = false,
+  ): boolean {
+    return (
+      this.match?.debugSendInputTick(movementX, movementZ, crouching, jumpRequested) ?? false
+    );
+  }
+
+  debugSubmitShotClaim(overrides?: Parameters<LocalMatch["debugSubmitShotClaim"]>[0]): boolean {
+    return this.match?.debugSubmitShotClaim(overrides) ?? false;
+  }
+
+  debugClearInputState(): void {
+    this.match?.debugClearInputState();
   }
 
   debugForceNextRound(): void {
@@ -732,6 +1297,20 @@ export class TacticalShellApp {
     }
 
     return undefined;
+  }
+
+  private readRoomKind(value: string | undefined): RoomConnectionKind {
+    if (
+      value === "signal-host" ||
+      value === "signal-join" ||
+      value === "broadcast" ||
+      value === "webrtc-host" ||
+      value === "webrtc-join"
+    ) {
+      return value;
+    }
+
+    return "signal-host";
   }
 
   private readTeamPreference(value: string | undefined): TeamPreference | undefined {

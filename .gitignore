@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.wrangler/
+**/.wrangler/
 .botpipe/
 .agents/
 .codex/

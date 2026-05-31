@@ -1,6 +1,11 @@
 import "./styles.css";
 
 import type { BotDifficulty } from "./game/botDifficulty";
+import type {
+  LatestStateQaConfig,
+  LatestStateQaDirection,
+  RoomConnectionKind,
+} from "./net/matchRoomConnection";
 import { TacticalShellApp } from "./ui/app";
 import type { TeamPreference } from "./types";
 
@@ -8,6 +13,20 @@ declare global {
   interface Window {
     __dustlineQa__?: {
       openMap: (mapId: string, mode: "shared" | "local") => void;
+      openRoomSetup: (mapId: string, kind?: RoomConnectionKind) => void;
+      getRoomCode: () => string | null;
+      joinSignalingRoom: (roomCode: string) => boolean;
+      sendRawRoomMessage: (raw: string, toPeerId?: string) => boolean;
+      configureLatestStateQa: (
+        direction: LatestStateQaDirection,
+        config?: LatestStateQaConfig | null,
+      ) => boolean;
+      sendSignalingPayload: (payload: Record<string, unknown>) => boolean;
+      injectSignalingMessage: (raw: string) => boolean;
+      createRoomOffer: () => Promise<string | null>;
+      applyRoomAnswer: (answer: string) => Promise<boolean>;
+      generateRoomAnswer: (offer: string) => Promise<string | null>;
+      enterArena: () => boolean;
       setTeamPreference: (teamPreference: TeamPreference) => void;
       setBotDifficulty: (botDifficulty: BotDifficulty) => void;
       returnToCatalog: () => void;
@@ -21,6 +40,15 @@ declare global {
         yaw: number,
         pitch?: number,
       ) => void;
+      stageSharedRemotePose: (
+        peerId: string,
+        x: number,
+        y: number,
+        z: number,
+        yaw?: number,
+      ) => boolean;
+      startSharedRemoteObjectiveAction: (peerId: string) => boolean;
+      completeSharedRemoteObjectiveAction: (peerId: string) => boolean;
       setView: (
         x: number,
         y: number,
@@ -36,6 +64,15 @@ declare global {
         | {
             self: { x: number; y: number; z: number };
             target: { x: number; y: number; z: number };
+          }
+        | null;
+      stageAuthoritativeSharedPair: (
+        kind: "clear" | "blocked",
+      ) =>
+        | {
+            host: { x: number; y: number; z: number };
+            guest: { x: number; y: number; z: number };
+            guestId: string;
           }
         | null;
       aimAt: (combatantId: string) => boolean;
@@ -109,6 +146,31 @@ declare global {
         | null;
       fire: () => void;
       forcePlayerDeath: (attackerName?: string) => void;
+      setInputState: (
+        movementX: number,
+        movementZ: number,
+        crouching?: boolean,
+        jumpRequested?: boolean,
+      ) => void;
+      setInputTickPaused: (paused: boolean) => void;
+      sendInputTick: (
+        movementX: number,
+        movementZ: number,
+        crouching?: boolean,
+        jumpRequested?: boolean,
+      ) => boolean;
+      submitShotClaim: (overrides?: {
+        tick?: number;
+        origin?: { x: number; y: number; z: number };
+        direction?: { x: number; y: number; z: number };
+        ammoInClip?: number;
+        reserveAmmo?: number;
+        reloadSequence?: number;
+        spreadIndex?: number;
+        inputSequence?: number;
+        weaponId?: string;
+      }) => boolean;
+      clearInputState: () => void;
       forceNextRound: () => void;
       forceRoundActive: () => void;
       setInvulnerable: (enabled: boolean) => void;
@@ -165,6 +227,17 @@ app.mount();
 if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")) {
   window.__dustlineQa__ = {
     openMap: (mapId, mode) => app.debugOpenMap(mapId, mode),
+    openRoomSetup: (mapId, kind) => app.debugOpenRoomSetup(mapId, kind),
+    getRoomCode: () => app.debugGetRoomCode(),
+    joinSignalingRoom: (roomCode) => app.debugJoinSignalingRoom(roomCode),
+    sendRawRoomMessage: (raw, toPeerId) => app.debugSendRawRoomMessage(raw, toPeerId),
+    configureLatestStateQa: (direction, config) => app.debugConfigureLatestStateQa(direction, config),
+    sendSignalingPayload: (payload) => app.debugSendSignalingPayload(payload),
+    injectSignalingMessage: (raw) => app.debugInjectSignalingMessage(raw),
+    createRoomOffer: () => app.debugCreateRoomOffer(),
+    applyRoomAnswer: (answer) => app.debugApplyRoomAnswer(answer),
+    generateRoomAnswer: (offer) => app.debugGenerateRoomAnswer(offer),
+    enterArena: () => app.debugEnterArena(),
     setTeamPreference: (teamPreference) => app.debugSetTeamPreference(teamPreference),
     setBotDifficulty: (botDifficulty) => app.debugSetBotDifficulty(botDifficulty),
     returnToCatalog: () => app.debugReturnToCatalog(),
@@ -172,9 +245,16 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     engageControls: () => app.debugEngageControls(),
     setPose: (x, z, yaw, pitch) => app.debugSetPose(x, z, yaw, pitch),
     setCameraPose: (x, y, z, yaw, pitch) => app.debugSetCameraPose(x, y, z, yaw, pitch),
+    stageSharedRemotePose: (peerId, x, y, z, yaw) =>
+      app.debugStageSharedRemotePose(peerId, x, y, z, yaw),
+    startSharedRemoteObjectiveAction: (peerId) =>
+      app.debugStartSharedRemoteObjectiveAction(peerId),
+    completeSharedRemoteObjectiveAction: (peerId) =>
+      app.debugCompleteSharedRemoteObjectiveAction(peerId),
     setView: (x, y, z, targetX, targetY, targetZ) =>
       app.debugSetView(x, y, z, targetX, targetY, targetZ),
     stageSharedDuel: (slot, aimOffsetY) => app.debugStageSharedDuel(slot, aimOffsetY),
+    stageAuthoritativeSharedPair: (kind) => app.debugStageAuthoritativeSharedPair(kind),
     aimAt: (combatantId) => app.debugAimAt(combatantId),
     probeShot: () => app.debugProbeShot(),
     sharedTarget: () => app.debugSharedTarget(),
@@ -185,6 +265,13 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     evaluateEnemyShot: (combatantId, overrides) => app.debugEvaluateEnemyShot(combatantId, overrides),
     fire: () => app.debugFire(),
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),
+    setInputState: (movementX, movementZ, crouching, jumpRequested) =>
+      app.debugSetInputState(movementX, movementZ, crouching, jumpRequested),
+    setInputTickPaused: (paused) => app.debugSetInputTickPaused(paused),
+    sendInputTick: (movementX, movementZ, crouching, jumpRequested) =>
+      app.debugSendInputTick(movementX, movementZ, crouching, jumpRequested),
+    submitShotClaim: (overrides) => app.debugSubmitShotClaim(overrides),
+    clearInputState: () => app.debugClearInputState(),
     forceNextRound: () => app.debugForceNextRound(),
     forceRoundActive: () => app.debugForceRoundActive(),
     setInvulnerable: (enabled) => app.debugSetInvulnerable(enabled),

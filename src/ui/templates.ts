@@ -4,11 +4,29 @@ import {
   type BotDifficulty,
 } from "../game/botDifficulty";
 import { missionBadges } from "../game/missions";
-import type { MatchMode } from "../game/multiplayerRoom";
+import type {
+  MatchMode,
+  RoomConnectionKind,
+  RoomConnectionUiSnapshot,
+} from "../net/matchRoomConnection";
 import { TEAM_ORDER, getTeamDefinition, teamPreferenceLabel } from "../game/teams";
 import { crouchControlLabel } from "../game/controls";
 import type { MapDefinition, TeamPreference } from "../types";
 import { renderPreviewSvg } from "./previewSvg";
+
+export interface RoomSetupRenderState {
+  map: MapDefinition;
+  selectedKind: RoomConnectionKind;
+  supportError: string;
+  copyStatus: string;
+  roomCode: string;
+  signalingUrl: string;
+  connection?: RoomConnectionUiSnapshot;
+  canEnterArena: boolean;
+  teamLabel: string;
+  operatorName: string;
+  entryHint: string;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -117,7 +135,7 @@ function mapCard(map: MapDefinition, index: number): string {
         <p class="map-card__index">0${index + 1}</p>
         <div class="map-card__actions">
           ${map.mainMap ? '<span class="chip chip--primary">Primary Arena</span>' : ""}
-          <button class="button button--tiny button--primary" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Join Room</button>
+          <button class="button button--tiny button--primary" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Open Room Setup</button>
           <button class="button button--tiny" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo Round</button>
         </div>
       </div>
@@ -174,6 +192,217 @@ function controlHint(label: string, text: string, dataUi?: string): string {
   `;
 }
 
+function roomKindLabel(kind: RoomConnectionKind): string {
+  switch (kind) {
+    case "signal-host":
+      return "Host Cloud Room";
+    case "signal-join":
+      return "Join Cloud Room";
+    case "broadcast":
+      return "Same-Browser Dev Room";
+    case "webrtc-host":
+      return "Manual Host";
+    case "webrtc-join":
+      return "Manual Join";
+  }
+}
+
+function roomKindButton(
+  selectedKind: RoomConnectionKind,
+  kind: RoomConnectionKind,
+  label: string,
+  note: string,
+): string {
+  return `
+    <button
+      class="room-setup__tab ${selectedKind === kind ? "room-setup__tab--active" : ""}"
+      data-action="select-room-kind"
+      data-room-kind="${kind}"
+    >
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(note)}</span>
+    </button>
+  `;
+}
+
+function roomEntryButton(state: RoomSetupRenderState): string {
+  return `
+    <button
+      class="button ${state.canEnterArena ? "button--primary" : ""}"
+      data-action="enter-room-stage"
+      ${state.canEnterArena ? "" : "disabled"}
+    >
+      ${state.canEnterArena ? "Enter Arena" : "Arena Sync Pending"}
+    </button>
+  `;
+}
+
+function renderRoomStatus(state: RoomSetupRenderState): string {
+  const detail = state.connection?.detail ?? "Choose a transport to prepare the room.";
+  const supportError = state.supportError
+    ? `<p class="room-setup__status room-setup__status--error">${escapeHtml(state.supportError)}</p>`
+    : "";
+  const copyStatus = state.copyStatus
+    ? `<p class="room-setup__status room-setup__status--success">${escapeHtml(state.copyStatus)}</p>`
+    : "";
+  const entryHint = state.entryHint
+    ? `<p class="room-setup__status room-setup__status--note">${escapeHtml(state.entryHint)}</p>`
+    : "";
+
+  return `
+    <div class="room-setup__status-card panel">
+      <div class="panel__header panel__header--compact">
+        <p>Connection Status</p>
+        <span class="chip">${escapeHtml(state.connection?.phase ?? "idle")}</span>
+      </div>
+      <p class="panel__text">${escapeHtml(detail)}</p>
+      ${supportError}
+      ${copyStatus}
+      ${entryHint}
+    </div>
+  `;
+}
+
+function renderBroadcastPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Same-Browser Dev Room</p>
+        <span class="chip">Local Transport</span>
+      </div>
+      <p class="panel__text">
+        This keeps the original tab-to-tab development room available for quick smoke checks and local multiplayer iteration on one machine.
+      </p>
+      <div class="room-setup__actions">
+        ${roomEntryButton(state)}
+        <button class="button" data-action="show-catalog">Back to Roster</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderSignalHostPanel(state: RoomSetupRenderState): string {
+  const roomCode = state.connection?.roomCode ?? state.roomCode;
+
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Cloud Host Flow</p>
+        <span class="chip chip--primary">Room Code</span>
+      </div>
+      <p class="panel__text">
+        Share this room code with the joining player. The Worker only handles signaling and TURN credential responses; gameplay stays browser-to-browser over WebRTC.
+      </p>
+      <label class="room-setup__field">
+        <span>Room Code</span>
+        <input readonly data-room-field="room-code-output" value="${escapeHtml(roomCode)}" />
+      </label>
+      <p class="room-setup__endpoint">${escapeHtml(state.signalingUrl)}</p>
+      <div class="room-setup__actions">
+        <button class="button" data-action="room-copy" data-field="room-code-output">Copy Code</button>
+        ${roomEntryButton(state)}
+      </div>
+    </section>
+  `;
+}
+
+function renderSignalJoinPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Cloud Join Flow</p>
+        <span class="chip chip--primary">Host Code</span>
+      </div>
+      <p class="panel__text">
+        Enter the host room code for this map. The signaling Worker exchanges the offer, answer, and ICE candidates automatically.
+      </p>
+      <label class="room-setup__field">
+        <span>Host Room Code</span>
+        <input data-room-field="room-code-input" value="${escapeHtml(state.roomCode)}" placeholder="ABC123" />
+      </label>
+      <p class="room-setup__endpoint">${escapeHtml(state.signalingUrl)}</p>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-connect-signaling">Join Room</button>
+        ${roomEntryButton(state)}
+      </div>
+    </section>
+  `;
+}
+
+function renderManualHostPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Manual Host Flow</p>
+        <span class="chip chip--primary">Offer / Answer</span>
+      </div>
+      <p class="panel__text">
+        Generate the host offer, send it to the guest, paste the guest answer back here, and wait for the transport to report <strong>connected</strong>.
+      </p>
+      <label class="room-setup__field">
+        <span>Host Offer</span>
+        <textarea readonly data-room-field="offer-output">${escapeHtml(state.connection?.offerCode ?? "")}</textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-generate-offer">Generate Offer</button>
+        <button class="button" data-action="room-copy" data-field="offer-output">Copy Offer</button>
+      </div>
+      <label class="room-setup__field">
+        <span>Paste Guest Answer</span>
+        <textarea data-room-field="answer-input" placeholder="Paste the guest answer blob here."></textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-apply-answer">Apply Answer</button>
+        ${roomEntryButton(state)}
+      </div>
+    </section>
+  `;
+}
+
+function renderManualJoinPanel(state: RoomSetupRenderState): string {
+  return `
+    <section class="room-setup__workflow panel">
+      <div class="panel__header">
+        <p>Manual Join Flow</p>
+        <span class="chip chip--primary">Paste Offer</span>
+      </div>
+      <p class="panel__text">
+        Paste the host offer, generate the guest answer, and send the answer back to the host. The room will report <strong>connected</strong> once the browser-to-browser path is live.
+      </p>
+      <label class="room-setup__field">
+        <span>Paste Host Offer</span>
+        <textarea data-room-field="offer-input" placeholder="Paste the host offer blob here."></textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="room-generate-answer">Generate Answer</button>
+      </div>
+      <label class="room-setup__field">
+        <span>Guest Answer</span>
+        <textarea readonly data-room-field="answer-output">${escapeHtml(state.connection?.answerCode ?? "")}</textarea>
+      </label>
+      <div class="room-setup__actions">
+        <button class="button" data-action="room-copy" data-field="answer-output">Copy Answer</button>
+        ${roomEntryButton(state)}
+      </div>
+    </section>
+  `;
+}
+
+function roomWorkflow(state: RoomSetupRenderState): string {
+  switch (state.selectedKind) {
+    case "signal-host":
+      return renderSignalHostPanel(state);
+    case "signal-join":
+      return renderSignalJoinPanel(state);
+    case "broadcast":
+      return renderBroadcastPanel(state);
+    case "webrtc-host":
+      return renderManualHostPanel(state);
+    case "webrtc-join":
+      return renderManualJoinPanel(state);
+  }
+}
+
 export function renderMenu(
   map: MapDefinition,
   teamPreference: TeamPreference,
@@ -187,11 +416,11 @@ export function renderMenu(
         <p class="hero-panel__kicker">Browser Tactical Prototype</p>
         <h1>Dustline Protocol</h1>
         <p class="hero-panel__lede">
-          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with round timers, two original teams, mission-ready map metadata, and a same-map shared-room browser loop.
+          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with round timers, two original teams, mission-ready map metadata, Cloud Room signaling, manual WebRTC fallback, and same-browser dev-room support.
         </p>
         <div class="hero-panel__actions">
           <button class="button button--primary" data-action="show-catalog">Open Map Roster</button>
-          <button class="button" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Join ${escapeHtml(map.name)} Room</button>
+          <button class="button" data-action="open-map" data-mode="shared" data-map-id="${map.id}">Open ${escapeHtml(map.name)} Room Setup</button>
           <button class="button" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo ${escapeHtml(map.name)}</button>
         </div>
       </header>
@@ -200,7 +429,7 @@ export function renderMenu(
         <section class="hero-grid__brief">
           <div class="brief-panel">
             <p class="brief-panel__label">Flow</p>
-            <p>Choose a team, deploy into a timed round, crouch or jump through the lane choices, and stay down until the next reset once you lose the duel.</p>
+            <p>Choose a team, set the solo fireteam level, then either open room setup for Cloud or manual multiplayer or drop straight into a solo round.</p>
           </div>
           <div class="brief-panel">
             <p class="brief-panel__label">Featured Arena</p>
@@ -239,12 +468,12 @@ export function renderCatalog(
           <p class="masthead__eyebrow">Map Select</p>
           <h1>Original Tactical Arenas</h1>
           <p>
-            Every entry now declares team spawns, tactical routes, and live mission metadata for both relay-charge and evac-escort round shells. Shared-room deploy syncs same-map tabs through the browser, while solo play keeps the local fallback combat loop available at all times.
+            Every entry now declares team spawns, tactical routes, and live mission metadata for both relay-charge and evac-escort round shells. Multiplayer now routes through a dedicated room setup step with Cloud Room signaling, manual WebRTC fallback, and same-browser dev transport.
           </p>
         </div>
         <div class="masthead__actions">
           <button class="button" data-action="show-menu">Back to Briefing</button>
-          <button class="button button--primary" data-action="open-map" data-mode="shared" data-map-id="${maps[0]?.id ?? ""}">Join Featured Room</button>
+          <button class="button button--primary" data-action="open-map" data-mode="shared" data-map-id="${maps[0]?.id ?? ""}">Open Featured Room Setup</button>
           <button class="button" data-action="open-map" data-mode="local" data-map-id="${maps[0]?.id ?? ""}">Open Solo Round</button>
         </div>
       </header>
@@ -262,6 +491,65 @@ export function renderCatalog(
   `;
 }
 
+export function renderRoomSetup(map: MapDefinition, state: RoomSetupRenderState): string {
+  return `
+    <section class="screen screen--room-setup">
+      <div class="room-setup">
+        <header class="masthead panel">
+          <div>
+            <p class="masthead__eyebrow">Room Setup</p>
+            <h1>${escapeHtml(map.name)}</h1>
+            <p>
+              The selected map, team entry, and operator identity carry into this setup flow. Cloud signaling stays signaling-only, manual offer and answer exchange remains available, and the original same-browser dev room stays on hand for tab-to-tab checks.
+            </p>
+          </div>
+          <div class="masthead__actions">
+            <button class="button" data-action="show-catalog">Back to Roster</button>
+            <button class="button" data-action="open-map" data-mode="local" data-map-id="${map.id}">Solo Round Instead</button>
+          </div>
+        </header>
+
+        <div class="room-setup__grid">
+          <section class="room-setup__brief panel">
+            <div class="panel__header">
+              <p>Transport Options</p>
+              <span class="chip chip--primary">${escapeHtml(roomKindLabel(state.selectedKind))}</span>
+            </div>
+            <p class="panel__text">
+              The current solo difficulty stays browser-saved for solo rounds only. Shared multiplayer remains human-only, and this setup keeps the canonical control scheme intact.
+            </p>
+            <div class="room-setup__identity">
+              <div class="room-setup__identity-card">
+                <p>Selected Side</p>
+                <strong>${escapeHtml(state.teamLabel)}</strong>
+              </div>
+              <div class="room-setup__identity-card">
+                <p>Operator</p>
+                <strong>${escapeHtml(state.operatorName)}</strong>
+              </div>
+            </div>
+            <div class="room-setup__tabs">
+              ${roomKindButton(state.selectedKind, "signal-host", "Host Cloud Room", "Create a room code and wait for guests.")}
+              ${roomKindButton(state.selectedKind, "signal-join", "Join Cloud Room", "Enter a host room code and negotiate automatically.")}
+              ${roomKindButton(state.selectedKind, "webrtc-host", "Manual Host", "Generate the offer and apply one guest answer.")}
+              ${roomKindButton(state.selectedKind, "webrtc-join", "Manual Join", "Paste a host offer and produce the answer blob.")}
+              ${roomKindButton(state.selectedKind, "broadcast", "Same-Browser Dev Room", "Keep the original local room path for browser-tab testing.")}
+            </div>
+            <div class="room-setup__preview">
+              ${renderPreviewSvg(map.preview)}
+            </div>
+          </section>
+
+          <div class="room-setup__workflow-stack">
+            ${renderRoomStatus(state)}
+            ${roomWorkflow(state)}
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 export function renderMapStage(
   map: MapDefinition,
   maps: MapDefinition[],
@@ -271,7 +559,7 @@ export function renderMapStage(
   botDifficulty: BotDifficulty,
 ): string {
   const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Round";
-  const switchModeLabel = mode === "shared" ? "Switch to Solo Round" : "Switch to Shared Room";
+  const switchModeLabel = mode === "shared" ? "Switch to Solo Round" : "Open Room Setup";
   const switchMode = mode === "shared" ? "local" : "shared";
   const crouchLabel = crouchControlLabel(classicCrouchAlias);
   const botDifficultyNote =
