@@ -149,6 +149,9 @@ type OutboundSignalingMessage =
     };
 
 const MAX_PENDING_REMOTE_ICE_CANDIDATES = 64;
+const GUEST_OFFER_WAIT_MS = 5_000;
+const GUEST_OFFER_RETRY_DELAY_MS = 350;
+const GUEST_OFFER_RETRY_LIMIT = 3;
 
 export function detectSignaledWebRtcSupport(): { supported: boolean; reason: string } {
   if (typeof WebSocket === "undefined") {
@@ -190,6 +193,10 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   private readonly iceServersPromise: Promise<RTCIceServer[]>;
   private readonly directFirstIce = shouldUseDirectFirstIce();
   private telemetryTimer = 0;
+  private guestOfferWatchdogTimer = 0;
+  private guestReconnectTimer = 0;
+  private guestOfferRetries = 0;
+  private guestHostPeerId = "";
   private closed = false;
   private signalingInvalidMessages = 0;
 
@@ -335,6 +342,8 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     }
 
     this.closed = true;
+    this.cancelGuestOfferWatchdog();
+    this.cancelGuestReconnect();
     this.stopTelemetry();
     for (const peer of [...this.peers.values()]) {
       this.closePeer(peer, reason, false);
@@ -485,6 +494,9 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
       this.noteInvalidSignalingMessage("Hosts must not receive offers.");
       return;
     }
+
+    this.cancelGuestOfferWatchdog();
+    this.guestOfferRetries = 0;
 
     const existingHost = this.firstPeer();
     if (existingHost && existingHost.peerId !== message.fromPeerId) {
@@ -1035,6 +1047,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
         if (this.options.role === "guest") {
           this.ensurePeer(message.peerId, message.participant);
           this.setStatus("waiting", `Host ${message.participant.name} found. Waiting for offer.`);
+          this.startGuestOfferWatchdog(message.peerId);
         }
         return;
       case "peer-joined":
@@ -1084,6 +1097,96 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
 
     this.setStatus("closed", "Signaling server disconnected.");
   };
+
+  private startGuestOfferWatchdog(hostPeerId: string): void {
+    if (this.options.role !== "guest" || this.closed) {
+      return;
+    }
+
+    if (this.guestHostPeerId !== hostPeerId) {
+      this.guestHostPeerId = hostPeerId;
+      this.guestOfferRetries = 0;
+    }
+
+    this.cancelGuestOfferWatchdog();
+    this.guestOfferWatchdogTimer = window.setTimeout(() => {
+      this.guestOfferWatchdogTimer = 0;
+      this.retryGuestOfferWait(hostPeerId);
+    }, GUEST_OFFER_WAIT_MS);
+  }
+
+  private retryGuestOfferWait(hostPeerId: string): void {
+    if (this.options.role !== "guest" || this.closed) {
+      return;
+    }
+
+    const peer = this.peers.get(hostPeerId);
+    if (!peer || peer.phase !== "new") {
+      return;
+    }
+
+    if (this.guestOfferRetries >= GUEST_OFFER_RETRY_LIMIT) {
+      this.setStatus(
+        "waiting",
+        "Host found, but no offer arrived. Ask the host to keep the room open or create a fresh Cloud Room.",
+      );
+      return;
+    }
+
+    this.guestOfferRetries += 1;
+    this.closePeer(peer, "offer-timeout", false);
+    this.setStatus(
+      "signaling",
+      `Still waiting for host offer. Retrying signaling ${this.guestOfferRetries}/${GUEST_OFFER_RETRY_LIMIT}.`,
+    );
+    this.reopenGuestSignalingSocket();
+  }
+
+  private reopenGuestSignalingSocket(): void {
+    if (this.options.role !== "guest" || this.closed) {
+      return;
+    }
+
+    const socket = this.socket;
+    if (socket) {
+      socket.removeEventListener("open", this.handleSocketOpen);
+      socket.removeEventListener("message", this.handleSocketMessage);
+      socket.removeEventListener("close", this.handleSocketClose);
+      socket.removeEventListener("error", this.handleSocketError);
+      try {
+        socket.close(1000, "retry-offer");
+      } catch {
+        // Ignore close failures while retrying the signaling handshake.
+      }
+    }
+    this.socket = undefined;
+
+    this.cancelGuestReconnect();
+    this.guestReconnectTimer = window.setTimeout(() => {
+      this.guestReconnectTimer = 0;
+      if (!this.closed) {
+        this.openSocket();
+      }
+    }, GUEST_OFFER_RETRY_DELAY_MS);
+  }
+
+  private cancelGuestOfferWatchdog(): void {
+    if (!this.guestOfferWatchdogTimer) {
+      return;
+    }
+
+    window.clearTimeout(this.guestOfferWatchdogTimer);
+    this.guestOfferWatchdogTimer = 0;
+  }
+
+  private cancelGuestReconnect(): void {
+    if (!this.guestReconnectTimer) {
+      return;
+    }
+
+    window.clearTimeout(this.guestReconnectTimer);
+    this.guestReconnectTimer = 0;
+  }
 
   private readonly handleSocketError = (): void => {
     if (this.status.phase !== "connected") {

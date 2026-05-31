@@ -4,7 +4,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const ROOT_URL = "http://127.0.0.1:4173/";
+const DEFAULT_ROOT_URL = "http://127.0.0.1:4173/";
+const ROOT_URL = process.env.ROOT_URL ?? DEFAULT_ROOT_URL;
 const PREVIEW_PORT = "4173";
 const DEBUG_PORT = "9225";
 const DEBUG_ORIGIN = `http://127.0.0.1:${DEBUG_PORT}`;
@@ -268,6 +269,11 @@ async function createPage(url) {
 }
 
 async function startPreview() {
+  if (ROOT_URL !== DEFAULT_ROOT_URL) {
+    await waitForHttp(ROOT_URL);
+    return null;
+  }
+
   const preview = startProcess("npm", [
     "run",
     "preview",
