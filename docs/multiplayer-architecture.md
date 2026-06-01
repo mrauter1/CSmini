@@ -77,7 +77,7 @@ Guests own:
 
 - local input capture
 - local recoil, muzzle flash, firing audio, and provisional ammo feedback
-- shot-claim submission to the host
+- shot-claim submission to the host, including the firing look vector so reliable shot claims do not depend on latest-state look packets arriving first
 - reconciliation from host snapshots and shot results
 
 Rejected shot results restore the guest weapon snapshot supplied by the host. Accepted results apply host-authoritative target health/status. Host-local shots are already authoritative because they are fired by the authority peer.
@@ -106,6 +106,8 @@ The host validates:
 - target team, alive/down status, health, and damage clamping
 
 A blocked line-of-sight shot consumes host weapon state and returns `blocked-by-cover`. Invalid fire-rate, ammo, reload, input, aim, or origin claims are rejected before consuming a shot.
+
+Shot claims include the guest look direction used at fire time. The host still validates direction, aim delta, origin drift, input freshness, and line of sight, but it can now validate a legitimate client shot even when the reliable shot claim arrives before the guest's latest-state movement/look tick.
 
 ## Objective State Boundary
 

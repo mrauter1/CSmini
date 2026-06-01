@@ -28,6 +28,7 @@ export interface RoomSetupRenderState {
   publicRooms: PublicRoomSummary[];
   publicRoomsStatus: string;
   publicRoomsError: string;
+  closedRoomMessage: string;
   connection?: RoomConnectionUiSnapshot;
   canEnterArena: boolean;
   teamLabel: string;
@@ -264,6 +265,15 @@ function roomEntryButton(state: RoomSetupRenderState): string {
 
 function renderRoomStatus(state: RoomSetupRenderState): string {
   const detail = state.connection?.detail ?? "Choose a transport to prepare the room.";
+  const closedRoom = state.closedRoomMessage
+    ? `
+      <p class="room-setup__status room-setup__status--error">${escapeHtml(state.closedRoomMessage)}</p>
+      <div class="room-setup__actions">
+        <button class="button button--primary" data-action="open-map" data-mode="local" data-map-id="${state.map.id}">Solo round instead</button>
+        <button class="button" data-action="room-join-another">Join another room</button>
+      </div>
+    `
+    : "";
   const supportError = state.supportError
     ? `<p class="room-setup__status room-setup__status--error">${escapeHtml(state.supportError)}</p>`
     : "";
@@ -281,6 +291,7 @@ function renderRoomStatus(state: RoomSetupRenderState): string {
         <span class="chip">${escapeHtml(state.connection?.phase ?? "idle")}</span>
       </div>
       <p class="panel__text">${escapeHtml(detail)}</p>
+      ${closedRoom}
       ${supportError}
       ${copyStatus}
       ${entryHint}
@@ -320,8 +331,8 @@ function renderSignalHostPanel(state: RoomSetupRenderState): string {
         Private rooms are shared by code or URL. Public rooms also appear in the open room list while this host tab remains online.
       </p>
       <div class="room-setup__visibility">
-        ${roomVisibilityButton(state.visibility, "private", "Private Room", "Share only by code or URL.")}
         ${roomVisibilityButton(state.visibility, "public", "Public Room", "Show this map room in the public list.")}
+        ${roomVisibilityButton(state.visibility, "private", "Private Room", "Share only by code or URL.")}
       </div>
       <label class="room-setup__field">
         <span>Room Code</span>
@@ -388,15 +399,22 @@ function renderSignalJoinPanel(state: RoomSetupRenderState): string {
 function publicRoomRow(room: PublicRoomSummary): string {
   const slots = `${room.participantCount}/${room.maxPeers}`;
   return `
-    <button
+    <div
       class="room-setup__public-room"
-      data-action="room-join-public"
-      data-room-code="${escapeHtml(room.roomCode)}"
     >
       <span class="room-setup__public-accent" style="background:${escapeHtml(room.hostAccentColor)}"></span>
-      <strong>${escapeHtml(room.hostName)}</strong>
-      <small>${escapeHtml(room.roomCode)} · ${escapeHtml(slots)}</small>
-    </button>
+      <div>
+        <strong>${escapeHtml(room.hostName)}</strong>
+        <small>${escapeHtml(room.roomCode)} · ${escapeHtml(slots)}</small>
+      </div>
+      <button
+        class="button button--tiny button--primary"
+        data-action="room-join-public"
+        data-room-code="${escapeHtml(room.roomCode)}"
+      >
+        Join Room
+      </button>
+    </div>
   `;
 }
 
@@ -600,11 +618,8 @@ export function renderRoomSetup(map: MapDefinition, state: RoomSetupRenderState)
               </div>
             </div>
             <div class="room-setup__tabs">
-              ${roomKindButton(state.selectedKind, "signal-host", "Create Room", "Host a private or public Cloud Room.")}
               ${roomKindButton(state.selectedKind, "signal-join", "Join Room", "Use a room code, invite URL, or public list.")}
-            </div>
-            <div class="room-setup__preview">
-              ${renderPreviewSvg(map.preview)}
+              ${roomKindButton(state.selectedKind, "signal-host", "Create Room", "Host a private or public Cloud Room.")}
             </div>
           </section>
 

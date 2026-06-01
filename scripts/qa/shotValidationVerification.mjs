@@ -523,6 +523,10 @@ async function main() {
         (guestLastShotClaim?.inputSequence ?? 0) <= guestLastSentInputSequence,
       `Guest shot claim input sequence ${guestLastShotClaim?.inputSequence} was outside the sent-input window ${guestLastSentInputSequenceBeforeClaim}-${guestLastSentInputSequence}.`,
     );
+    assert(
+      Array.isArray(guestLastShotClaim?.look) && guestLastShotClaim.look.length === 3,
+      `Guest shot claim did not carry a claim look vector: ${JSON.stringify(guestLastShotClaim)}`,
+    );
     const forgedSent = await joinPage.evaluate(
       `window.__dustlineQa__.submitShotClaim({
         tick: ${acceptedClaimTick} + 40,
@@ -630,6 +634,50 @@ async function main() {
       `Forged reload claim changed guest ammo from ${guestAmmoAfterAccepted} to ${guestAmmoAfterReload}`,
     );
 
+    await delay(250);
+    const unsyncedLayout = await stagePair(hostPage, joinPage, "clear");
+    await joinPage.evaluate('window.__dustlineQa__.configureLatestStateQa("outbound", { hold: true })');
+    await joinPage.bringToFront();
+    await joinPage.evaluate(
+      `window.__dustlineQa__.setView(
+        ${unsyncedLayout.guest.x},
+        ${unsyncedLayout.guest.y},
+        ${unsyncedLayout.guest.z},
+        ${unsyncedLayout.host.x},
+        ${unsyncedLayout.host.y},
+        ${unsyncedLayout.host.z}
+      )`,
+    );
+    const unsyncedBeforeCount = await currentResultCount(joinPage);
+    const unsyncedSent = await joinPage.evaluate(
+      `window.__dustlineQa__.submitShotClaim({
+        origin: ${JSON.stringify(unsyncedLayout.guest)},
+        direction: {
+          x: ${unsyncedLayout.host.x - unsyncedLayout.guest.x},
+          y: 0,
+          z: ${unsyncedLayout.host.z - unsyncedLayout.guest.z}
+        }
+      })`,
+    );
+    assert(unsyncedSent === true, "Guest could not submit the unsynced-look shot claim.");
+    await joinPage.evaluate('window.__dustlineQa__.configureLatestStateQa("outbound", { hold: false })');
+    const [unsyncedResult] = await waitForNewResults(joinPage, unsyncedBeforeCount, 1);
+    await hostPage.waitForExpression(
+      "(window.__dustlineQa__?.getState()?.match?.localPlayer?.health ?? 0) === 32",
+      10_000,
+    );
+    const hostHealthAfterUnsynced = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.localPlayer?.health ?? -1",
+    );
+    assert(
+      unsyncedResult?.decision === "accepted" && unsyncedResult?.damage === 34,
+      `Unsynced-look shot result was ${JSON.stringify(unsyncedResult)}`,
+    );
+    assert(
+      hostHealthAfterUnsynced === 32,
+      `Unsynced-look shot host health was ${hostHealthAfterUnsynced}`,
+    );
+
     const summary = {
       offerLength: connection.offerLength,
       answerLength: connection.answerLength,
@@ -646,9 +694,11 @@ async function main() {
       fireRateResult,
       ammoResult,
       reloadResult,
+      unsyncedResult,
       hostHealthAfterAccepted: acceptedHostHealth,
       hostHealthAfterAmmo,
       hostHealthAfterReload,
+      hostHealthAfterUnsynced,
       guestAmmoAfterAccepted,
       guestAmmoAfterFireRate,
       guestAmmoAfterAmmo,

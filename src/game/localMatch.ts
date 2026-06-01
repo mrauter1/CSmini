@@ -165,7 +165,7 @@ const PLAYER_NOISE_HEARING_RADIUS = 19;
 const COMBATANT_AIM_PITCH_LIMIT = Math.PI * 0.34;
 const FIRE_INTERVAL_MS = FIRE_INTERVAL * 1000;
 const RELOAD_DURATION_MS = RELOAD_DURATION * 1000;
-const SHOT_MAX_LATENCY_MS = 700;
+const SHOT_MAX_LATENCY_MS = 1_200;
 const SHOT_MAX_FUTURE_SKEW_MS = 180;
 const SHOT_MAX_INPUT_SEQUENCE_LAG = 18;
 const SHOT_MAX_ORIGIN_DELTA = 1.85;
@@ -4684,6 +4684,11 @@ export class LocalMatch {
       tick: overrides.tick ?? tickMs,
       origin: [origin.x, origin.y, origin.z],
       direction: [direction.x, direction.y, direction.z],
+      look: [
+        Number(direction.x.toFixed(4)),
+        Number(direction.y.toFixed(4)),
+        Number(direction.z.toFixed(4)),
+      ],
       ammoInClip: overrides.ammoInClip ?? this.ammoInClip,
       reserveAmmo: overrides.reserveAmmo ?? this.reserveAmmo,
       reloadSequence: overrides.reloadSequence ?? this.reloadSequence,
@@ -4726,9 +4731,23 @@ export class LocalMatch {
       return;
     }
 
+    const participant = this.sharedRoom.participantsSnapshot.find((entry) => entry.id === event.peerId);
+    if (participant && participant.team !== "observer") {
+      this.ensureRemoteActorFromParticipant(participant);
+    }
+
     const weaponState = this.remoteWeaponStates.get(event.peerId);
     if (!weaponState) {
       return;
+    }
+
+    const claimLook = this.claimLookDirection(event);
+    if (claimLook) {
+      noteInputSequence(weaponState, event.inputSequence);
+      const actor = this.remoteActors.get(event.peerId);
+      if (actor) {
+        this.applyRemoteLook(actor, [claimLook.x, claimLook.y, claimLook.z]);
+      }
     }
 
     syncWeaponState(weaponState, event.tick, CLIP_SIZE);
@@ -4742,6 +4761,9 @@ export class LocalMatch {
     if (!shooter) {
       this.sendRejectedShotResult(event, weaponState, "rewind-missing");
       return;
+    }
+    if (claimLook) {
+      shooter.look.copy(claimLook);
     }
 
     if (this.roundState.phase !== "active") {
@@ -4797,6 +4819,19 @@ export class LocalMatch {
       sentAt: Date.now(),
       ...resolution,
     };
+  }
+
+  private claimLookDirection(claim: RoomShotClaim): THREE.Vector3 | null {
+    if (!claim.look) {
+      return null;
+    }
+
+    const look = new THREE.Vector3(claim.look[0], claim.look[1], claim.look[2]);
+    if (look.lengthSq() <= 0.001) {
+      return null;
+    }
+
+    return look.normalize();
   }
 
   private sendRejectedShotResult(

@@ -870,7 +870,7 @@ p {
 .room-setup__public-room {
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
   padding: 12px 14px;
   border-radius: 8px;
@@ -886,6 +886,7 @@ p {
 }
 
 .room-setup__public-room strong {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1550,7 +1551,8 @@ p {
     grid-template-columns: 12px minmax(0, 1fr);
   }
 
-  .room-setup__public-room small {
+  .room-setup__public-room small,
+  .room-setup__public-room .button {
     grid-column: 2;
   }
 

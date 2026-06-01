@@ -143,6 +143,7 @@ export type ShotClaimMessage = EnvelopeBase<
     tick: number;
     origin: NetworkVector3;
     direction: NetworkVector3;
+    look?: NetworkVector3;
     ammoInClip: number;
     reserveAmmo: number;
     reloadSequence: number;
@@ -864,6 +865,7 @@ function isShotClaimPayload(
     isSafeNumber(payload.tick) &&
     isVector3(payload.origin) &&
     isVector3(payload.direction) &&
+    (typeof payload.look === "undefined" || isVector3(payload.look)) &&
     isSafeNumber(payload.ammoInClip) &&
     isSafeNumber(payload.reserveAmmo) &&
     isSafeNumber(payload.reloadSequence) &&

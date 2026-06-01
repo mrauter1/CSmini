@@ -337,8 +337,25 @@ function withQaParam(url) {
 async function probeRoomSetupExperience() {
   const hostPage = await createPage(`${ROOT_URL}?qa=1`);
   let joinPage;
+  let closedPage;
 
   try {
+    await hostPage.evaluate(
+      `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)})`,
+    );
+    await hostPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    const defaultKind = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.roomSetup?.kind ?? null",
+    );
+    const tabLabels = await hostPage.evaluate(
+      "[...document.querySelectorAll('.room-setup__tabs strong')].map((node) => (node.textContent?.trim() ?? '').toUpperCase())",
+    );
+    assert(defaultKind === "signal-join", `Room setup default kind was ${defaultKind}.`);
+    assert(
+      tabLabels[0] === "JOIN ROOM" && tabLabels[1] === "CREATE ROOM",
+      `Room setup tab order was ${JSON.stringify(tabLabels)}.`,
+    );
+
     await hostPage.evaluate(
       `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
     );
@@ -350,6 +367,19 @@ async function probeRoomSetupExperience() {
     assert(!setupText.includes("manual host"), "Manual host should be hidden from the room setup UI.");
     assert(!setupText.includes("manual join"), "Manual join should be hidden from the room setup UI.");
     assert(!setupText.includes("same-browser dev room"), "Same-browser dev room should be hidden from the room setup UI.");
+    assert(!setupText.includes("map preview"), "Room setup should not show a map preview image.");
+
+    const defaultVisibility = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.roomSetup?.visibility ?? null",
+    );
+    const visibilityLabels = await hostPage.evaluate(
+      "[...document.querySelectorAll('.room-setup__visibility strong')].map((node) => (node.textContent?.trim() ?? '').toUpperCase())",
+    );
+    assert(defaultVisibility === "public", `Create Room default visibility was ${defaultVisibility}.`);
+    assert(
+      visibilityLabels[0] === "PUBLIC ROOM" && visibilityLabels[1] === "PRIVATE ROOM",
+      `Room visibility order was ${JSON.stringify(visibilityLabels)}.`,
+    );
 
     const roomCode = await hostPage.evaluate("window.__dustlineQa__.getRoomCode()");
     const roomUrl = await hostPage.evaluate(
@@ -362,18 +392,59 @@ async function probeRoomSetupExperience() {
     );
 
     joinPage = await createPage(withQaParam(roomUrl));
-    await joinPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
     await waitForRoomPhase(hostPage, "connected");
-    await waitForRoomPhase(joinPage, "connected");
+    await waitForMatch(joinPage, MAP_ID);
+
+    closedPage = await createPage(
+      withQaParam(`${ROOT_URL}?room=ZZZZZZ&map=${MAP_ID}`),
+    );
+    try {
+      await closedPage.waitForExpression(
+        "window.__dustlineQa__?.getState()?.roomSetup?.closedRoomMessage === 'Room has been closed.'",
+        8_000,
+      );
+    } catch (error) {
+      const state = await closedPage.evaluate("window.__dustlineQa__?.getState?.() ?? null");
+      throw new Error(
+        `Closed invite link did not show the closed-room message: ${JSON.stringify(state?.roomSetup ?? state)}`
+      );
+    }
+    const closedActions = await closedPage.evaluate(
+      "[...document.querySelectorAll('.room-setup__status-card [data-action]')].map((node) => node.textContent?.trim() ?? '')",
+    );
+    assert(
+      closedActions.includes("Solo round instead") && closedActions.includes("Join another room"),
+      `Closed-room actions were ${JSON.stringify(closedActions)}.`,
+    );
+    await closedPage.evaluate(
+      "document.querySelector('[data-action=\"room-join-another\"]')?.click()",
+    );
+    await closedPage.waitForExpression(
+      "(window.__dustlineQa__?.getState()?.roomSetup?.publicRooms?.length ?? 0) > 0",
+      8_000,
+    );
+    const publicJoinButtons = await closedPage.evaluate(
+      "[...document.querySelectorAll('[data-action=\"room-join-public\"]')].map((node) => node.textContent?.trim() ?? '')",
+    );
+    assert(
+      publicJoinButtons.includes("Join Room"),
+      `Public room rows did not expose Join Room buttons: ${JSON.stringify(publicJoinButtons)}.`,
+    );
+    await closedPage.evaluate(
+      "document.querySelector('[data-action=\"room-join-public\"]')?.click()",
+    );
+    await waitForMatch(closedPage, MAP_ID);
 
     return {
       roomCode,
       inviteUrlHasCode: roomUrl.includes(`room=${roomCode}`),
       hostPhase: await hostPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
-      joinPhase: await joinPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
+      joinScreen: await joinPage.evaluate("window.__dustlineQa__?.getState()?.screen ?? null"),
+      closedRecoveredScreen: await closedPage.evaluate("window.__dustlineQa__?.getState()?.screen ?? null"),
+      publicJoinButtons,
     };
   } finally {
-    await Promise.allSettled([hostPage.close(), joinPage?.close()]);
+    await Promise.allSettled([hostPage.close(), joinPage?.close(), closedPage?.close()]);
   }
 }
 
@@ -840,9 +911,66 @@ async function main() {
     const diagnostics = [];
     for (const [index, page] of pages.entries()) {
       try {
+        const state = await page.evaluate(`
+          (() => {
+            const state = window.__dustlineQa__?.getState?.() ?? null;
+            if (!state) {
+              return null;
+            }
+
+            return {
+              screen: state.screen,
+              activeMapId: state.activeMapId,
+              activeMode: state.activeMode,
+              roomSetup: state.roomSetup
+                ? {
+                    kind: state.roomSetup.kind,
+                    phase: state.roomSetup.phase,
+                    supportError: state.roomSetup.supportError,
+                    closedRoomMessage: state.roomSetup.closedRoomMessage,
+                    connection: state.roomSetup.connection
+                      ? {
+                          kind: state.roomSetup.connection.kind,
+                          phase: state.roomSetup.connection.phase,
+                          detail: state.roomSetup.connection.detail,
+                          participantCount: state.roomSetup.connection.participantCount,
+                          peerCount: state.roomSetup.connection.peerCount,
+                          peerIds: state.roomSetup.connection.peerIds,
+                          transportPeerCount: state.roomSetup.connection.transport?.peers?.length ?? null,
+                        }
+                      : null,
+                  }
+                : null,
+              match: state.match
+                ? {
+                    mapId: state.match.mapId,
+                    activeMode: state.match.activeMode,
+                    sharedRole: state.match.sharedRole,
+                    rosterCount: state.match.roster?.length ?? 0,
+                    remoteCount: state.match.remotePlayers?.length ?? 0,
+                    localPlayerId: state.match.localPlayer?.id ?? null,
+                    roomConnection: state.match.roomConnection
+                      ? {
+                          phase: state.match.roomConnection.phase,
+                          detail: state.match.roomConnection.detail,
+                          participantCount: state.match.roomConnection.participantCount,
+                          peerCount: state.match.roomConnection.peerCount,
+                          peerIds: state.match.roomConnection.peerIds,
+                          transportPeerCount: state.match.roomConnection.transport?.peers?.length ?? null,
+                        }
+                      : null,
+                  }
+                : null,
+              startupError:
+                document.querySelector(".world-stage__error code")?.textContent?.trim() ??
+                document.querySelector(".world-stage__error")?.textContent?.trim() ??
+                "",
+            };
+          })()
+        `);
         diagnostics.push({
           index,
-          state: await page.evaluate("window.__dustlineQa__?.getState?.() ?? null"),
+          state,
         });
       } catch (diagnosticError) {
         diagnostics.push({

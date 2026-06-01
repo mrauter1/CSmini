@@ -60,6 +60,10 @@ interface RoomSetupState {
   connection?: MatchRoomConnection;
   supportError: string;
   copyStatus: string;
+  closedRoomMessage: string;
+  autoEnterOnConnected: boolean;
+  linkJoin: boolean;
+  linkJoinTimer?: number;
   unsubscribe?: () => void;
 }
 
@@ -140,7 +144,7 @@ export class TacticalShellApp {
     this.activeMode = "shared";
     this.screen = "room";
     this.selectRoomKind("signal-join");
-    this.connectSignalingRoom(roomCode);
+    this.connectSignalingRoom(roomCode, { autoEnter: true, linkJoin: true });
     return true;
   }
 
@@ -232,8 +236,11 @@ export class TacticalShellApp {
         return;
       case "room-join-public":
         if (actionButton.dataset.roomCode) {
-          this.connectSignalingRoom(actionButton.dataset.roomCode);
+          this.connectSignalingRoom(actionButton.dataset.roomCode, { autoEnter: true });
         }
+        return;
+      case "room-join-another":
+        this.showJoinAnotherRoom();
         return;
       case "enter-room-stage":
         if (this.canEnterStage()) {
@@ -285,8 +292,8 @@ export class TacticalShellApp {
         map,
         {
           map,
-          selectedKind: this.roomSetup?.kind ?? "signal-host",
-          visibility: this.roomSetup?.visibility ?? "private",
+          selectedKind: this.roomSetup?.kind ?? "signal-join",
+          visibility: this.roomSetup?.visibility ?? "public",
           supportError: this.roomSetup?.supportError ?? "",
           copyStatus: this.roomSetup?.copyStatus ?? "",
           roomCode: this.roomSetup?.roomCode ?? "",
@@ -295,6 +302,7 @@ export class TacticalShellApp {
           publicRooms: this.roomSetup?.publicRooms ?? [],
           publicRoomsStatus: this.roomSetup?.publicRoomsStatus ?? "",
           publicRoomsError: this.roomSetup?.publicRoomsError ?? "",
+          closedRoomMessage: this.roomSetup?.closedRoomMessage ?? "",
           connection: this.roomSetup?.connection?.uiSnapshot,
           canEnterArena: this.canEnterStage(),
           teamLabel: teamPreferenceLabel(this.teamPreference),
@@ -580,7 +588,7 @@ export class TacticalShellApp {
 
     this.activeMode = "shared";
     this.screen = "room";
-    this.selectRoomKind(this.roomSetup?.kind ?? "signal-host");
+    this.selectRoomKind(this.roomSetup?.kind ?? "signal-join");
   }
 
   private selectRoomKind(kind: RoomConnectionKind): void {
@@ -593,7 +601,8 @@ export class TacticalShellApp {
     }
 
     const previousRoomCode = this.roomSetup?.roomCode ?? "";
-    const previousVisibility = this.roomSetup?.visibility ?? "private";
+    const previousVisibility =
+      this.roomSetup?.kind === "signal-host" ? this.roomSetup.visibility : "public";
     const previousPublicRooms = this.roomSetup?.publicRooms ?? [];
     this.disposeRoomSetup();
 
@@ -606,7 +615,7 @@ export class TacticalShellApp {
           : "";
     const state: RoomSetupState = {
       kind,
-      visibility: kind === "signal-host" ? previousVisibility : "private",
+      visibility: kind === "signal-host" ? previousVisibility : "public",
       roomCode,
       roomUrl: this.buildRoomUrl(roomCode, map.id),
       signalingUrl: getSignalingServiceUrl(),
@@ -615,6 +624,9 @@ export class TacticalShellApp {
       publicRoomsError: "",
       supportError: support.supported ? "" : support.reason,
       copyStatus: "",
+      closedRoomMessage: "",
+      autoEnterOnConnected: false,
+      linkJoin: false,
     };
 
     if (support.supported && kind !== "signal-join") {
@@ -727,13 +739,16 @@ export class TacticalShellApp {
     state: RoomSetupState,
     connection: MatchRoomConnection | undefined,
   ): void {
+    this.clearLinkJoinTimer(state);
     state.unsubscribe?.();
     state.connection = connection;
     state.unsubscribe = connection?.subscribe(() => {
+      this.handleRoomConnectionUpdate(state);
       if (this.screen === "room") {
         this.render();
       }
     });
+    this.handleRoomConnectionUpdate(state);
   }
 
   private canEnterStage(): boolean {
@@ -766,7 +781,10 @@ export class TacticalShellApp {
     }
   }
 
-  private connectSignalingRoom(roomCode?: string): void {
+  private connectSignalingRoom(
+    roomCode?: string,
+    options: { autoEnter?: boolean; linkJoin?: boolean } = {},
+  ): void {
     if (!this.roomSetup || this.roomSetup.kind !== "signal-join") {
       return;
     }
@@ -782,15 +800,93 @@ export class TacticalShellApp {
     this.roomSetup.roomUrl = this.buildRoomUrl(normalizedCode, this.activeMapId);
     this.roomSetup.copyStatus = "";
     this.roomSetup.supportError = "";
+    this.roomSetup.closedRoomMessage = "";
+    this.roomSetup.autoEnterOnConnected = Boolean(options.autoEnter);
+    this.roomSetup.linkJoin = Boolean(options.linkJoin);
     this.roomSetup.connection?.dispose();
     this.attachRoomConnection(
       this.roomSetup,
       this.createRoomConnection("signal-join", getMapById(this.activeMapId), normalizedCode),
     );
+    if (this.roomSetup.linkJoin) {
+      this.scheduleLinkJoinTimeout(this.roomSetup);
+    }
 
     if (this.screen === "room") {
       this.render();
     }
+  }
+
+  private handleRoomConnectionUpdate(state: RoomSetupState): void {
+    const phase = state.connection?.uiSnapshot.phase ?? "idle";
+    if (state.autoEnterOnConnected && phase === "connected" && this.screen === "room") {
+      state.autoEnterOnConnected = false;
+      state.linkJoin = false;
+      this.clearLinkJoinTimer(state);
+      this.screen = "stage";
+      this.render();
+      return;
+    }
+
+    const detail = state.connection?.uiSnapshot.detail.toLowerCase() ?? "";
+    if (state.linkJoin && phase === "waiting" && detail.includes("waiting for the host")) {
+      this.markLinkedRoomClosed(state);
+      return;
+    }
+
+    if (state.linkJoin && phase === "error") {
+      this.markLinkedRoomClosed(state);
+    }
+  }
+
+  private scheduleLinkJoinTimeout(state: RoomSetupState): void {
+    this.clearLinkJoinTimer(state);
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    state.linkJoinTimer = window.setTimeout(() => {
+      if (this.roomSetup !== state || !state.linkJoin) {
+        return;
+      }
+
+      if (state.connection?.uiSnapshot.phase !== "connected") {
+        this.markLinkedRoomClosed(state);
+      }
+    }, 5_000);
+  }
+
+  private clearLinkJoinTimer(state: RoomSetupState): void {
+    if (!state.linkJoinTimer || typeof window === "undefined") {
+      return;
+    }
+
+    window.clearTimeout(state.linkJoinTimer);
+    state.linkJoinTimer = undefined;
+  }
+
+  private markLinkedRoomClosed(state: RoomSetupState): void {
+    this.clearLinkJoinTimer(state);
+    state.autoEnterOnConnected = false;
+    state.linkJoin = false;
+    state.closedRoomMessage = "Room has been closed.";
+    state.supportError = "";
+    state.copyStatus = "";
+    state.connection?.dispose();
+    state.unsubscribe?.();
+    state.unsubscribe = undefined;
+    state.connection = undefined;
+    if (this.screen === "room") {
+      this.render();
+    }
+  }
+
+  private showJoinAnotherRoom(): void {
+    this.disposeRoomSetup();
+    this.activeMapId = getMapById(this.activeMapId).id;
+    this.activeMode = "shared";
+    this.screen = "room";
+    this.selectRoomKind("signal-join");
   }
 
   private async refreshPublicRooms(): Promise<void> {
@@ -919,6 +1015,7 @@ export class TacticalShellApp {
         : typeof error === "string"
           ? error
           : "Unexpected room error.";
+    this.roomSetup.closedRoomMessage = "";
     this.roomSetup.copyStatus = "";
     if (this.screen === "room") {
       this.render();
@@ -932,12 +1029,16 @@ export class TacticalShellApp {
 
     this.roomSetup.copyStatus = message;
     this.roomSetup.supportError = "";
+    this.roomSetup.closedRoomMessage = "";
     if (this.screen === "room") {
       this.render();
     }
   }
 
   private disposeRoomSetup(): void {
+    if (this.roomSetup) {
+      this.clearLinkJoinTimer(this.roomSetup);
+    }
     this.roomSetup?.unsubscribe?.();
     this.roomSetup?.connection?.dispose();
     this.roomSetup = undefined;
@@ -1049,7 +1150,7 @@ export class TacticalShellApp {
         this.disposeRoomSetup();
         this.roomSetup = {
           kind: "broadcast",
-          visibility: "private",
+          visibility: "public",
           roomCode: "",
           roomUrl: "",
           signalingUrl: getSignalingServiceUrl(),
@@ -1058,6 +1159,9 @@ export class TacticalShellApp {
           publicRoomsError: "",
           supportError: support.reason,
           copyStatus: "",
+          closedRoomMessage: "",
+          autoEnterOnConnected: false,
+          linkJoin: false,
         };
       } else {
         this.selectRoomKind("broadcast");
@@ -1070,7 +1174,7 @@ export class TacticalShellApp {
     this.openMapRoute(map, mode);
   }
 
-  debugOpenRoomSetup(mapId: string, kind: RoomConnectionKind = "signal-host"): void {
+  debugOpenRoomSetup(mapId: string, kind: RoomConnectionKind = "signal-join"): void {
     this.activeMapId = getMapById(mapId).id;
     this.activeMode = "shared";
     this.screen = "room";
@@ -1171,6 +1275,7 @@ export class TacticalShellApp {
           kind: this.roomSetup.kind,
           visibility: this.roomSetup.visibility,
           supportError: this.roomSetup.supportError,
+          closedRoomMessage: this.roomSetup.closedRoomMessage,
           copyStatus: this.roomSetup.copyStatus,
           roomUrl: this.roomSetup.roomUrl,
           publicRooms: this.roomSetup.publicRooms,
@@ -1469,7 +1574,7 @@ export class TacticalShellApp {
       return value;
     }
 
-    return "signal-host";
+    return "signal-join";
   }
 
   private readRoomVisibility(value: string | undefined): CloudRoomVisibility | undefined {

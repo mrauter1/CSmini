@@ -43,6 +43,19 @@ npm test
 
 ## Fresh Results 2026-06-01
 
+Cloud Room UI follow-up tightened the default join-first room flow and fixed a client-shot race. `Join Room` is now the default room setup tab, `Public Room` is the default create mode, setup no longer shows the map preview image, public room rows have explicit `Join Room` actions, invite links auto-enter active rooms, and closed invite links show `Room has been closed.` with `Solo round instead` and `Join another room` recovery actions.
+
+The shared shot claim payload now includes the guest's firing look vector. The host still validates aim, input freshness, origin drift, line of sight, weapon state, and timing, but a valid client shot no longer depends on the guest latest-state look packet arriving before the reliable shot claim.
+
+Observed results for this follow-up:
+
+- `npm run typecheck`: passed
+- `npm run build`: passed and repeated the known non-blocking large `localMatch` chunk warning
+- `npm run qa:shot-validation`: passed with blocked-cover rejection, clear-shot acceptance, fire-rate rejection, ammo-state rejection, reload-state rejection, and an unsynced latest-state case where the host still accepted a valid guest shot for `34` damage
+- `npm run qa:cloud-signaling`: passed with invite URL auto-entry, closed-invite recovery UI, default join/public room ordering, hidden manual/dev room UI checks, public `Join Room` buttons, relay-idle warning/reset/disconnect coverage, and host/guest arena sync
+- `npm run qa:cloud-signaling-14`: passed with one host plus 13 guests connected, rosters at `14`, host remote count `13`, every guest remote count `13`, and delta snapshots
+- `npm test`: passed, repeating the production build and final browser QA wrapper
+
 Polished Cloud Room V2 added private/public room creation, invite URL joining, a Cloudflare Durable Object public-room registry, and relay-idle bandwidth protection. The visible room setup UI now exposes only `Create Room` and `Join Room`; manual WebRTC and same-browser development transports remain available to QA/debug hooks.
 
 Observed results:
