@@ -643,6 +643,8 @@ export function renderMapStage(
   teamPreference: TeamPreference,
   classicCrouchAlias: boolean,
   botDifficulty: BotDifficulty,
+  roomInviteUrl = "",
+  roomCopyStatus = "",
 ): string {
   const modeEyebrow = mode === "shared" ? "Shared Room Sync" : "Solo Round";
   const switchModeLabel = mode === "shared" ? "Switch to Solo Round" : "Open Room Setup";
@@ -782,6 +784,7 @@ export function renderMapStage(
         </div>
 
         <div class="match-console match-console--compact panel">
+          ${renderMatchInviteTools(mode, roomInviteUrl, roomCopyStatus)}
           <div class="match-console__copy">
             <p class="masthead__eyebrow">${modeEyebrow}</p>
             <h2>Match Options</h2>
@@ -807,5 +810,26 @@ export function renderMapStage(
         </div>
       </div>
     </section>
+  `;
+}
+
+function renderMatchInviteTools(
+  mode: MatchMode,
+  roomInviteUrl: string,
+  roomCopyStatus: string,
+): string {
+  if (mode !== "shared" || !roomInviteUrl) {
+    return "";
+  }
+
+  return `
+    <div class="match-console__invite">
+      <div>
+        <p class="masthead__eyebrow">Invite Link</p>
+        <input readonly data-room-field="arena-room-url" value="${escapeHtml(roomInviteUrl)}" />
+      </div>
+      <button class="button button--primary" data-action="room-copy" data-field="arena-room-url">Copy Invite Link</button>
+      <p class="match-console__invite-status" data-ui="room-copy-status" ${roomCopyStatus ? "" : "hidden"}>${escapeHtml(roomCopyStatus)}</p>
+    </div>
   `;
 }

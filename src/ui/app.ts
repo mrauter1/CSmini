@@ -36,7 +36,11 @@ import {
   type SharedRoomHandlers,
 } from "../net/matchRoomConnection";
 import { fetchPublicRooms, type PublicRoomSummary } from "../net/publicRooms";
-import { firstAvailablePublicRoomSlot, publicRoomSlotLabel } from "../net/publicRoomSlots";
+import {
+  firstAvailablePublicRoomSlot,
+  publicRoomSlotForCode,
+  publicRoomSlotLabel,
+} from "../net/publicRoomSlots";
 import { getSignalingServiceUrl } from "../net/signalingConfig";
 import { getTeamDefinition, isTeamId, resolveTeamPreference, teamPreferenceLabel } from "../game/teams";
 import type { MapDefinition, TeamPreference } from "../types";
@@ -64,8 +68,9 @@ interface RoomSetupState {
   copyStatus: string;
   closedRoomMessage: string;
   autoEnterOnConnected: boolean;
+  autoHostOnClosedJoin: boolean;
   linkJoin: boolean;
-  linkJoinTimer?: number;
+  closedJoinTimer?: number;
   unsubscribe?: () => void;
 }
 
@@ -327,6 +332,8 @@ export class TacticalShellApp {
       this.teamPreference,
       this.classicCrouchAlias,
       this.botDifficulty,
+      this.activeMode === "shared" ? this.roomSetup?.roomUrl ?? "" : "",
+      this.activeMode === "shared" ? this.roomSetup?.copyStatus ?? "" : "",
     );
 
     const host = this.root.querySelector<HTMLElement>("[data-world-host]");
@@ -649,6 +656,7 @@ export class TacticalShellApp {
       copyStatus: "",
       closedRoomMessage: "",
       autoEnterOnConnected: false,
+      autoHostOnClosedJoin: false,
       linkJoin: false,
     };
 
@@ -842,7 +850,7 @@ export class TacticalShellApp {
     state: RoomSetupState,
     connection: MatchRoomConnection | undefined,
   ): void {
-    this.clearLinkJoinTimer(state);
+    this.clearClosedJoinTimer(state);
     state.unsubscribe?.();
     state.connection = connection;
     state.unsubscribe = connection?.subscribe(() => {
@@ -905,6 +913,7 @@ export class TacticalShellApp {
     this.roomSetup.supportError = "";
     this.roomSetup.closedRoomMessage = "";
     this.roomSetup.autoEnterOnConnected = Boolean(options.autoEnter);
+    this.roomSetup.autoHostOnClosedJoin = true;
     this.roomSetup.linkJoin = Boolean(options.linkJoin);
     this.roomSetup.connection?.dispose();
     this.attachRoomConnection(
@@ -912,7 +921,7 @@ export class TacticalShellApp {
       this.createRoomConnection("signal-join", getMapById(this.activeMapId), normalizedCode),
     );
     if (this.roomSetup.linkJoin) {
-      this.scheduleLinkJoinTimeout(this.roomSetup);
+      this.scheduleClosedJoinTimer(this.roomSetup);
     }
 
     if (this.screen === "room") {
@@ -922,63 +931,125 @@ export class TacticalShellApp {
 
   private handleRoomConnectionUpdate(state: RoomSetupState): void {
     const phase = state.connection?.uiSnapshot.phase ?? "idle";
-    if (state.autoEnterOnConnected && phase === "connected" && this.screen === "room") {
+    const canAutoEnter =
+      state.autoEnterOnConnected &&
+      state.connection &&
+      (phase === "connected" || (state.connection.role === "host" && phase !== "error"));
+
+    if (canAutoEnter && this.screen === "room") {
       state.autoEnterOnConnected = false;
+      state.autoHostOnClosedJoin = false;
       state.linkJoin = false;
-      this.clearLinkJoinTimer(state);
+      this.clearClosedJoinTimer(state);
       this.screen = "stage";
       this.render();
       return;
     }
 
     const detail = state.connection?.uiSnapshot.detail.toLowerCase() ?? "";
-    if (state.linkJoin && phase === "waiting" && detail.includes("waiting for the host")) {
-      this.markLinkedRoomClosed(state);
+    if (
+      state.autoHostOnClosedJoin &&
+      state.kind === "signal-join" &&
+      phase === "waiting" &&
+      detail.includes("waiting for the host")
+    ) {
+      this.promoteClosedJoinToHost(state);
       return;
     }
 
-    if (state.linkJoin && phase === "error") {
-      this.markLinkedRoomClosed(state);
+    if (
+      state.linkJoin &&
+      state.autoHostOnClosedJoin &&
+      state.kind === "signal-join" &&
+      phase === "error"
+    ) {
+      this.promoteClosedJoinToHost(state);
     }
   }
 
-  private scheduleLinkJoinTimeout(state: RoomSetupState): void {
-    this.clearLinkJoinTimer(state);
+  private scheduleClosedJoinTimer(state: RoomSetupState): void {
+    this.clearClosedJoinTimer(state);
     if (typeof window === "undefined") {
       return;
     }
 
-    state.linkJoinTimer = window.setTimeout(() => {
-      if (this.roomSetup !== state || !state.linkJoin) {
+    state.closedJoinTimer = window.setTimeout(() => {
+      if (this.roomSetup !== state || !state.autoHostOnClosedJoin || state.kind !== "signal-join") {
         return;
       }
 
       if (state.connection?.uiSnapshot.phase !== "connected") {
-        this.markLinkedRoomClosed(state);
+        this.promoteClosedJoinToHost(state);
       }
     }, 5_000);
   }
 
-  private clearLinkJoinTimer(state: RoomSetupState): void {
-    if (!state.linkJoinTimer || typeof window === "undefined") {
+  private clearClosedJoinTimer(state: RoomSetupState): void {
+    if (!state.closedJoinTimer || typeof window === "undefined") {
       return;
     }
 
-    window.clearTimeout(state.linkJoinTimer);
-    state.linkJoinTimer = undefined;
+    window.clearTimeout(state.closedJoinTimer);
+    state.closedJoinTimer = undefined;
   }
 
-  private markLinkedRoomClosed(state: RoomSetupState): void {
-    this.clearLinkJoinTimer(state);
-    state.autoEnterOnConnected = false;
+  private promoteClosedJoinToHost(state: RoomSetupState): void {
+    if (this.roomSetup !== state || state.kind !== "signal-join") {
+      return;
+    }
+
+    const roomCode = normalizeRoomCode(
+      state.roomCode || state.connection?.uiSnapshot.roomCode || "",
+    );
+    if (!roomCode) {
+      this.setRoomSupportError("The closed room code was unavailable.");
+      return;
+    }
+
+    const publicSlot = publicRoomSlotForCode(roomCode);
+    const visibility: CloudRoomVisibility = publicSlot ? "public" : "private";
+    const map = getMapById(this.activeMapId);
+
+    this.clearClosedJoinTimer(state);
     state.linkJoin = false;
-    state.closedRoomMessage = "Room has been closed.";
+    state.autoHostOnClosedJoin = false;
+    state.closedRoomMessage = "";
     state.supportError = "";
-    state.copyStatus = "";
+    state.copyStatus = "Closed room recovered. Hosting this room code.";
     state.connection?.dispose();
     state.unsubscribe?.();
     state.unsubscribe = undefined;
     state.connection = undefined;
+    state.kind = "signal-host";
+    state.visibility = visibility;
+    state.publicSlot = publicSlot?.slot ?? 0;
+    state.roomCode = roomCode;
+    state.roomUrl = this.buildRoomUrl(roomCode, map.id);
+    state.autoEnterOnConnected = true;
+
+    const attachHost = (): void => {
+      if (this.roomSetup !== state || state.kind !== "signal-host") {
+        return;
+      }
+
+      this.attachRoomConnection(
+        state,
+        this.createRoomConnection("signal-host", map, roomCode, visibility, state.publicSlot),
+      );
+      if (this.screen === "room") {
+        this.render();
+      }
+    };
+
+    if (typeof window === "undefined") {
+      attachHost();
+    } else {
+      state.closedJoinTimer = window.setTimeout(() => {
+        state.closedJoinTimer = undefined;
+        attachHost();
+      }, 180);
+    }
+
     if (this.screen === "room") {
       this.render();
     }
@@ -1135,12 +1206,24 @@ export class TacticalShellApp {
     this.roomSetup.closedRoomMessage = "";
     if (this.screen === "room") {
       this.render();
+      return;
     }
+
+    if (this.screen === "stage") {
+      this.syncRoomCopyStatus(message);
+    }
+  }
+
+  private syncRoomCopyStatus(message: string): void {
+    this.root.querySelectorAll<HTMLElement>('[data-ui="room-copy-status"]').forEach((node) => {
+      node.textContent = message;
+      node.hidden = message.length === 0;
+    });
   }
 
   private disposeRoomSetup(): void {
     if (this.roomSetup) {
-      this.clearLinkJoinTimer(this.roomSetup);
+      this.clearClosedJoinTimer(this.roomSetup);
     }
     this.roomSetup?.unsubscribe?.();
     this.roomSetup?.connection?.dispose();
@@ -1265,6 +1348,7 @@ export class TacticalShellApp {
           copyStatus: "",
           closedRoomMessage: "",
           autoEnterOnConnected: false,
+          autoHostOnClosedJoin: false,
           linkJoin: false,
         };
       } else {

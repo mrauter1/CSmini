@@ -120,6 +120,8 @@ The current originality and asset-policy record is `docs/assets.md`. The project
 - NAT traversal depends on browser WebRTC. The Worker returns default public STUN servers when TURN configuration is absent; relay-only connectivity requires externally configured TURN credentials and is not committed to this repo.
 - Cloud Room capacity is one host plus up to 13 guests.
 - Public Cloud Rooms use fixed per-map server slots. Server 1 always uses code `PXB875`; private rooms keep random codes.
+- Joining a stale or closed room link/code now promotes the joining browser into the host for that same map/code and drops directly into the arena.
+- Shared-room arena pages include a copyable invite link above Match Options for hosts and guests.
 - The signaling socket sends a keepalive every 30 seconds so active public rooms stay listed while the host tab remains online.
 - Relay/TURN usage is still detected for diagnostics, but relay-idle kicking is disabled by default while the room stability policy is refined.
 - Cloud objective state currently rides host snapshots. The protocol reserves reliable objective-event messages, but full per-mutation bomb/hostage event streaming is still a future split.

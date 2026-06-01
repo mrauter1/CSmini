@@ -43,6 +43,16 @@ npm test
 
 ## Fresh Results 2026-06-01
 
+Closed-room recovery follow-up changed stale room handling from a dead-end recovery screen to direct room takeover. A browser that opens a stale invite URL or joins a stale room code now becomes the host for that same map/code and enters the arena. Shared-room arena pages also expose a `Copy Invite Link` control above Match Options for both hosts and guests.
+
+Targeted verification for this follow-up:
+
+- `npm run typecheck`: passed
+- `npm run build`: passed and repeated the known non-blocking large `localMatch` chunk warning
+- `npm run qa:cloud-signaling`: passed with active invite guest copy-link visibility, stale invite auto-hosting, stale typed-code auto-hosting, public room list `Join Room`, and host/guest arena sync
+- `npm run qa:cloud-signaling-14`: passed with one host plus 13 guests connected, rosters at `14`, host remote count `13`, every guest remote count `13`, and delta snapshots
+- `npm test`: passed, repeating the production build and final browser QA wrapper
+
 Room stability follow-up disabled production relay-idle kicking, added a 30-second signaling keepalive, and changed public rooms to deterministic server slots. The first public room for a map is now always `Server 1` with code `PXB875`; private rooms continue to use random invite codes. Worker public-host pings refresh the public room registry so active public rooms do not disappear just because setup signaling became quiet.
 
 Targeted verification for this follow-up:

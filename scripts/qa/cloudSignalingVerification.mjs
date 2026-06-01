@@ -379,6 +379,8 @@ async function probeRoomSetupExperience() {
   const hostPage = await createPage(`${ROOT_URL}?qa=1`);
   let joinPage;
   let closedPage;
+  let codeFallbackPage;
+  let publicListPage;
 
   try {
     await hostPage.evaluate(
@@ -444,39 +446,68 @@ async function probeRoomSetupExperience() {
     await waitForRoomPhase(hostPage, "connected");
     await waitForMatch(joinPage, MAP_ID);
     await assertMatchViewportCentered(joinPage, "Invite join");
+    const guestInviteValue = await joinPage.evaluate(
+      "document.querySelector('[data-room-field=\"arena-room-url\"]')?.value ?? ''",
+    );
+    const guestInviteButton = await joinPage.evaluate(
+      "document.querySelector('[data-action=\"room-copy\"][data-field=\"arena-room-url\"]')?.textContent?.trim() ?? ''",
+    );
+    assert(
+      guestInviteButton === "Copy Invite Link" &&
+        guestInviteValue.includes(`room=${roomCode}`) &&
+        guestInviteValue.includes(`map=${MAP_ID}`),
+      `Guest arena invite copy control was missing or stale: ${JSON.stringify({ guestInviteButton, guestInviteValue })}.`,
+    );
 
     closedPage = await createPage(
       withQaParam(`${ROOT_URL}?room=ZZZZZZ&map=${MAP_ID}`),
     );
-    try {
-      await closedPage.waitForExpression(
-        "window.__dustlineQa__?.getState()?.roomSetup?.closedRoomMessage === 'Room has been closed.'",
-        8_000,
-      );
-    } catch (error) {
-      const state = await closedPage.evaluate("window.__dustlineQa__?.getState?.() ?? null");
-      throw new Error(
-        `Closed invite link did not show the closed-room message: ${JSON.stringify(state?.roomSetup ?? state)}`
-      );
-    }
-    const closedActions = await closedPage.evaluate(
-      "[...document.querySelectorAll('.room-setup__status-card [data-action]')].map((node) => node.textContent?.trim() ?? '')",
+    await waitForMatch(closedPage, MAP_ID, 12_000);
+    await assertMatchViewportCentered(closedPage, "Closed invite auto-host");
+    const closedState = await closedPage.evaluate("window.__dustlineQa__?.getState?.() ?? null");
+    const closedInviteValue = await closedPage.evaluate(
+      "document.querySelector('[data-room-field=\"arena-room-url\"]')?.value ?? ''",
     );
     assert(
-      closedActions.includes("Solo round instead") && closedActions.includes("Join another room"),
-      `Closed-room actions were ${JSON.stringify(closedActions)}.`,
+      closedState?.roomSetup?.kind === "signal-host" &&
+        closedState?.roomSetup?.roomCode === "ZZZZZZ" &&
+        closedState?.roomSetup?.connection?.role === "host" &&
+        closedInviteValue.includes("room=ZZZZZZ") &&
+        closedInviteValue.includes(`map=${MAP_ID}`),
+      `Closed invite did not auto-host the same room code: ${JSON.stringify({ roomSetup: closedState?.roomSetup, closedInviteValue })}.`,
     );
-    await closedPage.evaluate(
-      "document.querySelector('[data-action=\"room-join-another\"]')?.click()",
+
+    codeFallbackPage = await createPage(`${ROOT_URL}?qa=1`);
+    await codeFallbackPage.evaluate(
+      `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-join")`,
     );
-    await closedPage.waitForExpression(
+    await codeFallbackPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    const fallbackJoined = await codeFallbackPage.evaluate(
+      `window.__dustlineQa__.joinSignalingRoom("YYYYYY")`,
+    );
+    assert(fallbackJoined === true, "Closed room code fallback did not start the signaling join flow.");
+    await waitForMatch(codeFallbackPage, MAP_ID, 12_000);
+    const codeFallbackState = await codeFallbackPage.evaluate("window.__dustlineQa__?.getState?.() ?? null");
+    assert(
+      codeFallbackState?.roomSetup?.kind === "signal-host" &&
+        codeFallbackState?.roomSetup?.roomCode === "YYYYYY" &&
+        codeFallbackState?.roomSetup?.connection?.role === "host",
+      `Closed typed code did not auto-host the same room code: ${JSON.stringify(codeFallbackState?.roomSetup)}.`,
+    );
+
+    publicListPage = await createPage(`${ROOT_URL}?qa=1`);
+    await publicListPage.evaluate(
+      `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-join")`,
+    );
+    await publicListPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    await publicListPage.waitForExpression(
       "(window.__dustlineQa__?.getState()?.roomSetup?.publicRooms?.length ?? 0) > 0",
       8_000,
     );
-    const publicJoinButtons = await closedPage.evaluate(
+    const publicJoinButtons = await publicListPage.evaluate(
       "[...document.querySelectorAll('[data-action=\"room-join-public\"]')].map((node) => node.textContent?.trim() ?? '')",
     );
-    const publicRoomText = await closedPage.evaluate(
+    const publicRoomText = await publicListPage.evaluate(
       "document.querySelector('.room-setup__public-room')?.textContent ?? ''",
     );
     assert(
@@ -487,23 +518,32 @@ async function probeRoomSetupExperience() {
       publicRoomText.includes("Server 1") && publicRoomText.includes("PXB875"),
       `Public room row did not show fixed server/code text: ${JSON.stringify(publicRoomText)}.`,
     );
-    await closedPage.evaluate(
+    await publicListPage.evaluate(
       "document.querySelector('[data-action=\"room-join-public\"]')?.click()",
     );
-    await waitForMatch(closedPage, MAP_ID);
-    await assertMatchViewportCentered(closedPage, "Public room join");
+    await waitForMatch(publicListPage, MAP_ID);
+    await assertMatchViewportCentered(publicListPage, "Public room join");
 
     return {
       roomCode,
       inviteUrlHasCode: roomUrl.includes(`room=${roomCode}`),
       hostPhase: await hostPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
       joinScreen: await joinPage.evaluate("window.__dustlineQa__?.getState()?.screen ?? null"),
-      closedRecoveredScreen: await closedPage.evaluate("window.__dustlineQa__?.getState()?.screen ?? null"),
+      guestInviteButton,
+      closedInviteRole: closedState?.roomSetup?.connection?.role ?? null,
+      closedCodeRole: codeFallbackState?.roomSetup?.connection?.role ?? null,
+      publicJoinScreen: await publicListPage.evaluate("window.__dustlineQa__?.getState()?.screen ?? null"),
       publicJoinButtons,
       publicRoomText,
     };
   } finally {
-    await Promise.allSettled([hostPage.close(), joinPage?.close(), closedPage?.close()]);
+    await Promise.allSettled([
+      hostPage.close(),
+      joinPage?.close(),
+      closedPage?.close(),
+      codeFallbackPage?.close(),
+      publicListPage?.close(),
+    ]);
   }
 }
 

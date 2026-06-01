@@ -1472,6 +1472,40 @@ p {
   gap: 10px;
 }
 
+.match-console__invite {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  align-items: end;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.match-console__invite input {
+  width: 100%;
+  min-width: 0;
+  margin-top: 4px;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(8, 10, 8, 0.55);
+  color: var(--text);
+  font-family: "Courier New", monospace;
+  font-size: 0.76rem;
+}
+
+.match-console__invite .button {
+  white-space: nowrap;
+}
+
+.match-console__invite-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #f1d4a1;
+  font-size: 0.78rem;
+}
+
 .match-console__copy .difficulty-strip {
   margin-top: 4px;
 }
@@ -1571,6 +1605,10 @@ p {
   .room-setup__public-room small,
   .room-setup__public-room .button {
     grid-column: 2;
+  }
+
+  .match-console__invite {
+    grid-template-columns: 1fr;
   }
 
   .world-stage__viewport--match {
