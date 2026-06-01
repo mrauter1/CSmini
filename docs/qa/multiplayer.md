@@ -40,7 +40,7 @@ When `SIGNALING_URL` is unset, `qa:signaling-worker`, `qa:cloud-signaling`, and 
 
 ## Fresh ICE Candidate Follow-Up 2026-05-31
 
-Targeted follow-up for cross-network Cloud Room setup fixed the client and Worker ICE-candidate guard so browser-generated end-of-candidates markers and nullable optional candidate fields are accepted instead of surfacing `Cloud signaling rejected an oversized or invalid ICE candidate.` Candidate payload size caps remain in place.
+Targeted follow-up for cross-network Cloud Room setup fixed the client and Worker ICE-candidate guard so browser-generated end-of-candidates markers and nullable optional candidate fields no longer surface `Cloud signaling rejected an oversized or invalid ICE candidate.` The browser ICE event path skips empty completion markers during normal gathering, while the guarded signaling serializer and Worker sanitizer accept the nullable marker shape for manual/test payloads. Candidate payload size caps remain in place.
 
 Observed results:
 
