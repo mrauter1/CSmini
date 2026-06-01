@@ -8,7 +8,7 @@ const SAFE_SIGNALING_PEER_ID = /^[a-zA-Z0-9:._-]{3,96}$/;
 const SAFE_SIGNALING_MAP_ID = /^[a-z0-9-]{3,64}$/;
 const SAFE_SIGNALING_ACCENT_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const MAX_SIGNALING_NAME_LENGTH = 32;
-const MAX_SIGNALING_CANDIDATE_FIELD_BYTES = 64;
+const MAX_SIGNALING_CANDIDATE_FIELD_BYTES = 256;
 const MAX_SIGNALING_CANDIDATE_LINE_INDEX = 32;
 const UTF8 = new TextEncoder();
 
@@ -143,7 +143,7 @@ export function sanitizeSignalingIceCandidate(value: unknown): RTCIceCandidateIn
     return null;
   }
 
-  if (!value.candidate || utf8ByteLength(value.candidate) > MAX_SIGNALING_ICE_CANDIDATE_BYTES) {
+  if (utf8ByteLength(value.candidate) > MAX_SIGNALING_ICE_CANDIDATE_BYTES) {
     return null;
   }
 
@@ -151,14 +151,14 @@ export function sanitizeSignalingIceCandidate(value: unknown): RTCIceCandidateIn
     candidate: value.candidate,
   };
 
-  if (value.sdpMid !== undefined) {
+  if (value.sdpMid != null) {
     if (typeof value.sdpMid !== "string" || utf8ByteLength(value.sdpMid) > MAX_SIGNALING_CANDIDATE_FIELD_BYTES) {
       return null;
     }
     candidate.sdpMid = value.sdpMid;
   }
 
-  if (value.sdpMLineIndex !== undefined) {
+  if (value.sdpMLineIndex != null) {
     const lineIndex = value.sdpMLineIndex;
     if (
       typeof lineIndex !== "number" ||
@@ -171,7 +171,7 @@ export function sanitizeSignalingIceCandidate(value: unknown): RTCIceCandidateIn
     candidate.sdpMLineIndex = lineIndex;
   }
 
-  if (value.usernameFragment !== undefined) {
+  if (value.usernameFragment != null) {
     if (
       typeof value.usernameFragment !== "string" ||
       utf8ByteLength(value.usernameFragment) > MAX_SIGNALING_CANDIDATE_FIELD_BYTES

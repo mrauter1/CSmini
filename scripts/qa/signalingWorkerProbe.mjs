@@ -283,6 +283,26 @@ async function probeCapacityAndRelay() {
       "guest candidate relay",
     );
 
+    sendJson(host, {
+      type: "ice-candidate",
+      toPeerId: "capacity-guest-1",
+      candidate: {
+        candidate: "",
+        sdpMid: null,
+        sdpMLineIndex: null,
+        usernameFragment: null,
+      },
+    });
+    const nullableCandidate = await waitForMessage(
+      guests[0],
+      (message) =>
+        message.type === "ice-candidate" &&
+        message.fromPeerId === "capacity-host" &&
+        message.candidate?.candidate === "",
+      8_000,
+      "nullable end-of-candidates relay",
+    );
+
     return {
       acceptedGuests: guests.length,
       overflowRejected: overflowError.reason === "room-full" && overflowClose.code === CLOSE_POLICY,
@@ -297,6 +317,10 @@ async function probeCapacityAndRelay() {
         },
         hostCandidateFrom: hostCandidate.fromPeerId,
         guestCandidateFrom: guestCandidate.fromPeerId,
+        nullableCandidateFieldsDropped:
+          !("sdpMid" in nullableCandidate.candidate) &&
+          !("sdpMLineIndex" in nullableCandidate.candidate) &&
+          !("usernameFragment" in nullableCandidate.candidate),
       },
     };
   } finally {

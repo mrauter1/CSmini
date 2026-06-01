@@ -38,6 +38,19 @@ npm test
 
 When `SIGNALING_URL` is unset, `qa:signaling-worker`, `qa:cloud-signaling`, and `qa:cloud-signaling-14` now launch a local `wrangler dev --local` signaling Worker automatically and point the browser QA harness at `http://127.0.0.1:8787`. Setting `SIGNALING_URL` still overrides that default when a verifier intentionally wants the deployed service or another custom endpoint.
 
+## Fresh ICE Candidate Follow-Up 2026-05-31
+
+Targeted follow-up for cross-network Cloud Room setup fixed the client and Worker ICE-candidate guard so browser-generated end-of-candidates markers and nullable optional candidate fields are accepted instead of surfacing `Cloud signaling rejected an oversized or invalid ICE candidate.` Candidate payload size caps remain in place.
+
+Observed results:
+
+- `npm run build`: passed and repeated the known non-blocking large `localMatch` chunk warning
+- `npm run qa:signaling-worker`: passed with `nullableCandidateFieldsDropped: true` on the ICE relay probe
+- `npm run qa:cloud-signaling`: passed with host/guest phases `connected`, rosters at `2`, remotes at `1`, `guestInputCadenceTicks: 4`, delta snapshots, and a client-side nullable ICE marker reaching signaling instead of failing local validation
+- `npm run qa:cloud-signaling-14`: passed with one host plus 13 guests connected, rosters at `14`, host remote count `13`, every guest remote count `13`, `guestInputCadenceTicks: 4`, and delta snapshots
+
+The cloud-signaling browser harness now chooses run-specific preview/debug ports so an unrelated local server on `4173` cannot make it load the wrong app during QA. Its input-cadence check waits for a bounded tick target after focusing the guest tab instead of depending on a single `180ms` wall-clock window.
+
 ## Current Hardened-Path Verification Run
 
 The current abuse-hardening evidence was refreshed against a local Worker built from this repo so the verifier does not depend on the deployed service state:

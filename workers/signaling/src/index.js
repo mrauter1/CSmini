@@ -18,6 +18,7 @@ const MAX_ICE_CREDENTIAL_LENGTH = 256;
 const MAX_RAW_MESSAGE_BYTES = 24 * 1024;
 const MAX_SDP_DESCRIPTION_BYTES = 12 * 1024;
 const MAX_ICE_CANDIDATE_BYTES = 2 * 1024;
+const MAX_ICE_CANDIDATE_FIELD_BYTES = 256;
 // The 10 s rate window is long enough to absorb a real room-setup burst, and 384 messages / 256 KiB
 // per socket still gives a host room for 13 targeted offers plus trickled ICE while cutting off
 // sustained spam quickly. 256 KiB also allows about twenty-one near-max SDP payloads in one window,
@@ -968,7 +969,7 @@ function sanitizeIceCandidate(value) {
     return null;
   }
 
-  if (!value.candidate || utf8Bytes(value.candidate) > MAX_ICE_CANDIDATE_BYTES) {
+  if (utf8Bytes(value.candidate) > MAX_ICE_CANDIDATE_BYTES) {
     return null;
   }
 
@@ -976,22 +977,25 @@ function sanitizeIceCandidate(value) {
     candidate: value.candidate,
   };
 
-  if (value.sdpMid !== undefined) {
-    if (typeof value.sdpMid !== "string" || utf8Bytes(value.sdpMid) > 64) {
+  if (value.sdpMid != null) {
+    if (typeof value.sdpMid !== "string" || utf8Bytes(value.sdpMid) > MAX_ICE_CANDIDATE_FIELD_BYTES) {
       return null;
     }
     candidate.sdpMid = value.sdpMid;
   }
 
-  if (value.sdpMLineIndex !== undefined) {
+  if (value.sdpMLineIndex != null) {
     if (!Number.isInteger(value.sdpMLineIndex) || value.sdpMLineIndex < 0 || value.sdpMLineIndex > 32) {
       return null;
     }
     candidate.sdpMLineIndex = value.sdpMLineIndex;
   }
 
-  if (value.usernameFragment !== undefined) {
-    if (typeof value.usernameFragment !== "string" || utf8Bytes(value.usernameFragment) > 64) {
+  if (value.usernameFragment != null) {
+    if (
+      typeof value.usernameFragment !== "string" ||
+      utf8Bytes(value.usernameFragment) > MAX_ICE_CANDIDATE_FIELD_BYTES
+    ) {
       return null;
     }
     candidate.usernameFragment = value.usernameFragment;
