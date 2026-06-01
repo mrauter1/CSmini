@@ -413,6 +413,7 @@ export function createSignaledHostMatchRoomConnection(
   localTeam: TeamAssignment,
   visibility: CloudRoomVisibility = "private",
   mapName = mapId,
+  publicSlot = 0,
 ): MatchRoomConnection {
   const transport = new SignaledWebRtcRoomTransport(
     {
@@ -421,6 +422,7 @@ export function createSignaledHostMatchRoomConnection(
       mapId,
       roomCode,
       mapName,
+      publicSlot,
       visibility,
       localParticipant: identity,
       sessionLabel,
@@ -554,7 +556,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   private relayIdleWarningMs = RELAY_IDLE_WARNING_MS;
   private relayIdleDisconnectMs = RELAY_IDLE_DISCONNECT_MS;
   private relayIdleForceRelay = false;
-  private relayIdleDisabled = false;
+  private relayIdleDisabled = true;
   private pendingSnapshotSignature = "";
   private lastSentSnapshotSignature = "";
   private lastFullSnapshotSentAt = 0;

@@ -1,4 +1,5 @@
 import { isValidSignalingMapId } from "./signalingConfig";
+import { publicRoomSlotForCode } from "./publicRoomSlots";
 
 export interface PublicRoomSummary {
   roomId: string;
@@ -8,6 +9,7 @@ export interface PublicRoomSummary {
   hostPeerId: string;
   hostName: string;
   hostAccentColor: string;
+  publicSlot: number;
   participantCount: number;
   maxPeers: number;
   createdAt: number;
@@ -56,6 +58,7 @@ function toPublicRoomSummary(value: unknown): PublicRoomSummary | null {
   const mapId = stringField(value.mapId);
   const mapName = stringField(value.mapName);
   const hostName = stringField(value.hostName);
+  const publicSlot = integerField(value.publicSlot);
   const participantCount = integerField(value.participantCount);
   const maxPeers = integerField(value.maxPeers);
 
@@ -71,6 +74,7 @@ function toPublicRoomSummary(value: unknown): PublicRoomSummary | null {
     hostPeerId: stringField(value.hostPeerId),
     hostName,
     hostAccentColor: stringField(value.hostAccentColor) || "#CFA66F",
+    publicSlot: publicSlot || (publicRoomSlotForCode(roomCode)?.slot ?? 0),
     participantCount,
     maxPeers,
     createdAt: integerField(value.createdAt),

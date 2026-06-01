@@ -40,6 +40,9 @@ function toSocketUrl(baseUrl, roomId, role, peerId, name, options = {}) {
   if (options.roomCode) {
     url.searchParams.set("roomCode", options.roomCode);
   }
+  if (options.publicSlot) {
+    url.searchParams.set("publicSlot", String(options.publicSlot));
+  }
   if (options.mapName) {
     url.searchParams.set("mapName", options.mapName);
   }
@@ -229,10 +232,11 @@ async function probeTurnCredentials() {
 
 async function probePublicRoomsRegistry() {
   const roomId = createRoomId("public");
-  const roomCode = "PUB234";
+  const roomCode = "PXB875";
   const host = openSocket(roomId, "host", "public-host", "PublicHost", {
     visibility: "public",
     roomCode,
+    publicSlot: 1,
     mapName: "Sandline Foundry",
   });
   let guest;
@@ -242,9 +246,22 @@ async function probePublicRoomsRegistry() {
     await waitForMessage(host, (message) => message.type === "ready", 8_000, "public host ready");
 
     const listedRoom = await waitForPublicRoom(
-      (rooms) => rooms.find((room) => room.roomCode === roomCode),
+      (rooms) => rooms.find((room) => room.roomCode === roomCode && room.publicSlot === 1),
       8_000,
       "public room listing",
+    );
+    host.socket.send(JSON.stringify({ type: "ping" }));
+    await waitForMessage(host, (message) => message.type === "pong", 8_000, "public host pong");
+    const refreshedRoom = await waitForPublicRoom(
+      (rooms) =>
+        rooms.find(
+          (room) =>
+            room.roomCode === roomCode &&
+            room.publicSlot === 1 &&
+            room.expiresAt > listedRoom.expiresAt,
+        ),
+      8_000,
+      "public room ping refresh",
     );
 
     guest = openSocket(roomId, "guest", "public-guest", "PublicGuest");
@@ -269,7 +286,10 @@ async function probePublicRoomsRegistry() {
 
     return {
       roomCode: listedRoom.roomCode,
+      publicSlot: listedRoom.publicSlot,
       hostName: listedRoom.hostName,
+      expiresAtBeforePing: listedRoom.expiresAt,
+      expiresAtAfterPing: refreshedRoom.expiresAt,
       participantCountAfterJoin: joinedRoom.participantCount,
     };
   } finally {

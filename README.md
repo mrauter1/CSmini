@@ -7,7 +7,7 @@ Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The cu
 - Teams: `Amber Vanguard` and `Cobalt Reach`
 - Modes:
   - `Room Setup`: shared-mode entry exposes `Create Room` and `Join Room`
-  - `Cloud Room`: a host creates a private or public room through the signaling Worker; private rooms are shared by code or invite URL, public rooms appear in the room list, and gameplay runs peer-to-peer over WebRTC DataChannels
+  - `Cloud Room`: a host creates a private or public room through the signaling Worker; private rooms are shared by random code or invite URL, public rooms use fixed server slots/codes in the room list, and gameplay runs peer-to-peer over WebRTC DataChannels
   - `Solo Round`: local play with a lightweight enemy fireteam and a browser-saved `easy` / `medium` / `hard` bot selector (`medium` default)
 - Round shell:
   - briefing
@@ -119,7 +119,9 @@ The current originality and asset-policy record is `docs/assets.md`. The project
 - Cloud Rooms are browser-hosted peer sessions with a public listing, not neutral-server matchmaking. The host is authoritative for game state, but a malicious host can still cheat because there is no neutral server authority.
 - NAT traversal depends on browser WebRTC. The Worker returns default public STUN servers when TURN configuration is absent; relay-only connectivity requires externally configured TURN credentials and is not committed to this repo.
 - Cloud Room capacity is one host plus up to 13 guests.
-- Rooms using at least one active TURN/relay path disconnect inactive relay peers after 240 seconds without gameplay input; the counter resets while no relay path is active.
+- Public Cloud Rooms use fixed per-map server slots. Server 1 always uses code `PXB875`; private rooms keep random codes.
+- The signaling socket sends a keepalive every 30 seconds so active public rooms stay listed while the host tab remains online.
+- Relay/TURN usage is still detected for diagnostics, but relay-idle kicking is disabled by default while the room stability policy is refined.
 - Cloud objective state currently rides host snapshots. The protocol reserves reliable objective-event messages, but full per-mutation bomb/hostage event streaming is still a future split.
 - Solo bot difficulty is currently a solo-local setting only; shared-room sessions remain human-only across tabs.
 - Tactical AI verification is focused on solo-local rounds, not on shared-room opponent bots.

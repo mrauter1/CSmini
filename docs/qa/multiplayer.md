@@ -43,6 +43,17 @@ npm test
 
 ## Fresh Results 2026-06-01
 
+Room stability follow-up disabled production relay-idle kicking, added a 30-second signaling keepalive, and changed public rooms to deterministic server slots. The first public room for a map is now always `Server 1` with code `PXB875`; private rooms continue to use random invite codes. Worker public-host pings refresh the public room registry so active public rooms do not disappear just because setup signaling became quiet.
+
+Targeted verification for this follow-up:
+
+- `npm run typecheck`: passed
+- `npm run build`: passed and repeated the known non-blocking large `localMatch` chunk warning
+- `npm run qa:signaling-worker`: passed with public room code `PXB875`, public slot `1`, public-room expiry refresh after host `ping`, room-cap, relay, role, size, rate, and ICE-budget guardrails
+- `npm run qa:cloud-signaling`: passed with `Server 1` / `PXB875` visible in the public room row, invite auto-entry, closed-link recovery, default-disabled relay idle, QA-forced relay-idle coverage, and host/guest sync
+- `npm run qa:cloud-signaling-14`: passed with `PXB875`, one host plus 13 guests connected, rosters at `14`, host remote count `13`, every guest remote count `13`, and delta snapshots
+- `npm test`: passed on rerun after the first sandboxed preview server attempt timed out before app QA started; the successful run rebuilt, completed final browser QA, and refreshed screenshots
+
 Cloud Room UI follow-up tightened the default join-first room flow and fixed a client-shot race. `Join Room` is now the default room setup tab, `Public Room` is the default create mode, setup no longer shows the map preview image, public room rows have explicit `Join Room` actions, invite links auto-enter active rooms, and closed invite links show `Room has been closed.` with `Solo round instead` and `Join another room` recovery actions.
 
 The shared shot claim payload now includes the guest's firing look vector. The host still validates aim, input freshness, origin drift, line of sight, weapon state, and timing, but a valid client shot no longer depends on the guest latest-state look packet arriving before the reliable shot claim.

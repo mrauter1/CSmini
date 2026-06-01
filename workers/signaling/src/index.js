@@ -110,6 +110,7 @@ export class RoomObject extends DurableObject {
       normalizeToken(url.searchParams.get("accentColor"), SAFE_ACCENT_COLOR) || DEFAULT_ACCENT_COLOR;
     const visibility = url.searchParams.get("visibility") === "public" ? "public" : "private";
     const roomCode = normalizeToken(url.searchParams.get("roomCode"), SAFE_ROOM_CODE);
+    const publicSlot = readInteger(url.searchParams.get("publicSlot"), 0, MAX_PUBLIC_ROOMS);
     const mapName = normalizeDisplayText(url.searchParams.get("mapName"), 64);
 
     if (!roomId || !peerId || (role !== "host" && role !== "guest") || !mapId || !name) {
@@ -129,6 +130,7 @@ export class RoomObject extends DurableObject {
       role,
       mapId,
       roomCode,
+      publicSlot,
       mapName,
       visibility,
       participant: {
@@ -306,6 +308,9 @@ export class RoomObject extends DurableObject {
         type: "pong",
         serverTime: now,
       });
+      if (trackedSession.role === "host" && trackedSession.visibility === "public") {
+        this.queuePublicRoomSync();
+      }
       return;
     }
 
@@ -716,6 +721,7 @@ export class RoomObject extends DurableObject {
       body: JSON.stringify({
         roomId: this.roomId,
         roomCode: host.session.roomCode,
+        publicSlot: host.session.publicSlot,
         mapId: host.session.mapId,
         mapName: host.session.mapName,
         hostPeerId: host.session.peerId,
@@ -1160,6 +1166,7 @@ function sanitizePublicRoom(value, stored = false) {
 
   const roomId = normalizeToken(value.roomId, SAFE_ROOM_ID);
   const roomCode = normalizeToken(value.roomCode, SAFE_ROOM_CODE);
+  const publicSlot = clampInteger(value.publicSlot, 0, MAX_PUBLIC_ROOMS);
   const mapId = normalizeToken(value.mapId, SAFE_MAP_ID);
   const mapName = normalizeDisplayText(value.mapName, 64);
   const hostPeerId = normalizeToken(value.hostPeerId, SAFE_PEER_ID);
@@ -1179,6 +1186,7 @@ function sanitizePublicRoom(value, stored = false) {
   return {
     roomId,
     roomCode,
+    publicSlot,
     mapId,
     mapName,
     hostPeerId,
@@ -1194,6 +1202,11 @@ function sanitizePublicRoom(value, stored = false) {
 
 function clampInteger(value, min, max) {
   return Number.isInteger(value) ? Math.min(max, Math.max(min, value)) : min;
+}
+
+function readInteger(value, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : min;
 }
 
 function clampTimestamp(value) {

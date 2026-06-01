@@ -38,10 +38,11 @@ The local `BroadcastChannel` path remains available through QA/debug hooks for s
 Relay idle policy:
 
 - Each browser samples selected WebRTC candidate pairs through transport debug telemetry.
-- The idle timer only runs for peers with an active `relay` candidate on either side of the selected pair.
-- Gameplay input, shot claims, and objective events reset the timer; automatic heartbeats and host snapshots do not.
-- Relay-idle peers are warned after 180 seconds and disconnected after 240 seconds without gameplay input.
-- If no TURN/relay candidate pair is active, the relay-idle clock is reset and stopped for that room.
+- Relay/TURN usage remains visible through debug snapshots for diagnostics.
+- Production relay-idle kicking is disabled by default because tactical inactivity can be legitimate gameplay.
+- The old warning/disconnect policy remains available only through QA hooks that explicitly force relay-idle behavior.
+- Cloud signaling sends a keepalive every 30 seconds; public-host keepalives refresh the Worker-backed public room listing.
+- Public Cloud Rooms use deterministic per-map server slots. Server 1 always uses code `PXB875`; private rooms keep random codes.
 
 ## Transport And Protocol
 
@@ -52,7 +53,7 @@ The room foundation lives in `src/net/`:
 - `broadcastTransport.ts`: same-browser dev transport
 - `webrtcTransport.ts`: manual offer/answer transport
 - `signaledWebRtcTransport.ts`: Cloud Room signaling transport
-- `matchRoomConnection.ts`: room/session orchestration, host authority, compact snapshots, relay-idle enforcement, and ownership checks
+- `matchRoomConnection.ts`: room/session orchestration, host authority, compact snapshots, relay diagnostics, and ownership checks
 - `publicRooms.ts`: client fetch/validation for the public room registry
 - `manualSignaling.ts`, `signalingConfig.ts`, `iceServers.ts`, `webrtcStats.ts`: setup and diagnostics helpers
 

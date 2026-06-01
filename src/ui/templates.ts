@@ -11,6 +11,7 @@ import type {
   RoomConnectionUiSnapshot,
 } from "../net/matchRoomConnection";
 import type { PublicRoomSummary } from "../net/publicRooms";
+import { publicRoomSlotLabel } from "../net/publicRoomSlots";
 import { TEAM_ORDER, getTeamDefinition, teamPreferenceLabel } from "../game/teams";
 import { crouchControlLabel } from "../game/controls";
 import type { MapDefinition, TeamPreference } from "../types";
@@ -20,6 +21,7 @@ export interface RoomSetupRenderState {
   map: MapDefinition;
   selectedKind: RoomConnectionKind;
   visibility: CloudRoomVisibility;
+  publicSlot: number;
   supportError: string;
   copyStatus: string;
   roomCode: string;
@@ -398,13 +400,14 @@ function renderSignalJoinPanel(state: RoomSetupRenderState): string {
 
 function publicRoomRow(room: PublicRoomSummary): string {
   const slots = `${room.participantCount}/${room.maxPeers}`;
+  const serverLabel = publicRoomSlotLabel(room.publicSlot);
   return `
     <div
       class="room-setup__public-room"
     >
       <span class="room-setup__public-accent" style="background:${escapeHtml(room.hostAccentColor)}"></span>
       <div>
-        <strong>${escapeHtml(room.hostName)}</strong>
+        <strong>${escapeHtml(serverLabel)} · ${escapeHtml(room.hostName)}</strong>
         <small>${escapeHtml(room.roomCode)} · ${escapeHtml(slots)}</small>
       </div>
       <button

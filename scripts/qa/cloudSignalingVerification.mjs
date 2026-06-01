@@ -328,6 +328,14 @@ async function waitForMatch(page, mapId, timeoutMs = 15_000) {
   );
 }
 
+async function waitForRoomCode(page, timeoutMs = 8_000) {
+  await page.waitForExpression(
+    "typeof window.__dustlineQa__.getRoomCode() === 'string'",
+    timeoutMs,
+  );
+  return page.evaluate("window.__dustlineQa__.getRoomCode()");
+}
+
 async function assertMatchViewportCentered(page, label) {
   const geometry = await page.evaluate(`
     (() => {
@@ -393,6 +401,10 @@ async function probeRoomSetupExperience() {
       `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
     );
     await hostPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    await hostPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.roomSetup?.roomCode === 'PXB875'",
+      8_000,
+    );
 
     const setupText = await hostPage.evaluate("document.body.innerText.toLowerCase()");
     assert(setupText.includes("private room"), "Room setup should expose private room creation.");
@@ -414,11 +426,15 @@ async function probeRoomSetupExperience() {
       `Room visibility order was ${JSON.stringify(visibilityLabels)}.`,
     );
 
+    const publicSlot = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.roomSetup?.publicSlot ?? 0",
+    );
     const roomCode = await hostPage.evaluate("window.__dustlineQa__.getRoomCode()");
     const roomUrl = await hostPage.evaluate(
       "document.querySelector('[data-room-field=\"room-url-output\"]')?.value ?? ''",
     );
-    assert(typeof roomCode === "string" && roomCode.length >= 6, "Room setup did not generate a room code.");
+    assert(publicSlot === 1, `First public room slot was ${publicSlot}.`);
+    assert(roomCode === "PXB875", `First public room code was ${roomCode}.`);
     assert(
       typeof roomUrl === "string" && roomUrl.includes(`room=${roomCode}`) && roomUrl.includes(`map=${MAP_ID}`),
       "Room setup did not generate a usable invite URL.",
@@ -460,9 +476,16 @@ async function probeRoomSetupExperience() {
     const publicJoinButtons = await closedPage.evaluate(
       "[...document.querySelectorAll('[data-action=\"room-join-public\"]')].map((node) => node.textContent?.trim() ?? '')",
     );
+    const publicRoomText = await closedPage.evaluate(
+      "document.querySelector('.room-setup__public-room')?.textContent ?? ''",
+    );
     assert(
       publicJoinButtons.includes("Join Room"),
       `Public room rows did not expose Join Room buttons: ${JSON.stringify(publicJoinButtons)}.`,
+    );
+    assert(
+      publicRoomText.includes("Server 1") && publicRoomText.includes("PXB875"),
+      `Public room row did not show fixed server/code text: ${JSON.stringify(publicRoomText)}.`,
     );
     await closedPage.evaluate(
       "document.querySelector('[data-action=\"room-join-public\"]')?.click()",
@@ -477,6 +500,7 @@ async function probeRoomSetupExperience() {
       joinScreen: await joinPage.evaluate("window.__dustlineQa__?.getState()?.screen ?? null"),
       closedRecoveredScreen: await closedPage.evaluate("window.__dustlineQa__?.getState()?.screen ?? null"),
       publicJoinButtons,
+      publicRoomText,
     };
   } finally {
     await Promise.allSettled([hostPage.close(), joinPage?.close(), closedPage?.close()]);
@@ -488,6 +512,7 @@ async function probeOutboundSignalingGuardrail(page) {
     `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
   );
   await page.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+  await waitForRoomCode(page);
   await waitForRoomPhase(page, "waiting");
 
   const sent = await page.evaluate(
@@ -521,6 +546,7 @@ async function probeOutboundNullableIceCandidate(page) {
     `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
   );
   await page.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+  await waitForRoomCode(page);
   await waitForRoomPhase(page, "waiting");
 
   const sent = await page.evaluate(
@@ -556,6 +582,7 @@ async function probeInboundSignalingGuardrail(page) {
     `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
   );
   await page.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+  await waitForRoomCode(page);
   await waitForRoomPhase(page, "waiting");
 
   for (let index = 0; index < 4; index += 1) {
@@ -659,6 +686,10 @@ async function probeRelayIdlePolicy() {
       `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
     );
     await hostPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    await hostPage.waitForExpression(
+      "typeof window.__dustlineQa__.getRoomCode() === 'string'",
+      8_000,
+    );
     const roomCode = await hostPage.evaluate("window.__dustlineQa__.getRoomCode()");
     assert(typeof roomCode === "string" && roomCode.length >= 6, "Relay-idle host room code was not generated.");
 
@@ -682,6 +713,10 @@ async function probeRelayIdlePolicy() {
       "(window.__dustlineQa__?.getState()?.match?.remotePlayers?.length ?? 0) === 1",
       10_000,
     );
+    const defaultRelayIdle = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection?.relayIdle ?? null",
+    );
+    assert(defaultRelayIdle?.disabled === true, "Relay-idle kicking should be disabled by default.");
 
     const configured = await hostPage.evaluate(
       `window.__dustlineQa__.configureRelayIdleQa(${JSON.stringify({
@@ -752,6 +787,8 @@ async function main() {
   try {
     let guardrails = null;
     if (GUEST_COUNT === 1) {
+      const roomSetupExperience = await probeRoomSetupExperience();
+
       const outboundProbePage = await createPage(`${ROOT_URL}?qa=1`);
       pages.push(outboundProbePage);
       const outboundOfferRejected = await probeOutboundSignalingGuardrail(outboundProbePage);
@@ -767,7 +804,6 @@ async function main() {
       const repeatedInvalidSignaling = await probeInboundSignalingGuardrail(inboundProbePage);
       await inboundProbePage.close();
 
-      const roomSetupExperience = await probeRoomSetupExperience();
       const relayIdlePolicy = await probeRelayIdlePolicy();
 
       guardrails = {
@@ -790,7 +826,7 @@ async function main() {
       `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
     );
     await hostPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
-    const roomCode = await hostPage.evaluate("window.__dustlineQa__.getRoomCode()");
+    const roomCode = await waitForRoomCode(hostPage);
     assert(typeof roomCode === "string" && roomCode.length >= 6, "Host room code was not generated.");
 
     for (const [index, joinPage] of joinPages.entries()) {

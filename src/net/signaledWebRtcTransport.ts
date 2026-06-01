@@ -45,6 +45,7 @@ interface SignaledWebRtcTransportOptions {
   mapId: string;
   roomCode?: string;
   mapName?: string;
+  publicSlot?: number;
   visibility?: "private" | "public";
   sessionLabel: string;
   localParticipant: ParticipantIdentity;
@@ -155,6 +156,7 @@ const MAX_PENDING_REMOTE_ICE_CANDIDATES = 64;
 const GUEST_OFFER_WAIT_MS = 5_000;
 const GUEST_OFFER_RETRY_DELAY_MS = 350;
 const GUEST_OFFER_RETRY_LIMIT = 3;
+const SIGNALING_KEEPALIVE_MS = 30_000;
 
 export function detectSignaledWebRtcSupport(): { supported: boolean; reason: string } {
   if (typeof WebSocket === "undefined") {
@@ -196,6 +198,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   private readonly iceServersPromise: Promise<RTCIceServer[]>;
   private readonly directFirstIce = shouldUseDirectFirstIce();
   private telemetryTimer = 0;
+  private signalingKeepaliveTimer = 0;
   private guestOfferWatchdogTimer = 0;
   private guestReconnectTimer = 0;
   private guestOfferRetries = 0;
@@ -330,6 +333,9 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
       url.searchParams.set("visibility", "public");
       url.searchParams.set("roomCode", this.options.roomCode ?? "");
       url.searchParams.set("mapName", this.options.mapName ?? this.options.mapId);
+      if (this.options.publicSlot && this.options.publicSlot > 0) {
+        url.searchParams.set("publicSlot", String(this.options.publicSlot));
+      }
     }
 
     this.socket = new WebSocket(url);
@@ -353,6 +359,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     this.cancelGuestOfferWatchdog();
     this.cancelGuestReconnect();
     this.stopTelemetry();
+    this.stopSignalingKeepalive();
     for (const peer of [...this.peers.values()]) {
       this.closePeer(peer, reason, false);
     }
@@ -397,6 +404,27 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
 
     window.clearInterval(this.telemetryTimer);
     this.telemetryTimer = 0;
+  }
+
+  private startSignalingKeepalive(): void {
+    this.stopSignalingKeepalive();
+    this.sendSignal({ type: "ping" });
+    this.signalingKeepaliveTimer = window.setInterval(() => {
+      if (this.closed || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      this.sendSignal({ type: "ping" });
+    }, SIGNALING_KEEPALIVE_MS);
+  }
+
+  private stopSignalingKeepalive(): void {
+    if (!this.signalingKeepaliveTimer) {
+      return;
+    }
+
+    window.clearInterval(this.signalingKeepaliveTimer);
+    this.signalingKeepaliveTimer = 0;
   }
 
   private sampleTelemetry(): void {
@@ -973,7 +1001,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
         ? "Cloud room is online. Waiting for guests."
         : "Connected to signaling. Waiting for the host offer.",
     );
-    this.sendSignal({ type: "ping" });
+    this.startSignalingKeepalive();
   };
 
   private readonly handleSocketMessage = (event: MessageEvent<unknown>): void => {
@@ -1097,6 +1125,9 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     if (this.closed) {
       return;
     }
+
+    this.stopSignalingKeepalive();
+    this.socket = undefined;
 
     if (this.firstOpenPeer()) {
       this.updateAggregateStatus();
