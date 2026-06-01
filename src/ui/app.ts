@@ -24,15 +24,18 @@ import {
   createSignaledJoinMatchRoomConnection,
   detectSharedRoomSupport,
   normalizeRoomCode,
+  type CloudRoomVisibility,
   type HostMatchRoomConnection,
   type JoinMatchRoomConnection,
   type LatestStateQaConfig,
   type LatestStateQaDirection,
   type MatchMode,
   type MatchRoomConnection,
+  type RelayIdleQaConfig,
   type RoomConnectionKind,
   type SharedRoomHandlers,
 } from "../net/matchRoomConnection";
+import { fetchPublicRooms, type PublicRoomSummary } from "../net/publicRooms";
 import { getSignalingServiceUrl } from "../net/signalingConfig";
 import { getTeamDefinition, isTeamId, resolveTeamPreference, teamPreferenceLabel } from "../game/teams";
 import type { MapDefinition, TeamPreference } from "../types";
@@ -47,8 +50,13 @@ type Screen = "menu" | "catalog" | "room" | "stage";
 
 interface RoomSetupState {
   kind: RoomConnectionKind;
+  visibility: CloudRoomVisibility;
   roomCode: string;
+  roomUrl: string;
   signalingUrl: string;
+  publicRooms: PublicRoomSummary[];
+  publicRoomsStatus: string;
+  publicRoomsError: string;
   connection?: MatchRoomConnection;
   supportError: string;
   copyStatus: string;
@@ -99,6 +107,10 @@ export class TacticalShellApp {
   }
 
   mount(): void {
+    if (this.applyInitialRoomLink()) {
+      return;
+    }
+
     this.render();
   }
 
@@ -107,6 +119,29 @@ export class TacticalShellApp {
     this.disposeRoomSetup();
     this.root.removeEventListener("click", this.handleClick);
     window.removeEventListener("keydown", this.handleFullscreenShortcut);
+  }
+
+  private applyInitialRoomLink(): boolean {
+    let params: URLSearchParams;
+    try {
+      params = new URLSearchParams(window.location.search);
+    } catch {
+      return false;
+    }
+
+    const roomCode = normalizeRoomCode(
+      params.get("room") ?? params.get("roomCode") ?? params.get("code") ?? "",
+    );
+    if (!roomCode) {
+      return false;
+    }
+
+    this.activeMapId = getMapById(params.get("map") ?? this.activeMapId).id;
+    this.activeMode = "shared";
+    this.screen = "room";
+    this.selectRoomKind("signal-join");
+    this.connectSignalingRoom(roomCode);
+    return true;
   }
 
   private readonly handleClick = (event: Event): void => {
@@ -129,6 +164,7 @@ export class TacticalShellApp {
     const mode = this.readMode(actionButton.dataset.mode);
     const team = this.readTeamPreference(actionButton.dataset.team);
     const botDifficulty = this.readBotDifficulty(actionButton.dataset.botDifficulty);
+    const roomVisibility = this.readRoomVisibility(actionButton.dataset.roomVisibility);
 
     switch (action) {
       case "show-menu":
@@ -171,6 +207,11 @@ export class TacticalShellApp {
       case "select-room-kind":
         this.selectRoomKind(this.readRoomKind(actionButton.dataset.roomKind));
         return;
+      case "set-room-visibility":
+        if (roomVisibility) {
+          this.selectRoomVisibility(roomVisibility);
+        }
+        return;
       case "room-generate-offer":
         void this.generateRoomOffer();
         return;
@@ -185,6 +226,14 @@ export class TacticalShellApp {
         return;
       case "room-connect-signaling":
         this.connectSignalingRoom();
+        return;
+      case "room-refresh-public":
+        void this.refreshPublicRooms();
+        return;
+      case "room-join-public":
+        if (actionButton.dataset.roomCode) {
+          this.connectSignalingRoom(actionButton.dataset.roomCode);
+        }
         return;
       case "enter-room-stage":
         if (this.canEnterStage()) {
@@ -237,18 +286,23 @@ export class TacticalShellApp {
         {
           map,
           selectedKind: this.roomSetup?.kind ?? "signal-host",
+          visibility: this.roomSetup?.visibility ?? "private",
           supportError: this.roomSetup?.supportError ?? "",
           copyStatus: this.roomSetup?.copyStatus ?? "",
           roomCode: this.roomSetup?.roomCode ?? "",
+          roomUrl: this.roomSetup?.roomUrl ?? this.buildRoomUrl(this.roomSetup?.roomCode ?? "", map.id),
           signalingUrl: this.roomSetup?.signalingUrl ?? getSignalingServiceUrl(),
+          publicRooms: this.roomSetup?.publicRooms ?? [],
+          publicRoomsStatus: this.roomSetup?.publicRoomsStatus ?? "",
+          publicRoomsError: this.roomSetup?.publicRoomsError ?? "",
           connection: this.roomSetup?.connection?.uiSnapshot,
           canEnterArena: this.canEnterStage(),
           teamLabel: teamPreferenceLabel(this.teamPreference),
           operatorName: this.operatorIdentity.name,
           entryHint:
-            this.roomSetup?.kind === "broadcast"
-              ? "Same-browser dev rooms can enter the live arena immediately and keep host authority in the active tab."
-              : "Host rooms can enter the arena immediately. Joiners can enter once the transport reaches connected.",
+            this.roomSetup?.kind === "signal-host"
+              ? "Host rooms can enter the arena immediately. Public rooms appear in the listing while the host tab stays open."
+              : "Joiners can enter once the transport reaches connected.",
         },
       );
       return;
@@ -539,6 +593,8 @@ export class TacticalShellApp {
     }
 
     const previousRoomCode = this.roomSetup?.roomCode ?? "";
+    const previousVisibility = this.roomSetup?.visibility ?? "private";
+    const previousPublicRooms = this.roomSetup?.publicRooms ?? [];
     this.disposeRoomSetup();
 
     const support = detectSharedRoomSupport(kind);
@@ -550,18 +606,53 @@ export class TacticalShellApp {
           : "";
     const state: RoomSetupState = {
       kind,
+      visibility: kind === "signal-host" ? previousVisibility : "private",
       roomCode,
+      roomUrl: this.buildRoomUrl(roomCode, map.id),
       signalingUrl: getSignalingServiceUrl(),
+      publicRooms: previousPublicRooms,
+      publicRoomsStatus: "",
+      publicRoomsError: "",
       supportError: support.supported ? "" : support.reason,
       copyStatus: "",
     };
 
     if (support.supported && kind !== "signal-join") {
-      this.attachRoomConnection(state, this.createRoomConnection(kind, map, roomCode));
+      this.attachRoomConnection(
+        state,
+        this.createRoomConnection(kind, map, roomCode, state.visibility),
+      );
     }
 
     this.roomSetup = state;
     this.screen = "room";
+    this.render();
+    if (kind === "signal-join") {
+      void this.refreshPublicRooms();
+    }
+  }
+
+  private selectRoomVisibility(visibility: CloudRoomVisibility): void {
+    if (!this.roomSetup || this.roomSetup.kind !== "signal-host") {
+      return;
+    }
+
+    if (this.roomSetup.visibility === visibility) {
+      return;
+    }
+
+    const map = getMapById(this.activeMapId);
+    const roomCode = this.roomSetup.roomCode || createRoomCode();
+    this.roomSetup.connection?.dispose();
+    this.roomSetup.visibility = visibility;
+    this.roomSetup.roomCode = roomCode;
+    this.roomSetup.roomUrl = this.buildRoomUrl(roomCode, map.id);
+    this.roomSetup.copyStatus = "";
+    this.roomSetup.supportError = "";
+    this.attachRoomConnection(
+      this.roomSetup,
+      this.createRoomConnection("signal-host", map, roomCode, visibility),
+    );
     this.render();
   }
 
@@ -569,6 +660,7 @@ export class TacticalShellApp {
     kind: RoomConnectionKind,
     map: MapDefinition,
     roomCode = "",
+    visibility: CloudRoomVisibility = "private",
   ): MatchRoomConnection | undefined {
     const preferredTeam = resolveTeamPreference(this.teamPreference, []);
     switch (kind) {
@@ -583,6 +675,8 @@ export class TacticalShellApp {
           getSignalingServiceUrl(),
           normalizedCode,
           preferredTeam,
+          visibility,
+          map.name,
         );
       }
       case "signal-join": {
@@ -685,6 +779,7 @@ export class TacticalShellApp {
     }
 
     this.roomSetup.roomCode = normalizedCode;
+    this.roomSetup.roomUrl = this.buildRoomUrl(normalizedCode, this.activeMapId);
     this.roomSetup.copyStatus = "";
     this.roomSetup.supportError = "";
     this.roomSetup.connection?.dispose();
@@ -696,6 +791,56 @@ export class TacticalShellApp {
     if (this.screen === "room") {
       this.render();
     }
+  }
+
+  private async refreshPublicRooms(): Promise<void> {
+    if (!this.roomSetup) {
+      return;
+    }
+
+    const state = this.roomSetup;
+    state.publicRoomsStatus = "Checking public rooms.";
+    state.publicRoomsError = "";
+    if (this.screen === "room") {
+      this.render();
+    }
+
+    try {
+      const rooms = await fetchPublicRooms(state.signalingUrl, this.activeMapId);
+      if (this.roomSetup !== state) {
+        return;
+      }
+
+      state.publicRooms = rooms;
+      state.publicRoomsStatus = rooms.length
+        ? `${rooms.length} public room${rooms.length === 1 ? "" : "s"} found for this map.`
+        : "No public rooms are open for this map.";
+      state.publicRoomsError = "";
+    } catch (error) {
+      if (this.roomSetup !== state) {
+        return;
+      }
+
+      state.publicRoomsStatus = "";
+      state.publicRoomsError =
+        error instanceof Error ? error.message : "Could not load public rooms.";
+    }
+
+    if (this.screen === "room") {
+      this.render();
+    }
+  }
+
+  private buildRoomUrl(roomCode: string, mapId: string): string {
+    if (!roomCode || typeof window === "undefined") {
+      return "";
+    }
+
+    const url = new URL(window.location.pathname || "/", window.location.origin);
+    url.searchParams.set("room", normalizeRoomCode(roomCode));
+    url.searchParams.set("map", mapId);
+    url.hash = "";
+    return url.toString();
   }
 
   private async applyRoomAnswer(): Promise<void> {
@@ -904,8 +1049,13 @@ export class TacticalShellApp {
         this.disposeRoomSetup();
         this.roomSetup = {
           kind: "broadcast",
+          visibility: "private",
           roomCode: "",
+          roomUrl: "",
           signalingUrl: getSignalingServiceUrl(),
+          publicRooms: [],
+          publicRoomsStatus: "",
+          publicRoomsError: "",
           supportError: support.reason,
           copyStatus: "",
         };
@@ -949,6 +1099,10 @@ export class TacticalShellApp {
     config?: LatestStateQaConfig | null,
   ): boolean {
     return this.roomSetup?.connection?.debugConfigureLatestStateQa?.(direction, config) ?? false;
+  }
+
+  debugConfigureRelayIdleQa(config?: RelayIdleQaConfig | null): boolean {
+    return this.roomSetup?.connection?.debugConfigureRelayIdleQa?.(config) ?? false;
   }
 
   debugSendSignalingPayload(payload: Record<string, unknown>): boolean {
@@ -1015,8 +1169,13 @@ export class TacticalShellApp {
     const roomSetupState = this.roomSetup
       ? {
           kind: this.roomSetup.kind,
+          visibility: this.roomSetup.visibility,
           supportError: this.roomSetup.supportError,
           copyStatus: this.roomSetup.copyStatus,
+          roomUrl: this.roomSetup.roomUrl,
+          publicRooms: this.roomSetup.publicRooms,
+          publicRoomsStatus: this.roomSetup.publicRoomsStatus,
+          publicRoomsError: this.roomSetup.publicRoomsError,
           phase: this.roomSetup.connection?.uiSnapshot.phase ?? "idle",
           roomCode: this.roomSetup.connection?.uiSnapshot.roomCode ?? this.roomSetup.roomCode,
           connection: this.roomSetup.connection?.debugSnapshot() ?? null,
@@ -1311,6 +1470,14 @@ export class TacticalShellApp {
     }
 
     return "signal-host";
+  }
+
+  private readRoomVisibility(value: string | undefined): CloudRoomVisibility | undefined {
+    if (value === "private" || value === "public") {
+      return value;
+    }
+
+    return undefined;
   }
 
   private readTeamPreference(value: string | undefined): TeamPreference | undefined {

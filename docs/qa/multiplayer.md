@@ -41,6 +41,21 @@ npm test
 
 `npm test` rebuilds the app and runs the broader final browser verification. The standalone `npm run qa:final` command also passed and refreshed `assets/screenshots/`.
 
+## Fresh Results 2026-06-01
+
+Polished Cloud Room V2 added private/public room creation, invite URL joining, a Cloudflare Durable Object public-room registry, and relay-idle bandwidth protection. The visible room setup UI now exposes only `Create Room` and `Join Room`; manual WebRTC and same-browser development transports remain available to QA/debug hooks.
+
+Observed results:
+
+- `npm run typecheck`: passed
+- `npm run build`: passed and repeated the known non-blocking large `localMatch` chunk warning
+- `npm run qa:signaling-worker`: passed with public room registry create/list/participant-count/remove coverage, nullable ICE candidate relay, 14-player cap, role validation, size/rate limits, and default STUN `/turn-credentials`
+- `npm run qa:cloud-signaling`: passed with host/guest phases `connected`, rosters at `2`, remotes at `1`, delta snapshots, invite URL auto-join, hidden manual/dev room UI checks, and relay-idle warning/reset/disconnect coverage
+- `npm run qa:cloud-signaling-14`: passed with one host plus 13 guests connected, rosters at `14`, host remote count `13`, every guest remote count `13`, and delta snapshots
+- `npm test`: passed, repeating the production build and final browser QA wrapper
+
+Relay-idle evidence: the browser harness forced relay-mode QA, observed the host warning at the short test threshold, confirmed gameplay input cleared the warning, then confirmed the inactive relay guest was disconnected. Production thresholds are 180 seconds for warning and 240 seconds for disconnect, and the counter resets while no selected TURN/relay candidate pair is active.
+
 ## Fresh Results 2026-05-31
 
 Targeted follow-up for cross-network Cloud Room setup fixed the client and Worker ICE-candidate guard so browser-generated end-of-candidates markers and nullable optional candidate fields no longer surface `Cloud signaling rejected an oversized or invalid ICE candidate.` The browser ICE event path skips empty completion markers during normal gathering, while the guarded signaling serializer and Worker sanitizer accept the nullable marker shape for manual/test payloads. Candidate payload size caps remain in place.

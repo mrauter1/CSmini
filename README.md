@@ -1,15 +1,13 @@
 # Dustline Protocol
 
-Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The current build ships five original arenas, two original teams with distinct avatar uniforms, timed round flow, bomb and hostage mission variants, lightweight solo AI, host-authoritative Cloud/manual WebRTC rooms, and the retained same-browser `BroadcastChannel` dev room path.
+Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The current build ships five original arenas, two original teams with distinct avatar uniforms, timed round flow, bomb and hostage mission variants, lightweight solo AI, and host-authoritative Cloud Rooms over WebRTC.
 
 ## Gameplay Scope
 
 - Teams: `Amber Vanguard` and `Cobalt Reach`
 - Modes:
-  - `Room Setup`: shared-mode entry routes through a dedicated room setup screen with `Host Cloud Room`, `Join Cloud Room`, `Manual Host`, `Manual Join`, and `Same-Browser Dev Room`
-  - `Cloud Room`: a host creates a room code through the signaling Worker; guests join by code, then gameplay runs peer-to-peer over WebRTC DataChannels
-  - `Manual Room`: the host copies an offer, the guest returns an answer, and both enter the same WebRTC room without Worker room-code signaling
-  - `Same-Browser Dev Room`: retained same-map tab-to-tab room support runs through `BroadcastChannel` for local development and objective-sync QA
+  - `Room Setup`: shared-mode entry exposes `Create Room` and `Join Room`
+  - `Cloud Room`: a host creates a private or public room through the signaling Worker; private rooms are shared by code or invite URL, public rooms appear in the room list, and gameplay runs peer-to-peer over WebRTC DataChannels
   - `Solo Round`: local play with a lightweight enemy fireteam and a browser-saved `easy` / `medium` / `hard` bot selector (`medium` default)
 - Round shell:
   - briefing
@@ -118,10 +116,11 @@ The current originality and asset-policy record is `docs/assets.md`. The project
 
 ## Known Limitations
 
-- Cloud/manual rooms are browser-hosted peer sessions, not matchmaking. The host is authoritative for game state, but a malicious host can still cheat because there is no neutral server authority.
+- Cloud Rooms are browser-hosted peer sessions with a public listing, not neutral-server matchmaking. The host is authoritative for game state, but a malicious host can still cheat because there is no neutral server authority.
 - NAT traversal depends on browser WebRTC. The Worker returns default public STUN servers when TURN configuration is absent; relay-only connectivity requires externally configured TURN credentials and is not committed to this repo.
 - Cloud Room capacity is one host plus up to 13 guests.
-- Cloud/manual objective state currently rides host snapshots. The protocol reserves reliable objective-event messages, but full per-mutation bomb/hostage event streaming is still a future split.
+- Rooms using at least one active TURN/relay path disconnect inactive relay peers after 240 seconds without gameplay input; the counter resets while no relay path is active.
+- Cloud objective state currently rides host snapshots. The protocol reserves reliable objective-event messages, but full per-mutation bomb/hostage event streaming is still a future split.
 - Solo bot difficulty is currently a solo-local setting only; shared-room sessions remain human-only across tabs.
 - Tactical AI verification is focused on solo-local rounds, not on shared-room opponent bots.
 - The live art direction is intentionally flatter than the richer reference paintings, especially on walls and ground materials.

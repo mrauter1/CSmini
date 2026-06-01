@@ -6357,6 +6357,10 @@ export class LocalMatch {
   private modeNotice(): string {
     if (this.activeMode === "shared") {
       const roomTitle = this.sharedRoom?.uiSnapshot.title ?? "Room";
+      const roomDetail = this.sharedRoom?.uiSnapshot.detail ?? "";
+      if (roomDetail.startsWith("Relay idle warning:")) {
+        return roomDetail;
+      }
       return this.remoteActors.size > 0
         ? `${roomTitle} live on ${this.map.name}: host-authoritative positions, roster, and round state are syncing.`
         : this.sharedRole === "host"

@@ -4,11 +4,9 @@
 
 The browser runtime now has host-authoritative shared-room gameplay wired through the same room protocol for:
 
-- `Host Cloud Room`
-- `Join Cloud Room`
-- `Manual Host`
-- `Manual Join`
-- `Same-Browser Dev Room`
+- private Cloud Rooms shared by code or invite URL
+- public Cloud Rooms listed by the signaling Worker
+- debug-only manual WebRTC and same-browser transports used by QA hooks
 
 The canonical `LocalMatch` runtime consumes `MatchRoomConnection` directly. Guests send input ticks and shot claims. The host publishes snapshots, owns authoritative health/status/round state, validates guest shots, and sends shot results back to the claimant.
 
@@ -18,27 +16,32 @@ The frontend remains a static Vite build:
 - `npm run build`
 - publish `dist`
 
-No always-on gameplay server is added. The Cloudflare Worker is only for room signaling and TURN credential responses. Gameplay traffic stays browser-to-browser over WebRTC DataChannels, or over `BroadcastChannel` for the same-browser dev transport.
+No always-on gameplay server is added. The Cloudflare Worker is only for room signaling, TURN credential responses, and the short-lived public room registry. Gameplay traffic stays browser-to-browser over WebRTC DataChannels, or over `BroadcastChannel` for the debug same-browser transport.
 
 ## Room Flows
 
 Cloud Room:
 
-1. The host chooses `Host Cloud Room` for the selected map.
-2. The Worker allocates a bounded room code and accepts one host socket.
-3. Guests choose `Join Cloud Room`, enter the room code, and connect through targeted offer/answer/ICE signaling.
+1. The host chooses `Create Room` for the selected map.
+2. The host keeps the room private for code/URL sharing or marks it public for the Worker-backed room list.
+3. Guests choose `Join Room`, enter a code, open an invite URL, or select a public room, then connect through targeted offer/answer/ICE signaling.
 4. Once the room reaches `connected`, each player enters the arena; DataChannels carry gameplay directly between browsers.
 
 Manual Room:
 
-1. The host chooses `Manual Host` and copies the generated offer.
-2. The guest chooses `Manual Join`, pastes the offer, and copies the generated answer.
-3. The host applies the answer.
-4. Once both pages reach `connected`, they enter the same host-authoritative arena without Worker room-code signaling.
+Manual offer/answer remains available through QA/debug hooks, but it is no longer part of the visible room setup UI.
 
 Same-Browser Dev Room:
 
-- `Same-Browser Dev Room` keeps the local `BroadcastChannel` path for same-machine development, screenshot evidence, and deterministic shared objective QA.
+The local `BroadcastChannel` path remains available through QA/debug hooks for same-machine development, screenshot evidence, and deterministic shared objective QA.
+
+Relay idle policy:
+
+- Each browser samples selected WebRTC candidate pairs through transport debug telemetry.
+- The idle timer only runs for peers with an active `relay` candidate on either side of the selected pair.
+- Gameplay input, shot claims, and objective events reset the timer; automatic heartbeats and host snapshots do not.
+- Relay-idle peers are warned after 180 seconds and disconnected after 240 seconds without gameplay input.
+- If no TURN/relay candidate pair is active, the relay-idle clock is reset and stopped for that room.
 
 ## Transport And Protocol
 
@@ -49,7 +52,8 @@ The room foundation lives in `src/net/`:
 - `broadcastTransport.ts`: same-browser dev transport
 - `webrtcTransport.ts`: manual offer/answer transport
 - `signaledWebRtcTransport.ts`: Cloud Room signaling transport
-- `matchRoomConnection.ts`: room/session orchestration, host authority, compact snapshots, and ownership checks
+- `matchRoomConnection.ts`: room/session orchestration, host authority, compact snapshots, relay-idle enforcement, and ownership checks
+- `publicRooms.ts`: client fetch/validation for the public room registry
 - `manualSignaling.ts`, `signalingConfig.ts`, `iceServers.ts`, `webrtcStats.ts`: setup and diagnostics helpers
 
 The protocol keeps two traffic lanes:

@@ -4,6 +4,7 @@ import type { BotDifficulty } from "./game/botDifficulty";
 import type {
   LatestStateQaConfig,
   LatestStateQaDirection,
+  RelayIdleQaConfig,
   RoomConnectionKind,
 } from "./net/matchRoomConnection";
 import { TacticalShellApp } from "./ui/app";
@@ -21,6 +22,7 @@ declare global {
         direction: LatestStateQaDirection,
         config?: LatestStateQaConfig | null,
       ) => boolean;
+      configureRelayIdleQa: (config?: RelayIdleQaConfig | null) => boolean;
       sendSignalingPayload: (payload: Record<string, unknown>) => boolean;
       injectSignalingMessage: (raw: string) => boolean;
       createRoomOffer: () => Promise<string | null>;
@@ -232,6 +234,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     joinSignalingRoom: (roomCode) => app.debugJoinSignalingRoom(roomCode),
     sendRawRoomMessage: (raw, toPeerId) => app.debugSendRawRoomMessage(raw, toPeerId),
     configureLatestStateQa: (direction, config) => app.debugConfigureLatestStateQa(direction, config),
+    configureRelayIdleQa: (config) => app.debugConfigureRelayIdleQa(config),
     sendSignalingPayload: (payload) => app.debugSendSignalingPayload(payload),
     injectSignalingMessage: (raw) => app.debugInjectSignalingMessage(raw),
     createRoomOffer: () => app.debugCreateRoomOffer(),

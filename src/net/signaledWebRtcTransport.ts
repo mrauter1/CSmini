@@ -43,6 +43,9 @@ interface SignaledWebRtcTransportOptions {
   signalingUrl: string;
   roomId: string;
   mapId: string;
+  roomCode?: string;
+  mapName?: string;
+  visibility?: "private" | "public";
   sessionLabel: string;
   localParticipant: ParticipantIdentity;
   role: "host" | "guest";
@@ -323,6 +326,11 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
     url.searchParams.set("mapId", this.options.mapId);
     url.searchParams.set("name", this.options.localParticipant.name);
     url.searchParams.set("accentColor", this.options.localParticipant.accentColor);
+    if (this.options.role === "host" && this.options.visibility === "public") {
+      url.searchParams.set("visibility", "public");
+      url.searchParams.set("roomCode", this.options.roomCode ?? "");
+      url.searchParams.set("mapName", this.options.mapName ?? this.options.mapId);
+    }
 
     this.socket = new WebSocket(url);
     this.socket.addEventListener("open", this.handleSocketOpen);

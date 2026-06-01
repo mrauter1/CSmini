@@ -25,7 +25,7 @@ function createRoomId(label) {
   return `probe:${label}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function toSocketUrl(baseUrl, roomId, role, peerId, name) {
+function toSocketUrl(baseUrl, roomId, role, peerId, name, options = {}) {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
   url.pathname = `/room/${encodeURIComponent(roomId)}`;
@@ -34,13 +34,23 @@ function toSocketUrl(baseUrl, roomId, role, peerId, name) {
   url.searchParams.set("mapId", "sandline-foundry");
   url.searchParams.set("name", name);
   url.searchParams.set("accentColor", role === "host" ? "#CFA66F" : "#6F8FAA");
+  if (options.visibility) {
+    url.searchParams.set("visibility", options.visibility);
+  }
+  if (options.roomCode) {
+    url.searchParams.set("roomCode", options.roomCode);
+  }
+  if (options.mapName) {
+    url.searchParams.set("mapName", options.mapName);
+  }
   return url.toString();
 }
 
-function openSocket(roomId, role, peerId, name) {
+function openSocket(roomId, role, peerId, name, options = {}) {
   const messages = [];
   const closes = [];
-  const socket = new WebSocket(toSocketUrl(SIGNALING_URL, roomId, role, peerId, name));
+  const url = toSocketUrl(SIGNALING_URL, roomId, role, peerId, name, options);
+  const socket = new WebSocket(url);
 
   socket.addEventListener("message", (event) => {
     if (typeof event.data !== "string") {
@@ -59,7 +69,31 @@ function openSocket(roomId, role, peerId, name) {
     });
   });
 
-  return { socket, messages, closes };
+  return { socket, messages, closes, url };
+}
+
+async function fetchPublicRooms() {
+  const response = await fetch(`${SIGNALING_URL}/public-rooms?mapId=sandline-foundry`, {
+    cache: "no-store",
+  });
+  assert(response.ok, `Public rooms failed with HTTP ${response.status}`);
+  const body = await response.json();
+  assert(body.ok === true && Array.isArray(body.rooms), "Public rooms response was invalid.");
+  return body.rooms;
+}
+
+async function waitForPublicRoom(predicate, timeoutMs = 8_000, description = "public room") {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const rooms = await fetchPublicRooms();
+    const found = predicate(rooms);
+    if (found) {
+      return found;
+    }
+    await delay(50);
+  }
+
+  throw new Error(`Timed out waiting for ${description}.`);
 }
 
 async function waitFor(record, predicate, timeoutMs = 8_000, description = "signaling event") {
@@ -82,7 +116,11 @@ async function waitOpen(record) {
 
   await new Promise((resolve, reject) => {
     record.socket.addEventListener("open", resolve, { once: true });
-    record.socket.addEventListener("error", reject, { once: true });
+    record.socket.addEventListener(
+      "error",
+      () => reject(new Error(`WebSocket failed to open: ${record.url}`)),
+      { once: true },
+    );
   });
 }
 
@@ -187,6 +225,57 @@ async function probeTurnCredentials() {
     source: response.headers.get("x-ice-servers-source") ?? "unknown",
     expiresIn: response.headers.get("x-turn-credential-expires-in") ?? null,
   };
+}
+
+async function probePublicRoomsRegistry() {
+  const roomId = createRoomId("public");
+  const roomCode = "PUB234";
+  const host = openSocket(roomId, "host", "public-host", "PublicHost", {
+    visibility: "public",
+    roomCode,
+    mapName: "Sandline Foundry",
+  });
+  let guest;
+
+  try {
+    await waitOpen(host);
+    await waitForMessage(host, (message) => message.type === "ready", 8_000, "public host ready");
+
+    const listedRoom = await waitForPublicRoom(
+      (rooms) => rooms.find((room) => room.roomCode === roomCode),
+      8_000,
+      "public room listing",
+    );
+
+    guest = openSocket(roomId, "guest", "public-guest", "PublicGuest");
+    await waitOpen(guest);
+    await waitForMessage(guest, (message) => message.type === "host-ready", 8_000, "public guest host-ready");
+
+    const joinedRoom = await waitForPublicRoom(
+      (rooms) =>
+        rooms.find((room) => room.roomCode === roomCode && room.participantCount === 2),
+      8_000,
+      "public room participant count",
+    );
+
+    safeClose(guest);
+    safeClose(host);
+
+    await waitForPublicRoom(
+      (rooms) => !rooms.some((room) => room.roomCode === roomCode),
+      8_000,
+      "public room removal",
+    );
+
+    return {
+      roomCode: listedRoom.roomCode,
+      hostName: listedRoom.hostName,
+      participantCountAfterJoin: joinedRoom.participantCount,
+    };
+  } finally {
+    safeClose(guest);
+    safeClose(host);
+  }
 }
 
 async function probeCapacityAndRelay() {
@@ -523,6 +612,7 @@ async function probeIceCandidateBudget() {
 async function main() {
   const routes = await probeRoutes();
   const turnCredentials = await probeTurnCredentials();
+  const publicRooms = await probePublicRoomsRegistry();
   const capacity = await probeCapacityAndRelay();
   const unsupportedMessage = await probeUnsupportedMessage();
   const targetValidation = await probeTargetValidation();
@@ -537,6 +627,7 @@ async function main() {
         signalingUrl: SIGNALING_URL,
         routes,
         turnCredentials,
+        publicRooms,
         capacity,
         unsupportedMessage,
         targetValidation,

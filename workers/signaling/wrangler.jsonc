@@ -12,6 +12,10 @@
       {
         "name": "ROOMS",
         "class_name": "RoomObject"
+      },
+      {
+        "name": "PUBLIC_ROOMS",
+        "class_name": "PublicRoomsObject"
       }
     ]
   },
@@ -20,6 +24,12 @@
       "tag": "v1",
       "new_sqlite_classes": [
         "RoomObject"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "PublicRoomsObject"
       ]
     }
   ]

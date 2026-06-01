@@ -5,10 +5,12 @@ import {
 } from "../game/botDifficulty";
 import { missionBadges } from "../game/missions";
 import type {
+  CloudRoomVisibility,
   MatchMode,
   RoomConnectionKind,
   RoomConnectionUiSnapshot,
 } from "../net/matchRoomConnection";
+import type { PublicRoomSummary } from "../net/publicRooms";
 import { TEAM_ORDER, getTeamDefinition, teamPreferenceLabel } from "../game/teams";
 import { crouchControlLabel } from "../game/controls";
 import type { MapDefinition, TeamPreference } from "../types";
@@ -17,10 +19,15 @@ import { renderPreviewSvg } from "./previewSvg";
 export interface RoomSetupRenderState {
   map: MapDefinition;
   selectedKind: RoomConnectionKind;
+  visibility: CloudRoomVisibility;
   supportError: string;
   copyStatus: string;
   roomCode: string;
+  roomUrl: string;
   signalingUrl: string;
+  publicRooms: PublicRoomSummary[];
+  publicRoomsStatus: string;
+  publicRoomsError: string;
   connection?: RoomConnectionUiSnapshot;
   canEnterArena: boolean;
   teamLabel: string;
@@ -195,7 +202,7 @@ function controlHint(label: string, text: string, dataUi?: string): string {
 function roomKindLabel(kind: RoomConnectionKind): string {
   switch (kind) {
     case "signal-host":
-      return "Host Cloud Room";
+      return "Create Cloud Room";
     case "signal-join":
       return "Join Cloud Room";
     case "broadcast":
@@ -205,6 +212,24 @@ function roomKindLabel(kind: RoomConnectionKind): string {
     case "webrtc-join":
       return "Manual Join";
   }
+}
+
+function roomVisibilityButton(
+  activeVisibility: CloudRoomVisibility,
+  visibility: CloudRoomVisibility,
+  label: string,
+  note: string,
+): string {
+  return `
+    <button
+      class="room-setup__tab ${activeVisibility === visibility ? "room-setup__tab--active" : ""}"
+      data-action="set-room-visibility"
+      data-room-visibility="${visibility}"
+    >
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(note)}</span>
+    </button>
+  `;
 }
 
 function roomKindButton(
@@ -283,23 +308,33 @@ function renderBroadcastPanel(state: RoomSetupRenderState): string {
 
 function renderSignalHostPanel(state: RoomSetupRenderState): string {
   const roomCode = state.connection?.roomCode ?? state.roomCode;
+  const roomUrl = state.roomUrl;
 
   return `
     <section class="room-setup__workflow panel">
       <div class="panel__header">
-        <p>Cloud Host Flow</p>
-        <span class="chip chip--primary">Room Code</span>
+        <p>Create Cloud Room</p>
+        <span class="chip chip--primary">${state.visibility === "public" ? "Public" : "Private"}</span>
       </div>
       <p class="panel__text">
-        Share this room code with the joining player. The Worker only handles signaling and TURN credential responses; gameplay stays browser-to-browser over WebRTC.
+        Private rooms are shared by code or URL. Public rooms also appear in the open room list while this host tab remains online.
       </p>
+      <div class="room-setup__visibility">
+        ${roomVisibilityButton(state.visibility, "private", "Private Room", "Share only by code or URL.")}
+        ${roomVisibilityButton(state.visibility, "public", "Public Room", "Show this map room in the public list.")}
+      </div>
       <label class="room-setup__field">
         <span>Room Code</span>
         <input readonly data-room-field="room-code-output" value="${escapeHtml(roomCode)}" />
       </label>
+      <label class="room-setup__field">
+        <span>Invite URL</span>
+        <input readonly data-room-field="room-url-output" value="${escapeHtml(roomUrl)}" />
+      </label>
       <p class="room-setup__endpoint">${escapeHtml(state.signalingUrl)}</p>
       <div class="room-setup__actions">
         <button class="button" data-action="room-copy" data-field="room-code-output">Copy Code</button>
+        <button class="button" data-action="room-copy" data-field="room-url-output">Copy URL</button>
         ${roomEntryButton(state)}
       </div>
     </section>
@@ -307,14 +342,24 @@ function renderSignalHostPanel(state: RoomSetupRenderState): string {
 }
 
 function renderSignalJoinPanel(state: RoomSetupRenderState): string {
+  const publicRoomStatus = state.publicRoomsStatus
+    ? `<p class="room-setup__status room-setup__status--note">${escapeHtml(state.publicRoomsStatus)}</p>`
+    : "";
+  const publicRoomError = state.publicRoomsError
+    ? `<p class="room-setup__status room-setup__status--error">${escapeHtml(state.publicRoomsError)}</p>`
+    : "";
+  const publicRooms = state.publicRooms.length
+    ? state.publicRooms.map(publicRoomRow).join("")
+    : `<p class="room-setup__empty">No open public rooms for this map.</p>`;
+
   return `
     <section class="room-setup__workflow panel">
       <div class="panel__header">
-        <p>Cloud Join Flow</p>
-        <span class="chip chip--primary">Host Code</span>
+        <p>Join Cloud Room</p>
+        <span class="chip chip--primary">Code Or URL</span>
       </div>
       <p class="panel__text">
-        Enter the host room code for this map. The signaling Worker exchanges the offer, answer, and ICE candidates automatically.
+        Enter a private room code, open an invite URL, or choose a public room for this map.
       </p>
       <label class="room-setup__field">
         <span>Host Room Code</span>
@@ -325,7 +370,33 @@ function renderSignalJoinPanel(state: RoomSetupRenderState): string {
         <button class="button button--primary" data-action="room-connect-signaling">Join Room</button>
         ${roomEntryButton(state)}
       </div>
+      <div class="room-setup__public">
+        <div class="panel__header panel__header--compact">
+          <p>Public Rooms</p>
+          <button class="button button--tiny" data-action="room-refresh-public">Refresh</button>
+        </div>
+        ${publicRoomStatus}
+        ${publicRoomError}
+        <div class="room-setup__public-list">
+          ${publicRooms}
+        </div>
+      </div>
     </section>
+  `;
+}
+
+function publicRoomRow(room: PublicRoomSummary): string {
+  const slots = `${room.participantCount}/${room.maxPeers}`;
+  return `
+    <button
+      class="room-setup__public-room"
+      data-action="room-join-public"
+      data-room-code="${escapeHtml(room.roomCode)}"
+    >
+      <span class="room-setup__public-accent" style="background:${escapeHtml(room.hostAccentColor)}"></span>
+      <strong>${escapeHtml(room.hostName)}</strong>
+      <small>${escapeHtml(room.roomCode)} · ${escapeHtml(slots)}</small>
+    </button>
   `;
 }
 
@@ -416,7 +487,7 @@ export function renderMenu(
         <p class="hero-panel__kicker">Browser Tactical Prototype</p>
         <h1>Dustline Protocol</h1>
         <p class="hero-panel__lede">
-          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with round timers, two original teams, mission-ready map metadata, Cloud Room signaling, manual WebRTC fallback, and same-browser dev-room support.
+          Original early-2000s tactical FPS direction, rebuilt as a browser-native prototype with round timers, two original teams, mission-ready map metadata, and Cloud Room signaling.
         </p>
         <div class="hero-panel__actions">
           <button class="button button--primary" data-action="show-catalog">Open Map Roster</button>
@@ -429,7 +500,7 @@ export function renderMenu(
         <section class="hero-grid__brief">
           <div class="brief-panel">
             <p class="brief-panel__label">Flow</p>
-            <p>Choose a team, set the solo fireteam level, then either open room setup for Cloud or manual multiplayer or drop straight into a solo round.</p>
+            <p>Choose a team, set the solo fireteam level, then either open Cloud Room setup or drop straight into a solo round.</p>
           </div>
           <div class="brief-panel">
             <p class="brief-panel__label">Featured Arena</p>
@@ -468,7 +539,7 @@ export function renderCatalog(
           <p class="masthead__eyebrow">Map Select</p>
           <h1>Original Tactical Arenas</h1>
           <p>
-            Every entry now declares team spawns, tactical routes, and live mission metadata for both relay-charge and evac-escort round shells. Multiplayer now routes through a dedicated room setup step with Cloud Room signaling, manual WebRTC fallback, and same-browser dev transport.
+            Every entry now declares team spawns, tactical routes, and live mission metadata for both relay-charge and evac-escort round shells. Multiplayer now routes through a dedicated Cloud Room setup step with private rooms, public listings, and invite URLs.
           </p>
         </div>
         <div class="masthead__actions">
@@ -500,7 +571,7 @@ export function renderRoomSetup(map: MapDefinition, state: RoomSetupRenderState)
             <p class="masthead__eyebrow">Room Setup</p>
             <h1>${escapeHtml(map.name)}</h1>
             <p>
-              The selected map, team entry, and operator identity carry into this setup flow. Cloud signaling stays signaling-only, manual offer and answer exchange remains available, and the original same-browser dev room stays on hand for tab-to-tab checks.
+              The selected map, team entry, and operator identity carry into this setup flow. Cloud signaling stays signaling-only while gameplay runs browser-to-browser over WebRTC.
             </p>
           </div>
           <div class="masthead__actions">
@@ -529,11 +600,8 @@ export function renderRoomSetup(map: MapDefinition, state: RoomSetupRenderState)
               </div>
             </div>
             <div class="room-setup__tabs">
-              ${roomKindButton(state.selectedKind, "signal-host", "Host Cloud Room", "Create a room code and wait for guests.")}
-              ${roomKindButton(state.selectedKind, "signal-join", "Join Cloud Room", "Enter a host room code and negotiate automatically.")}
-              ${roomKindButton(state.selectedKind, "webrtc-host", "Manual Host", "Generate the offer and apply one guest answer.")}
-              ${roomKindButton(state.selectedKind, "webrtc-join", "Manual Join", "Paste a host offer and produce the answer blob.")}
-              ${roomKindButton(state.selectedKind, "broadcast", "Same-Browser Dev Room", "Keep the original local room path for browser-tab testing.")}
+              ${roomKindButton(state.selectedKind, "signal-host", "Create Room", "Host a private or public Cloud Room.")}
+              ${roomKindButton(state.selectedKind, "signal-join", "Join Room", "Use a room code, invite URL, or public list.")}
             </div>
             <div class="room-setup__preview">
               ${renderPreviewSvg(map.preview)}

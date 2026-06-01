@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 
 const MAX_ROOM_PEERS = 14;
+const MAX_PUBLIC_ROOMS = 128;
 const MAX_REQUEST_URL_LENGTH = 512;
 const MAX_QUERY_LENGTH = 256;
 const MAX_ROOM_PATH_LENGTH = 128;
+const MAX_PUBLIC_ROOM_BODY_BYTES = 4 * 1024;
 const MAX_TURN_CREDENTIAL_RESPONSE_BYTES = 16 * 1024;
 const MAX_TURN_CREATE_CREDENTIAL_RESPONSE_BYTES = 8 * 1024;
 const TURN_CREDENTIAL_EXPIRY_SECONDS = 2 * 60 * 60;
@@ -37,6 +39,8 @@ const MAX_INVALID_MESSAGES = 4;
 const SESSION_READY_TIMEOUT_MS = 5_000;
 const SESSION_IDLE_TIMEOUT_MS = 10 * 60 * 1_000;
 const SESSION_SWEEP_INTERVAL_MS = 30_000;
+const PUBLIC_ROOM_TTL_MS = 240_000;
+const PUBLIC_ROOM_REGISTRY_NAME = "global";
 // Two offers / answers per pair allow the initial negotiation plus one retry or ICE restart. Sixty-four
 // ICE candidates per pair leaves room for noisy browser candidate gathering across host/guest
 // links without allowing endless trickle spam to monopolize the room.
@@ -60,6 +64,7 @@ const DEFAULT_ICE_SERVERS = Object.freeze([
   { urls: "stun:stun2.l.google.com:19302" },
 ]);
 const SAFE_ROOM_ID = /^[a-zA-Z0-9:._-]{3,96}$/;
+const SAFE_ROOM_CODE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6,12}$/;
 const SAFE_PEER_ID = /^[a-zA-Z0-9:._-]{3,96}$/;
 const SAFE_MAP_ID = /^[a-z0-9-]{3,64}$/;
 const SAFE_ACCENT_COLOR = /^#[0-9A-Fa-f]{6}$/;
@@ -80,8 +85,11 @@ const corsHeaders = {
 export class RoomObject extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
+    this.ctx = ctx;
+    this.env = env;
     this.sessions = new Map();
     this.hostPeerId = "";
+    this.roomId = "";
     this.sweepTimer = null;
   }
 
@@ -93,16 +101,26 @@ export class RoomObject extends DurableObject {
     this.pruneSessions(Date.now());
 
     const url = new URL(request.url);
+    const roomId = decodeRoomId(url.pathname);
     const peerId = normalizeToken(url.searchParams.get("peerId"), SAFE_PEER_ID);
     const role = url.searchParams.get("role");
     const mapId = normalizeToken(url.searchParams.get("mapId"), SAFE_MAP_ID);
     const name = normalizeDisplayText(url.searchParams.get("name"), 32);
     const accentColor =
       normalizeToken(url.searchParams.get("accentColor"), SAFE_ACCENT_COLOR) || DEFAULT_ACCENT_COLOR;
+    const visibility = url.searchParams.get("visibility") === "public" ? "public" : "private";
+    const roomCode = normalizeToken(url.searchParams.get("roomCode"), SAFE_ROOM_CODE);
+    const mapName = normalizeDisplayText(url.searchParams.get("mapName"), 64);
 
-    if (!peerId || (role !== "host" && role !== "guest") || !mapId || !name) {
+    if (!roomId || !peerId || (role !== "host" && role !== "guest") || !mapId || !name) {
       return json({ ok: false, error: "Missing or invalid signaling identity." }, 400);
     }
+
+    if (visibility === "public" && role === "host" && (!roomCode || !mapName)) {
+      return json({ ok: false, error: "Public rooms require a room code and map name." }, 400);
+    }
+
+    this.roomId ||= roomId;
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -110,6 +128,9 @@ export class RoomObject extends DurableObject {
       peerId,
       role,
       mapId,
+      roomCode,
+      mapName,
+      visibility,
       participant: {
         id: peerId,
         name,
@@ -166,6 +187,7 @@ export class RoomObject extends DurableObject {
     });
 
     this.announceArrival(socket, session);
+    this.queuePublicRoomSync();
 
     socket.addEventListener("message", (event) => {
       this.handleMessage(socket, event.data);
@@ -604,6 +626,7 @@ export class RoomObject extends DurableObject {
     );
 
     this.cleanupEmptyRoom();
+    this.queuePublicRoomSync();
   }
 
   removeSession(socket, reason) {
@@ -628,6 +651,7 @@ export class RoomObject extends DurableObject {
     );
 
     this.cleanupEmptyRoom();
+    this.queuePublicRoomSync();
   }
 
   pruneSessions(now) {
@@ -664,6 +688,44 @@ export class RoomObject extends DurableObject {
 
     this.hostPeerId = "";
     this.stopSweepTimer();
+  }
+
+  queuePublicRoomSync() {
+    this.ctx.waitUntil(this.syncPublicRoom(Date.now()).catch(() => undefined));
+  }
+
+  async syncPublicRoom(now) {
+    if (!this.env.PUBLIC_ROOMS || !this.roomId) {
+      return;
+    }
+
+    const registry = this.env.PUBLIC_ROOMS.get(
+      this.env.PUBLIC_ROOMS.idFromName(PUBLIC_ROOM_REGISTRY_NAME),
+    );
+    const host = this.findHost();
+    if (!host || host.session.visibility !== "public") {
+      await registry.fetch("https://registry/delete", {
+        method: "POST",
+        body: JSON.stringify({ roomId: this.roomId }),
+      });
+      return;
+    }
+
+    await registry.fetch("https://registry/upsert", {
+      method: "POST",
+      body: JSON.stringify({
+        roomId: this.roomId,
+        roomCode: host.session.roomCode,
+        mapId: host.session.mapId,
+        mapName: host.session.mapName,
+        hostPeerId: host.session.peerId,
+        hostName: host.session.participant.name,
+        hostAccentColor: host.session.participant.accentColor,
+        participantCount: this.sessions.size,
+        maxPeers: MAX_ROOM_PEERS,
+        updatedAt: now,
+      }),
+    });
   }
 
   startSweepTimer() {
@@ -724,6 +786,132 @@ export class RoomObject extends DurableObject {
   }
 }
 
+export class PublicRoomsObject extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.ctx = ctx;
+    this.rooms = new Map();
+    this.loaded = false;
+  }
+
+  async fetch(request) {
+    await this.ensureLoaded();
+
+    const url = new URL(request.url);
+    const now = Date.now();
+    await this.prune(now);
+
+    if (request.method === "GET") {
+      const mapId = normalizeToken(url.searchParams.get("mapId"), SAFE_MAP_ID);
+      const rooms = [...this.rooms.values()]
+        .filter((room) => !mapId || room.mapId === mapId)
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+      return json(
+        {
+          ok: true,
+          ttlMs: PUBLIC_ROOM_TTL_MS,
+          rooms,
+        },
+        200,
+        { "cache-control": "no-store" },
+      );
+    }
+
+    if (request.method !== "POST") {
+      return methodNotAllowed("GET, POST");
+    }
+
+    if (url.pathname === "/upsert") {
+      return this.handleUpsert(request, now);
+    }
+
+    if (url.pathname === "/delete") {
+      return this.handleDelete(request);
+    }
+
+    return json({ ok: false, error: "Unknown registry operation." }, 404);
+  }
+
+  async handleUpsert(request, now) {
+    const body = await readBoundedJson(request, MAX_PUBLIC_ROOM_BODY_BYTES);
+    const room = sanitizePublicRoom(body);
+    if (!room) {
+      return json({ ok: false, error: "Invalid public room payload." }, 400);
+    }
+
+    const existing = this.rooms.get(room.roomId);
+    this.rooms.set(room.roomId, {
+      ...room,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: Math.max(now, room.updatedAt),
+      expiresAt: now + PUBLIC_ROOM_TTL_MS,
+    });
+
+    await this.trimAndPersist();
+    return json({ ok: true });
+  }
+
+  async handleDelete(request) {
+    const body = await readBoundedJson(request, MAX_PUBLIC_ROOM_BODY_BYTES);
+    const roomId = normalizeToken(body?.roomId, SAFE_ROOM_ID);
+    if (!roomId) {
+      return json({ ok: false, error: "Invalid public room id." }, 400);
+    }
+
+    this.rooms.delete(roomId);
+    await this.persist();
+    return json({ ok: true });
+  }
+
+  async ensureLoaded() {
+    if (this.loaded) {
+      return;
+    }
+
+    const stored = await this.ctx.storage.get("rooms");
+    if (Array.isArray(stored)) {
+      this.rooms = new Map(
+        stored
+          .map((room) => sanitizePublicRoom(room, true))
+          .filter(Boolean)
+          .map((room) => [room.roomId, room]),
+      );
+    }
+    this.loaded = true;
+  }
+
+  async prune(now) {
+    let changed = false;
+    for (const [roomId, room] of this.rooms) {
+      if (room.expiresAt <= now) {
+        this.rooms.delete(roomId);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await this.persist();
+    }
+  }
+
+  async trimAndPersist() {
+    if (this.rooms.size > MAX_PUBLIC_ROOMS) {
+      this.rooms = new Map(
+        [...this.rooms.values()]
+          .sort((left, right) => right.updatedAt - left.updatedAt)
+          .slice(0, MAX_PUBLIC_ROOMS)
+          .map((room) => [room.roomId, room]),
+      );
+    }
+
+    await this.persist();
+  }
+
+  async persist() {
+    await this.ctx.storage.put("rooms", [...this.rooms.values()]);
+  }
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -744,7 +932,17 @@ export default {
         ok: true,
         service: "csmini-signaling",
         maxPeersPerRoom: MAX_ROOM_PEERS,
+        publicRoomTtlMs: PUBLIC_ROOM_TTL_MS,
       });
+    }
+
+    if (url.pathname === "/public-rooms") {
+      if (request.method !== "GET") {
+        return methodNotAllowed("GET");
+      }
+
+      const registry = env.PUBLIC_ROOMS.get(env.PUBLIC_ROOMS.idFromName(PUBLIC_ROOM_REGISTRY_NAME));
+      return registry.fetch(request);
     }
 
     if (url.pathname === "/turn-credentials") {
@@ -944,6 +1142,62 @@ function normalizeDisplayText(value, maxLength) {
 
   const sanitized = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
   return sanitized ? sanitized.slice(0, maxLength) : "";
+}
+
+async function readBoundedJson(request, maxBytes) {
+  const raw = await request.text();
+  if (utf8Bytes(raw) > maxBytes) {
+    return null;
+  }
+
+  return parseJson(raw);
+}
+
+function sanitizePublicRoom(value, stored = false) {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const roomId = normalizeToken(value.roomId, SAFE_ROOM_ID);
+  const roomCode = normalizeToken(value.roomCode, SAFE_ROOM_CODE);
+  const mapId = normalizeToken(value.mapId, SAFE_MAP_ID);
+  const mapName = normalizeDisplayText(value.mapName, 64);
+  const hostPeerId = normalizeToken(value.hostPeerId, SAFE_PEER_ID);
+  const hostName = normalizeDisplayText(value.hostName, 32);
+  const hostAccentColor =
+    normalizeToken(value.hostAccentColor, SAFE_ACCENT_COLOR) || DEFAULT_ACCENT_COLOR;
+  const participantCount = clampInteger(value.participantCount, 1, MAX_ROOM_PEERS);
+  const maxPeers = clampInteger(value.maxPeers, 1, MAX_ROOM_PEERS);
+  const updatedAt = clampTimestamp(value.updatedAt);
+  const createdAt = stored ? clampTimestamp(value.createdAt) : 0;
+  const expiresAt = stored ? clampTimestamp(value.expiresAt) : 0;
+
+  if (!roomId || !roomCode || !mapId || !mapName || !hostPeerId || !hostName || !updatedAt) {
+    return null;
+  }
+
+  return {
+    roomId,
+    roomCode,
+    mapId,
+    mapName,
+    hostPeerId,
+    hostName,
+    hostAccentColor,
+    participantCount: Math.min(participantCount, maxPeers),
+    maxPeers,
+    createdAt,
+    updatedAt,
+    expiresAt,
+  };
+}
+
+function clampInteger(value, min, max) {
+  return Number.isInteger(value) ? Math.min(max, Math.max(min, value)) : min;
+}
+
+function clampTimestamp(value) {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
 function sanitizeDescription(value, expectedType) {

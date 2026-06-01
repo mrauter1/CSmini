@@ -258,6 +258,11 @@ async function createPage(url) {
   const target = await requestJsonNew("about:blank");
   const page = new CdpPage(target.webSocketDebuggerUrl);
   await page.enablePage();
+  if (SIGNALING_URL) {
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `window.__DUSTLINE_SIGNALING_URL__ = ${JSON.stringify(SIGNALING_URL)};`,
+    });
+  }
   await page.send("Page.navigate", { url });
   await page.waitForExpression(`location.href === ${JSON.stringify(url)}`);
   await page.waitForExpression("document.readyState === 'complete'");
@@ -321,6 +326,55 @@ async function waitForMatch(page, mapId, timeoutMs = 15_000) {
     `window.__dustlineQa__?.getState()?.match?.mapId === ${JSON.stringify(mapId)}`,
     timeoutMs,
   );
+}
+
+function withQaParam(url) {
+  const target = new URL(url);
+  target.searchParams.set("qa", "1");
+  return target.toString();
+}
+
+async function probeRoomSetupExperience() {
+  const hostPage = await createPage(`${ROOT_URL}?qa=1`);
+  let joinPage;
+
+  try {
+    await hostPage.evaluate(
+      `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
+    );
+    await hostPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+
+    const setupText = await hostPage.evaluate("document.body.innerText.toLowerCase()");
+    assert(setupText.includes("private room"), "Room setup should expose private room creation.");
+    assert(setupText.includes("public room"), "Room setup should expose public room creation.");
+    assert(!setupText.includes("manual host"), "Manual host should be hidden from the room setup UI.");
+    assert(!setupText.includes("manual join"), "Manual join should be hidden from the room setup UI.");
+    assert(!setupText.includes("same-browser dev room"), "Same-browser dev room should be hidden from the room setup UI.");
+
+    const roomCode = await hostPage.evaluate("window.__dustlineQa__.getRoomCode()");
+    const roomUrl = await hostPage.evaluate(
+      "document.querySelector('[data-room-field=\"room-url-output\"]')?.value ?? ''",
+    );
+    assert(typeof roomCode === "string" && roomCode.length >= 6, "Room setup did not generate a room code.");
+    assert(
+      typeof roomUrl === "string" && roomUrl.includes(`room=${roomCode}`) && roomUrl.includes(`map=${MAP_ID}`),
+      "Room setup did not generate a usable invite URL.",
+    );
+
+    joinPage = await createPage(withQaParam(roomUrl));
+    await joinPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    await waitForRoomPhase(hostPage, "connected");
+    await waitForRoomPhase(joinPage, "connected");
+
+    return {
+      roomCode,
+      inviteUrlHasCode: roomUrl.includes(`room=${roomCode}`),
+      hostPhase: await hostPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
+      joinPhase: await joinPage.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
+    };
+  } finally {
+    await Promise.allSettled([hostPage.close(), joinPage?.close()]);
+  }
 }
 
 async function probeOutboundSignalingGuardrail(page) {
@@ -490,6 +544,100 @@ async function probeMalformedRoomPeerFailure(hostPage, joinPage) {
   };
 }
 
+async function probeRelayIdlePolicy() {
+  const hostPage = await createPage(`${ROOT_URL}?qa=1`);
+  const joinPage = await createPage(`${ROOT_URL}?qa=1`);
+
+  try {
+    await hostPage.evaluate(
+      `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
+    );
+    await hostPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    const roomCode = await hostPage.evaluate("window.__dustlineQa__.getRoomCode()");
+    assert(typeof roomCode === "string" && roomCode.length >= 6, "Relay-idle host room code was not generated.");
+
+    await joinPage.evaluate(
+      `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-join")`,
+    );
+    await joinPage.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+    const joined = await joinPage.evaluate(
+      `window.__dustlineQa__.joinSignalingRoom(${JSON.stringify(roomCode)})`,
+    );
+    assert(joined === true, "Relay-idle guest did not start the signaling join flow.");
+
+    await waitForRoomPhase(hostPage, "connected");
+    await waitForRoomPhase(joinPage, "connected");
+
+    assert((await hostPage.evaluate("window.__dustlineQa__.enterArena()")) === true, "Relay-idle host could not enter.");
+    assert((await joinPage.evaluate("window.__dustlineQa__.enterArena()")) === true, "Relay-idle guest could not enter.");
+    await waitForMatch(hostPage, MAP_ID);
+    await waitForMatch(joinPage, MAP_ID);
+    await hostPage.waitForExpression(
+      "(window.__dustlineQa__?.getState()?.match?.remotePlayers?.length ?? 0) === 1",
+      10_000,
+    );
+
+    const configured = await hostPage.evaluate(
+      `window.__dustlineQa__.configureRelayIdleQa(${JSON.stringify({
+        forceRelay: true,
+        warningMs: 1_200,
+        disconnectMs: 2_600,
+      })})`,
+    );
+    assert(configured === true, "Could not configure relay-idle QA policy.");
+
+    await hostPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection?.relayIdle?.peers?.[0]?.warned === true",
+      3_000,
+    );
+    const warningDetail = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection?.detail ?? ''",
+    );
+    assert(
+      typeof warningDetail === "string" && warningDetail.includes("Relay idle warning"),
+      "Relay-idle warning did not surface in the room detail.",
+    );
+
+    const resetSent = await joinPage.evaluate("window.__dustlineQa__.sendInputTick(0, 1, false)");
+    assert(resetSent === true, "Relay-idle reset input tick was not sent.");
+    await hostPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection?.relayIdle?.peers?.[0]?.warned === false",
+      2_000,
+    );
+    const resetDetail = await hostPage.evaluate(
+      "window.__dustlineQa__?.getState()?.match?.roomConnection?.detail ?? ''",
+    );
+    assert(
+      typeof resetDetail === "string" && !resetDetail.includes("Relay idle warning"),
+      "Relay-idle warning did not clear after gameplay input.",
+    );
+
+    await joinPage.evaluate("window.__dustlineQa__.clearInputState()");
+    await hostPage.waitForExpression(
+      "(window.__dustlineQa__?.getState()?.match?.roomConnection?.peerCount ?? -1) === 0",
+      5_000,
+    );
+    await joinPage.waitForExpression(
+      `(window.__dustlineQa__?.getState()?.roomSetup?.supportError ?? "").includes("relay") ||
+        (window.__dustlineQa__?.getState()?.roomSetup?.supportError ?? "").includes("Relay")`,
+      5_000,
+    );
+
+    return {
+      warningDetail,
+      resetDetail,
+      hostPeerCount: await hostPage.evaluate(
+        "window.__dustlineQa__?.getState()?.match?.roomConnection?.peerCount ?? null",
+      ),
+      guestSupportError: await joinPage.evaluate(
+        "window.__dustlineQa__?.getState()?.roomSetup?.supportError ?? ''",
+      ),
+    };
+  } finally {
+    await Promise.allSettled([hostPage.close(), joinPage.close()]);
+  }
+}
+
 async function main() {
   const preview = await startPreview();
   const chrome = await startChrome();
@@ -513,10 +661,15 @@ async function main() {
       const repeatedInvalidSignaling = await probeInboundSignalingGuardrail(inboundProbePage);
       await inboundProbePage.close();
 
+      const roomSetupExperience = await probeRoomSetupExperience();
+      const relayIdlePolicy = await probeRelayIdlePolicy();
+
       guardrails = {
         outboundOfferRejected,
         nullableIceCandidateAccepted,
         repeatedInvalidSignaling,
+        roomSetupExperience,
+        relayIdlePolicy,
       };
     }
 

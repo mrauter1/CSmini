@@ -43,6 +43,10 @@ const SNAPSHOT_PULSE_MS = 85;
 const SNAPSHOT_KEEPALIVE_MS = 1_000;
 const FULL_SNAPSHOT_PULSE_MS = 8_000;
 const STALE_PEER_MS = 60_000;
+const RELAY_IDLE_WARNING_MS = 180_000;
+const RELAY_IDLE_DISCONNECT_MS = 240_000;
+const RELAY_IDLE_POLL_MS = 1_000;
+const RELAY_IDLE_REASON = "relay-idle-timeout";
 export const MAX_ROOM_PARTICIPANTS = 14;
 export const MAX_ROOM_GUESTS = MAX_ROOM_PARTICIPANTS - 1;
 const BROADCAST_HOST_KEY_PREFIX = "dustline.broadcast-host:";
@@ -59,6 +63,7 @@ export type RoomConnectionKind =
   | "webrtc-host"
   | "webrtc-join";
 export type MatchRoomRole = "host" | "guest";
+export type CloudRoomVisibility = "private" | "public";
 
 export interface RoomIdentity extends ParticipantIdentity {}
 
@@ -114,6 +119,7 @@ export interface RoomConnectionDebugSnapshot extends RoomConnectionUiSnapshot {
     inbound: LatestStateQaDebugSnapshot;
     outbound: LatestStateQaDebugSnapshot;
   };
+  relayIdle: RelayIdleDebugSnapshot;
 }
 
 export interface MatchRoomConnection {
@@ -139,6 +145,7 @@ export interface MatchRoomConnection {
     direction: LatestStateQaDirection,
     config?: LatestStateQaConfig | null,
   ) => boolean;
+  debugConfigureRelayIdleQa?: (config?: RelayIdleQaConfig | null) => boolean;
   debugSendSignalingPayload?: (payload: Record<string, unknown>) => boolean;
   debugInjectSignalingMessage?: (raw: string) => boolean;
 }
@@ -181,6 +188,31 @@ export interface LatestStateQaDebugSnapshot {
   duplicateNextCount: number;
   delayMs: number;
   delayScheduleRemaining: number;
+}
+
+export interface RelayIdleQaConfig {
+  forceRelay?: boolean;
+  warningMs?: number;
+  disconnectMs?: number;
+  disabled?: boolean;
+}
+
+export interface RelayIdleDebugPeerSnapshot {
+  peerId: string;
+  subjectPeerId: string;
+  usingRelay: boolean;
+  lastGameplayActivityAt: number;
+  idleMs: number;
+  warned: boolean;
+}
+
+export interface RelayIdleDebugSnapshot {
+  warningMs: number;
+  disconnectMs: number;
+  forcedRelay: boolean;
+  disabled: boolean;
+  activeRelayPeerCount: number;
+  peers: RelayIdleDebugPeerSnapshot[];
 }
 
 interface BroadcastHostClaim {
@@ -242,6 +274,14 @@ function sanitizeLatestStateQaDelaySchedule(values: number[] | undefined): numbe
     .map((value) => clampLatestStateQaDelay(value))
     .filter((value) => value > 0)
     .slice(0, 64);
+}
+
+function sanitizeRelayIdleMs(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(100, Math.floor(value ?? fallback));
 }
 
 export function detectSharedRoomSupport(kind: RoomConnectionKind): {
@@ -371,12 +411,17 @@ export function createSignaledHostMatchRoomConnection(
   signalingUrl: string,
   roomCode: string,
   localTeam: TeamAssignment,
+  visibility: CloudRoomVisibility = "private",
+  mapName = mapId,
 ): MatchRoomConnection {
   const transport = new SignaledWebRtcRoomTransport(
     {
       role: "host",
       roomId,
       mapId,
+      roomCode,
+      mapName,
+      visibility,
       localParticipant: identity,
       sessionLabel,
       signalingUrl,
@@ -485,6 +530,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   readonly lastLatestSeqByPeer = new Map<string, LatestStateSequenceState>();
   readonly lastSeenByPeer = new Map<string, number>();
   readonly invalidRoomMessagesByPeer = new Map<string, number>();
+  readonly relayGameplayActivityByPeer = new Map<string, number>();
+  readonly relayInputSignatureByPeer = new Map<string, string>();
+  readonly relayIdleWarnedSubjects = new Set<string>();
   readonly listeners = new Set<() => void>();
 
   hostPeerId?: string;
@@ -502,6 +550,11 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   protected joined = false;
   protected roomClosed = false;
   protected uiState: RoomConnectionUiSnapshot;
+  private relayIdleTimer = 0;
+  private relayIdleWarningMs = RELAY_IDLE_WARNING_MS;
+  private relayIdleDisconnectMs = RELAY_IDLE_DISCONNECT_MS;
+  private relayIdleForceRelay = false;
+  private relayIdleDisabled = false;
   private pendingSnapshotSignature = "";
   private lastSentSnapshotSignature = "";
   private lastFullSnapshotSentAt = 0;
@@ -527,6 +580,8 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     this.transport = options.transport;
     this.uiState = this.createUiState(this.transport.getStatus());
 
+    this.noteRelayGameplayActivity(this.identity.id);
+    this.startRelayIdleMonitor();
     this.bindTransport();
   }
 
@@ -581,7 +636,11 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return false;
     }
 
-    return this.sendMessage("input-tick", input, this.hostPeerId);
+    const sent = this.sendMessage("input-tick", input, this.hostPeerId);
+    if (sent && this.inputTickHasGameplayActivity(this.identity.id, input)) {
+      this.noteRelayGameplayActivity(this.identity.id);
+    }
+    return sent;
   }
 
   sendShotClaim(claim: RoomShotClaim): boolean {
@@ -589,7 +648,11 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       return false;
     }
 
-    return this.sendMessage("shot-claim", claim, this.hostPeerId);
+    const sent = this.sendMessage("shot-claim", claim, this.hostPeerId);
+    if (sent) {
+      this.noteRelayGameplayActivity(this.identity.id);
+    }
+    return sent;
   }
 
   sendShotResult(result: RoomShotResult, toPeerId?: string): boolean {
@@ -627,6 +690,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
   }
 
   dispose(): void {
+    this.stopRelayIdleMonitor();
     this.clearLatestStateQaTimers("inbound");
     this.clearLatestStateQaTimers("outbound");
     this.sendMessage("disconnect", {
@@ -658,6 +722,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         inbound: this.snapshotLatestStateQa("inbound"),
         outbound: this.snapshotLatestStateQa("outbound"),
       },
+      relayIdle: this.snapshotRelayIdle(),
     };
   }
 
@@ -691,6 +756,228 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
 
     this.emitStateChange();
     return true;
+  }
+
+  debugConfigureRelayIdleQa(config?: RelayIdleQaConfig | null): boolean {
+    this.relayIdleWarningMs = sanitizeRelayIdleMs(config?.warningMs, RELAY_IDLE_WARNING_MS);
+    this.relayIdleDisconnectMs = Math.max(
+      this.relayIdleWarningMs + 100,
+      sanitizeRelayIdleMs(config?.disconnectMs, RELAY_IDLE_DISCONNECT_MS),
+    );
+    this.relayIdleForceRelay = Boolean(config?.forceRelay);
+    this.relayIdleDisabled = Boolean(config?.disabled);
+    this.relayGameplayActivityByPeer.clear();
+    this.relayIdleWarnedSubjects.clear();
+    this.noteRelayGameplayActivity(this.identity.id);
+    for (const participant of this.remoteParticipants()) {
+      this.noteRelayGameplayActivity(participant.id);
+    }
+    this.refreshRelayIdleUi();
+    this.checkRelayIdle(Date.now());
+    return true;
+  }
+
+  private startRelayIdleMonitor(): void {
+    if (this.relayIdleTimer || typeof window === "undefined") {
+      return;
+    }
+
+    this.relayIdleTimer = window.setInterval(() => {
+      this.checkRelayIdle(Date.now());
+    }, RELAY_IDLE_POLL_MS);
+  }
+
+  private stopRelayIdleMonitor(): void {
+    if (!this.relayIdleTimer || typeof window === "undefined") {
+      return;
+    }
+
+    window.clearInterval(this.relayIdleTimer);
+    this.relayIdleTimer = 0;
+  }
+
+  private noteRelayGameplayActivity(peerId: string, now = Date.now()): void {
+    this.relayGameplayActivityByPeer.set(peerId, now);
+    if (this.relayIdleWarnedSubjects.delete(peerId)) {
+      this.refreshRelayIdleUi();
+    }
+  }
+
+  private inputTickHasGameplayActivity(peerId: string, input: RoomInputTick): boolean {
+    const movementActive = Math.hypot(input.movement[0], input.movement[1]) > 0.01;
+    const actionsActive = input.actions.length > 0;
+    const lookSignature = input.look.map((value) => value.toFixed(2)).join(",");
+    const previousSignature = this.relayInputSignatureByPeer.get(peerId);
+    this.relayInputSignatureByPeer.set(peerId, lookSignature);
+
+    return (
+      movementActive ||
+      actionsActive ||
+      (previousSignature !== undefined && previousSignature !== lookSignature)
+    );
+  }
+
+  private relayIdleSubjectForPeer(peerId: string): string {
+    return this.role === "guest" ? this.identity.id : peerId;
+  }
+
+  private activeRelayPeerIds(): string[] {
+    const statsPeers = this.transport.getDebugSnapshot?.().peers ?? [];
+    const peerIds = new Set<string>();
+
+    for (const stats of statsPeers) {
+      if (stats.usingRelay) {
+        peerIds.add(stats.peerId);
+      }
+    }
+
+    if (this.relayIdleForceRelay) {
+      for (const participant of this.remoteParticipants()) {
+        peerIds.add(participant.id);
+      }
+      for (const stats of statsPeers) {
+        peerIds.add(stats.peerId);
+      }
+    }
+
+    return [...peerIds].filter((peerId) => peerId !== this.identity.id);
+  }
+
+  private checkRelayIdle(now: number): void {
+    if (this.roomClosed || this.relayIdleDisabled) {
+      return;
+    }
+
+    const relayPeerIds = this.activeRelayPeerIds();
+    if (relayPeerIds.length === 0) {
+      this.resetRelayIdleClock(now);
+      return;
+    }
+
+    for (const peerId of relayPeerIds) {
+      const subjectPeerId = this.relayIdleSubjectForPeer(peerId);
+      const lastActivityAt = this.relayGameplayActivityByPeer.get(subjectPeerId) ?? now;
+      if (!this.relayGameplayActivityByPeer.has(subjectPeerId)) {
+        this.relayGameplayActivityByPeer.set(subjectPeerId, lastActivityAt);
+      }
+
+      const idleMs = now - lastActivityAt;
+      if (idleMs >= this.relayIdleDisconnectMs) {
+        this.disconnectRelayIdlePeer(peerId);
+        continue;
+      }
+
+      if (idleMs >= this.relayIdleWarningMs) {
+        this.relayIdleWarnedSubjects.add(subjectPeerId);
+      } else if (this.relayIdleWarnedSubjects.delete(subjectPeerId)) {
+        this.refreshRelayIdleUi();
+      }
+    }
+
+    this.refreshRelayIdleUi();
+  }
+
+  private disconnectRelayIdlePeer(peerId: string): void {
+    const subjectPeerId = this.relayIdleSubjectForPeer(peerId);
+    this.relayIdleWarnedSubjects.delete(subjectPeerId);
+
+    const seconds = Math.round(this.relayIdleDisconnectMs / 1_000);
+    if (this.role === "guest") {
+      this.sendMessage("disconnect", { reason: RELAY_IDLE_REASON }, peerId);
+      this.notifyRoomClosed(`Disconnected from relay room after ${seconds}s without gameplay input.`);
+      this.transport.close(RELAY_IDLE_REASON);
+      return;
+    }
+
+    const participantName = this.participants.get(peerId)?.name ?? "A relay operator";
+    const detail = `${participantName} was disconnected after ${seconds}s without gameplay input.`;
+    this.sendMessage("disconnect", { reason: RELAY_IDLE_REASON }, peerId);
+    this.transport.disconnectPeer?.(peerId, RELAY_IDLE_REASON);
+    this.removePeer(peerId, "leave", detail);
+    this.updateUiState({ detail });
+  }
+
+  private resetRelayIdleClock(now: number): void {
+    const hadWarning = this.relayIdleWarnedSubjects.size > 0;
+    this.relayIdleWarnedSubjects.clear();
+    this.relayGameplayActivityByPeer.clear();
+    this.relayInputSignatureByPeer.clear();
+    this.relayGameplayActivityByPeer.set(this.identity.id, now);
+    for (const participant of this.remoteParticipants()) {
+      this.relayGameplayActivityByPeer.set(participant.id, now);
+    }
+    if (hadWarning) {
+      this.refreshRelayIdleUi();
+    }
+  }
+
+  private refreshRelayIdleUi(): void {
+    if (this.roomClosed || this.transport.getStatus().phase !== "connected") {
+      return;
+    }
+
+    const warnedPeerId = this.firstWarnedRelayPeerId();
+    if (!warnedPeerId) {
+      const detail = this.connectedDetail();
+      if (this.uiState.detail !== detail) {
+        this.updateUiState({ detail });
+      }
+      return;
+    }
+
+    const subjectPeerId = this.relayIdleSubjectForPeer(warnedPeerId);
+    const lastActivityAt = this.relayGameplayActivityByPeer.get(subjectPeerId) ?? Date.now();
+    const remainingSeconds = Math.max(
+      1,
+      Math.ceil((this.relayIdleDisconnectMs - (Date.now() - lastActivityAt)) / 1_000),
+    );
+    const subjectLabel =
+      this.role === "guest"
+        ? "You"
+        : this.participants.get(warnedPeerId)?.name ?? "Relay operator";
+    const verb = this.role === "guest" ? "will be disconnected" : "will be disconnected";
+
+    const detail = `Relay idle warning: ${subjectLabel} ${verb} in ${remainingSeconds}s unless gameplay input resumes.`;
+    if (this.uiState.detail !== detail) {
+      this.updateUiState({ detail });
+    }
+  }
+
+  private firstWarnedRelayPeerId(): string | null {
+    for (const peerId of this.activeRelayPeerIds()) {
+      const subjectPeerId = this.relayIdleSubjectForPeer(peerId);
+      if (this.relayIdleWarnedSubjects.has(subjectPeerId)) {
+        return peerId;
+      }
+    }
+
+    return null;
+  }
+
+  private snapshotRelayIdle(): RelayIdleDebugSnapshot {
+    const now = Date.now();
+    const activeRelayPeerIds = new Set(this.activeRelayPeerIds());
+    const peers = this.remoteParticipants().map((participant) => {
+      const subjectPeerId = this.relayIdleSubjectForPeer(participant.id);
+      const lastGameplayActivityAt = this.relayGameplayActivityByPeer.get(subjectPeerId) ?? 0;
+      return {
+        peerId: participant.id,
+        subjectPeerId,
+        usingRelay: activeRelayPeerIds.has(participant.id),
+        lastGameplayActivityAt,
+        idleMs: lastGameplayActivityAt > 0 ? Math.max(0, now - lastGameplayActivityAt) : 0,
+        warned: this.relayIdleWarnedSubjects.has(subjectPeerId),
+      };
+    });
+
+    return {
+      warningMs: this.relayIdleWarningMs,
+      disconnectMs: this.relayIdleDisconnectMs,
+      forcedRelay: this.relayIdleForceRelay,
+      disabled: this.relayIdleDisabled,
+      activeRelayPeerCount: activeRelayPeerIds.size,
+      peers,
+    };
   }
 
   private snapshotLatestStateQa(direction: LatestStateQaDirection): LatestStateQaDebugSnapshot {
@@ -819,6 +1106,18 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     };
   }
 
+  protected connectedDetail(): string {
+    if (this.remoteParticipants().length > 0) {
+      return `Connected with ${this.remoteParticipants().length} remote operator${
+        this.remoteParticipants().length === 1 ? "" : "s"
+      }.`;
+    }
+
+    return this.role === "host"
+      ? "Connected. Awaiting another operator."
+      : "Connected. Waiting for host snapshots.";
+  }
+
   protected updateUiState(update: Partial<RoomConnectionUiSnapshot>): void {
     this.uiState = {
       ...this.uiState,
@@ -876,6 +1175,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     }
 
     this.lastSeenByPeer.set(participant.id, Date.now());
+    this.noteRelayGameplayActivity(participant.id);
     this.handlers.onParticipant(participant, existing ? "updated" : "joined");
     this.updateUiState({
       remoteName: participant.name,
@@ -893,6 +1193,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
     this.lastReliableSeqByPeer.delete(peerId);
     this.lastLatestSeqByPeer.delete(peerId);
     this.invalidRoomMessagesByPeer.delete(peerId);
+    this.relayGameplayActivityByPeer.delete(peerId);
+    this.relayInputSignatureByPeer.delete(peerId);
+    this.relayIdleWarnedSubjects.delete(peerId);
 
     if (removedParticipant) {
       this.handlers.onLeave(peerId, reason);
@@ -910,13 +1213,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
       remoteName: this.remoteParticipants()[0]?.name,
       detail:
         this.transport.getStatus().phase === "connected"
-          ? this.remoteParticipants().length > 0
-            ? `Connected with ${this.remoteParticipants().length} remote operator${
-                this.remoteParticipants().length === 1 ? "" : "s"
-              }.`
-            : this.role === "host"
-              ? "Connected. Awaiting another operator."
-              : "Connected. Waiting for host snapshots."
+          ? this.connectedDetail()
           : this.uiState.detail,
     });
   }
@@ -970,10 +1267,8 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
 
   protected onTransportStatus(status: RoomTransportStatus): void {
     const detail =
-      status.phase === "connected" && this.remoteParticipants().length > 0
-        ? `Connected with ${this.remoteParticipants().length} remote operator${
-            this.remoteParticipants().length === 1 ? "" : "s"
-          }.`
+      status.phase === "connected"
+        ? this.connectedDetail()
         : status.detail;
 
     this.updateUiState({
@@ -1458,6 +1753,9 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         this.rememberParticipant(message.payload.participant);
         return;
       case "input-tick":
+        if (this.inputTickHasGameplayActivity(message.fromPeerId, message.payload)) {
+          this.noteRelayGameplayActivity(message.fromPeerId, event.receivedAt);
+        }
         this.handlers.onInput({
           peerId: message.fromPeerId,
           sentAt: message.sentAt,
@@ -1470,6 +1768,7 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         this.handlers.onSnapshot(message.payload);
         return;
       case "shot-claim":
+        this.noteRelayGameplayActivity(message.fromPeerId, event.receivedAt);
         this.handlers.onShotClaim({
           peerId: message.fromPeerId,
           sentAt: message.sentAt,
@@ -1484,11 +1783,18 @@ abstract class BaseMatchRoomConnection implements MatchRoomConnection {
         });
         return;
       case "objective-event":
+        this.noteRelayGameplayActivity(message.fromPeerId, event.receivedAt);
         return;
       case "heartbeat":
         return;
       case "disconnect":
-        this.removePeer(message.fromPeerId, "leave");
+        this.removePeer(
+          message.fromPeerId,
+          "leave",
+          message.payload.reason === RELAY_IDLE_REASON
+            ? "Disconnected after relay inactivity."
+            : undefined,
+        );
         return;
       default:
         return;

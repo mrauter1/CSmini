@@ -724,6 +724,13 @@ p {
   margin-top: 18px;
 }
 
+.room-setup__visibility {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
 .room-setup__tab {
   display: grid;
   gap: 4px;
@@ -802,6 +809,12 @@ p {
   text-transform: uppercase;
 }
 
+.room-setup__field input[data-room-field="room-url-output"] {
+  font-size: 0.84rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .room-setup__actions {
   display: flex;
   flex-wrap: wrap;
@@ -839,6 +852,62 @@ p {
   border: 1px solid rgba(107, 141, 163, 0.22);
   background: rgba(107, 141, 163, 0.12);
   color: #c8d8e2;
+}
+
+.room-setup__public {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.room-setup__public-list {
+  display: grid;
+  gap: 10px;
+}
+
+.room-setup__public-room {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 8px;
+  text-align: left;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.room-setup__public-room:hover {
+  background: rgba(197, 159, 99, 0.12);
+  border-color: rgba(226, 197, 138, 0.28);
+}
+
+.room-setup__public-room strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-setup__public-room small {
+  color: var(--muted);
+  font: 0.78rem/1.2 "Courier New", monospace;
+  white-space: nowrap;
+}
+
+.room-setup__public-accent {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.08);
+}
+
+.room-setup__empty {
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
 .screen--match {
@@ -1471,6 +1540,18 @@ p {
 
   .room-setup__identity {
     grid-template-columns: 1fr;
+  }
+
+  .room-setup__visibility {
+    grid-template-columns: 1fr;
+  }
+
+  .room-setup__public-room {
+    grid-template-columns: 12px minmax(0, 1fr);
+  }
+
+  .room-setup__public-room small {
+    grid-column: 2;
   }
 
   .world-stage__viewport--match {
