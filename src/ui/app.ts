@@ -332,7 +332,23 @@ export class TacticalShellApp {
     }
 
     host.innerHTML = '<div class="world-stage__loading">Loading live arena...</div>';
+    this.resetMatchScroll();
     void this.mountMatch(host, map, token);
+  }
+
+  private resetMatchScroll(): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const token = this.renderToken;
+    window.requestAnimationFrame(() => {
+      if (token !== this.renderToken || this.screen !== "stage") {
+        return;
+      }
+
+      window.scrollTo(0, 0);
+    });
   }
 
   private teardownMatch(): void {

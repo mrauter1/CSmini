@@ -328,6 +328,39 @@ async function waitForMatch(page, mapId, timeoutMs = 15_000) {
   );
 }
 
+async function assertMatchViewportCentered(page, label) {
+  const geometry = await page.evaluate(`
+    (() => {
+      const shell = document.querySelector('[data-world-shell]');
+      const canvas = shell?.querySelector('canvas');
+      const target = canvas ?? shell;
+      if (!target) {
+        return null;
+      }
+
+      const rect = target.getBoundingClientRect();
+      return {
+        viewportHeight: window.innerHeight,
+        scrollY: Number(window.scrollY.toFixed(2)),
+        top: Number(rect.top.toFixed(2)),
+        bottom: Number(rect.bottom.toFixed(2)),
+        center: Number((rect.top + rect.height / 2).toFixed(2)),
+        expectedCenter: Number((window.innerHeight / 2).toFixed(2)),
+      };
+    })()
+  `);
+  assert(geometry, `${label} did not render a match viewport.`);
+  assert(
+    geometry.scrollY <= 2,
+    `${label} moved the page instead of keeping the browser scroll at the top: ${JSON.stringify(geometry)}.`,
+  );
+  const centerDelta = Math.abs(geometry.center - geometry.expectedCenter);
+  assert(
+    centerDelta <= 60,
+    `${label} match viewport was not vertically centered: ${JSON.stringify(geometry)}.`,
+  );
+}
+
 function withQaParam(url) {
   const target = new URL(url);
   target.searchParams.set("qa", "1");
@@ -394,6 +427,7 @@ async function probeRoomSetupExperience() {
     joinPage = await createPage(withQaParam(roomUrl));
     await waitForRoomPhase(hostPage, "connected");
     await waitForMatch(joinPage, MAP_ID);
+    await assertMatchViewportCentered(joinPage, "Invite join");
 
     closedPage = await createPage(
       withQaParam(`${ROOT_URL}?room=ZZZZZZ&map=${MAP_ID}`),
@@ -434,6 +468,7 @@ async function probeRoomSetupExperience() {
       "document.querySelector('[data-action=\"room-join-public\"]')?.click()",
     );
     await waitForMatch(closedPage, MAP_ID);
+    await assertMatchViewportCentered(closedPage, "Public room join");
 
     return {
       roomCode,
