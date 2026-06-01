@@ -1195,7 +1195,7 @@ export class SignaledWebRtcRoomTransport implements RoomTransport {
   };
 
   private handleIceCandidate(peer: PeerConnectionState, event: RTCPeerConnectionIceEvent): void {
-    if (!event.candidate) {
+    if (!event.candidate || event.candidate.candidate === "") {
       return;
     }
 

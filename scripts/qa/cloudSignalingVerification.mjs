@@ -4,10 +4,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const DEFAULT_ROOT_URL = "http://127.0.0.1:4173/";
+const RUN_SEED = Date.now() % 1000;
+const PREVIEW_PORT = String(4173 + (RUN_SEED % 200));
+const DEBUG_PORT = String(9225 + (RUN_SEED % 200));
+const DEFAULT_ROOT_URL = `http://127.0.0.1:${PREVIEW_PORT}/`;
 const ROOT_URL = process.env.ROOT_URL ?? DEFAULT_ROOT_URL;
-const PREVIEW_PORT = "4173";
-const DEBUG_PORT = "9225";
 const DEBUG_ORIGIN = `http://127.0.0.1:${DEBUG_PORT}`;
 const MAP_ID = "sandline-foundry";
 const SIGNALING_URL = process.env.SIGNALING_URL ?? "";
@@ -258,6 +259,7 @@ async function createPage(url) {
   const page = new CdpPage(target.webSocketDebuggerUrl);
   await page.enablePage();
   await page.send("Page.navigate", { url });
+  await page.waitForExpression(`location.href === ${JSON.stringify(url)}`);
   await page.waitForExpression("document.readyState === 'complete'");
   await page.waitForExpression("Boolean(window.__dustlineQa__)", 15_000);
   if (SIGNALING_URL) {
@@ -345,6 +347,41 @@ async function probeOutboundSignalingGuardrail(page) {
   assert(
     typeof detail === "string" && detail.includes("oversized or invalid offer"),
     "Client should surface the rejected oversized signaling offer.",
+  );
+
+  return {
+    sent,
+    phase: await page.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.phase ?? null"),
+    detail,
+  };
+}
+
+async function probeOutboundNullableIceCandidate(page) {
+  await page.evaluate(
+    `window.__dustlineQa__.openRoomSetup(${JSON.stringify(MAP_ID)}, "signal-host")`,
+  );
+  await page.waitForExpression("window.__dustlineQa__?.getState()?.screen === 'room'");
+  await waitForRoomPhase(page, "waiting");
+
+  const sent = await page.evaluate(
+    `window.__dustlineQa__.sendSignalingPayload(${JSON.stringify({
+      type: "ice-candidate",
+      toPeerId: "missing-guest",
+      candidate: {
+        candidate: "",
+        sdpMid: null,
+        sdpMLineIndex: null,
+        usernameFragment: null,
+      },
+    })})`,
+  );
+  assert(sent === true, "End-of-candidates ICE marker with nullable fields should pass the client guard.");
+
+  await waitForRoomPhase(page, "error");
+  const detail = await page.evaluate("window.__dustlineQa__?.getState()?.roomSetup?.connection?.detail ?? ''");
+  assert(
+    typeof detail === "string" && detail.includes("Target peer is not connected"),
+    "Nullable ICE marker should reach signaling instead of failing client-side validation.",
   );
 
   return {
@@ -466,6 +503,11 @@ async function main() {
       const outboundOfferRejected = await probeOutboundSignalingGuardrail(outboundProbePage);
       await outboundProbePage.close();
 
+      const nullableCandidateProbePage = await createPage(`${ROOT_URL}?qa=1`);
+      pages.push(nullableCandidateProbePage);
+      const nullableIceCandidateAccepted = await probeOutboundNullableIceCandidate(nullableCandidateProbePage);
+      await nullableCandidateProbePage.close();
+
       const inboundProbePage = await createPage(`${ROOT_URL}?qa=1`);
       pages.push(inboundProbePage);
       const repeatedInvalidSignaling = await probeInboundSignalingGuardrail(inboundProbePage);
@@ -473,6 +515,7 @@ async function main() {
 
       guardrails = {
         outboundOfferRejected,
+        nullableIceCandidateAccepted,
         repeatedInvalidSignaling,
       };
     }

@@ -41,6 +41,19 @@ npm test
 
 `npm test` rebuilds the app and runs the broader final browser verification. The standalone `npm run qa:final` command also passed and refreshed `assets/screenshots/`.
 
+## Fresh Results 2026-05-31
+
+Targeted follow-up for cross-network Cloud Room setup fixed the client and Worker ICE-candidate guard so browser-generated end-of-candidates markers and nullable optional candidate fields no longer surface `Cloud signaling rejected an oversized or invalid ICE candidate.` The browser ICE event path skips empty completion markers during normal gathering, while the guarded signaling serializer and Worker sanitizer accept the nullable marker shape for manual/test payloads. Candidate payload size caps remain in place.
+
+Observed results:
+
+- `npm run build`: passed and repeated the known non-blocking large `localMatch` chunk warning
+- `npm run qa:signaling-worker`: passed with `nullableCandidateFieldsDropped: true` on the ICE relay probe
+- `npm run qa:cloud-signaling`: passed with host/guest phases `connected`, rosters at `2`, remotes at `1`, delta snapshots, and a client-side nullable ICE marker reaching signaling instead of failing local validation
+- `npm run qa:cloud-signaling-14`: passed with one host plus 13 guests connected, rosters at `14`, host remote count `13`, every guest remote count `13`, and delta snapshots
+
+The cloud-signaling browser harness now chooses run-specific preview/debug ports so an unrelated local server on `4173` cannot make it load the wrong app during QA.
+
 ## Fresh Results 2026-05-30
 
 ### Command surface
