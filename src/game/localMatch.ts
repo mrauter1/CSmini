@@ -113,19 +113,35 @@ import {
   buildPatrolRoute,
   buildTacticalProfile,
   buildVisibilityPoints,
+  chooseEnemyStrategy,
   chooseRecoveryAnchor,
   chooseRepositionAnchor,
+  createEnemyStrategyProfile,
   evaluateEnemyShotProfile,
   evaluateVisibility,
   nextDeterministicRandom,
   resolveObjectiveAnchor,
   rollEnemyShot,
   type EnemyBehavior,
+  type EnemySquadRole,
   type EnemyShotProfile,
   type EnemyStance,
+  type EnemyStrategy,
+  type EnemyStrategyDecision,
+  type EnemyStrategyProfile,
   type TacticalAnchor,
   type TacticalProfile,
 } from "./tacticalAi";
+import {
+  buildTacticalRouteGraph,
+  classifyTacticalStuck,
+  isSegmentTraversable,
+  planTacticalRoute,
+  type TacticalRecoveryAction,
+  type TacticalRouteGraph,
+  type TacticalRoutePlan,
+  type TacticalStuckClassification,
+} from "./tacticalNavigation";
 import {
   type CombatantRewindState,
   createInitialWeaponState,
@@ -249,6 +265,12 @@ interface LocalMatchOptions {
 
 type EnemyJumpReason = "qa" | "stuck-recovery";
 
+interface EnemyRecoveryTarget {
+  position: THREE.Vector3;
+  label: string;
+  nodeId: string | null;
+}
+
 interface EnemyActor {
   id: string;
   name: string;
@@ -270,7 +292,14 @@ interface EnemyActor {
   lookDirection: THREE.Vector3;
   qaJumpRequested: boolean;
   ai: {
-    role: "anchor" | "route" | "flank";
+    role: EnemySquadRole;
+    profile: EnemyStrategyProfile;
+    strategy: EnemyStrategy;
+    strategyReason: EnemyStrategyDecision["reason"];
+    objectiveIntent: string;
+    teammateInfluence: string | null;
+    strategyEnteredAt: number;
+    strategyCooldownUntil: number;
     behavior: EnemyBehavior;
     stance: EnemyStance;
     targetLabel: string;
@@ -291,15 +320,35 @@ interface EnemyActor {
     repositionReason: "cover" | "angle" | null;
     lastRecoveryReason: "repath" | null;
     recoveryCount: number;
+    lastRecoveryAction: TacticalRecoveryAction;
+    recoveryActionUntil: number;
+    lastRecoveryAt: number;
+    recoveryDirection: THREE.Vector2;
+    recentRecoveryTargetIds: string[];
     lastJumpReason: EnemyJumpReason | null;
     jumpCount: number;
     lastJumpAt: number;
+    jumpStartedAt: number;
+    jumpStartPosition: THREE.Vector3 | null;
+    jumpStartTargetDistance: number;
+    jumpAssessmentPending: boolean;
+    failedJumpSuppressUntil: number;
+    failedJumpLocation: THREE.Vector3 | null;
+    failedJumpReason: EnemyJumpReason | null;
+    jumpSuppressionCount: number;
     behaviorEnteredAt: number;
     behaviorHoldUntil: number;
     burstShotsRemaining: number;
     burstCooldownUntil: number;
     lastProgressAt: number;
     lastProgressPosition: THREE.Vector3;
+    lastTargetDistance: number;
+    lastWaypointDistance: number;
+    stuckClassification: TacticalStuckClassification;
+    stuckSince: number;
+    routePlan: TacticalRoutePlan | null;
+    routePlanUpdatedAt: number;
+    routeDestinationKey: string;
     forcedBehavior: EnemyBehavior | null;
     forcedTargetPosition: THREE.Vector3 | null;
     forcedTargetLabel: string | null;
@@ -421,6 +470,7 @@ export class LocalMatch {
   private readonly clock = new THREE.Clock();
   private readonly collisionWorld: CollisionWorld;
   private readonly tacticalProfile: TacticalProfile;
+  private readonly tacticalRouteGraph: TacticalRouteGraph;
   private readonly audio = new RetroAudio();
   private readonly environmentRaycastMeshes: THREE.Object3D[] = [];
   private readonly enemyRaycastMeshes: THREE.Object3D[] = [];
@@ -574,6 +624,13 @@ export class LocalMatch {
       this.collisionWorld,
       currentBodyHeight(this.movementState),
     );
+    this.tacticalRouteGraph = buildTacticalRouteGraph({
+      map,
+      profile: this.tacticalProfile,
+      world: this.collisionWorld,
+      radius: PLAYER_RADIUS,
+      bodyHeight: currentBodyHeight(this.movementState),
+    });
     this.sharedRoom = this.initializeSharedRoom();
 
     this.host.replaceChildren(this.renderer.domElement);
@@ -809,6 +866,10 @@ export class LocalMatch {
       },
       teamCounts: this.teamCountsSnapshot(),
       roster: this.rosterSnapshot(),
+      tacticalNavigation: {
+        nodeCount: this.tacticalRouteGraph.nodes.length,
+        edgeCount: this.tacticalRouteGraph.edgeCount,
+      },
       focusPoints: this.map.scene.focusPoints.map((focusPoint) => ({
         id: focusPoint.id,
         label: focusPoint.label,
@@ -846,6 +907,21 @@ export class LocalMatch {
         aimPitch: Number(this.aimPitchFromLook(enemy.lookDirection).toFixed(4)),
         ai: {
           role: enemy.ai.role,
+          profileSeed: enemy.ai.profile.seed,
+          profile: {
+            aggression: enemy.ai.profile.aggression,
+            coverDiscipline: enemy.ai.profile.coverDiscipline,
+            routePatience: enemy.ai.profile.routePatience,
+            flankPreference: enemy.ai.profile.flankPreference,
+          },
+          strategy: enemy.ai.strategy,
+          strategyReason: enemy.ai.strategyReason,
+          strategyAge: Number((this.gameNow() - enemy.ai.strategyEnteredAt).toFixed(2)),
+          strategyCooldownRemaining: Number(
+            Math.max(0, enemy.ai.strategyCooldownUntil - this.gameNow()).toFixed(2),
+          ),
+          objectiveIntent: enemy.ai.objectiveIntent,
+          teammateInfluence: enemy.ai.teammateInfluence,
           behavior: enemy.ai.behavior,
           stance: enemy.ai.stance,
           targetLabel: enemy.ai.targetLabel,
@@ -887,12 +963,50 @@ export class LocalMatch {
           ),
           lastRecoveryReason: enemy.ai.lastRecoveryReason,
           recoveryCount: enemy.ai.recoveryCount,
+          recoveryAction: enemy.ai.lastRecoveryAction,
+          recoveryActionRemaining: Number(
+            Math.max(0, enemy.ai.recoveryActionUntil - this.gameNow()).toFixed(2),
+          ),
+          lastRecoveryAgo:
+            enemy.ai.lastRecoveryAt > Number.NEGATIVE_INFINITY
+              ? Number((this.gameNow() - enemy.ai.lastRecoveryAt).toFixed(2))
+              : null,
+          stuckClassification: enemy.ai.stuckClassification,
+          stuckFor:
+            enemy.ai.stuckSince > Number.NEGATIVE_INFINITY
+              ? Number((this.gameNow() - enemy.ai.stuckSince).toFixed(2))
+              : null,
+          route: enemy.ai.routePlan
+            ? {
+                destinationLabel: enemy.ai.routePlan.destinationLabel,
+                direct: enemy.ai.routePlan.direct,
+                reachable: enemy.ai.routePlan.reachable,
+                usesGraph: enemy.ai.routePlan.usesGraph,
+                reason: enemy.ai.routePlan.reason,
+                waypointLabel: enemy.ai.routePlan.waypointLabel,
+                waypointNodeId: enemy.ai.routePlan.waypointNodeId,
+                waypoint: this.toPoint(enemy.ai.routePlan.waypoint, 0),
+                pathNodeIds: enemy.ai.routePlan.pathNodeIds,
+                pathLabels: enemy.ai.routePlan.pathLabels,
+                age: Number((this.gameNow() - enemy.ai.routePlanUpdatedAt).toFixed(2)),
+                cost: Number(enemy.ai.routePlan.cost.toFixed(2)),
+              }
+            : null,
           lastJumpReason: enemy.ai.lastJumpReason,
           jumpCount: enemy.ai.jumpCount,
           lastJumpAgo:
             enemy.ai.lastJumpAt > Number.NEGATIVE_INFINITY
               ? Number((this.gameNow() - enemy.ai.lastJumpAt).toFixed(2))
               : null,
+          failedJumpSuppression: {
+            active: enemy.ai.failedJumpSuppressUntil > this.gameNow(),
+            remaining: Number(Math.max(0, enemy.ai.failedJumpSuppressUntil - this.gameNow()).toFixed(2)),
+            count: enemy.ai.jumpSuppressionCount,
+            reason: enemy.ai.failedJumpReason,
+            location: enemy.ai.failedJumpLocation
+              ? this.toPoint(enemy.ai.failedJumpLocation, 0)
+              : null,
+          },
           forcedTargetLabel:
             enemy.ai.forcedUntil > this.gameNow() ? enemy.ai.forcedTargetLabel : null,
           shotsFired: enemy.ai.shotsFired,
@@ -1995,6 +2109,216 @@ export class LocalMatch {
     };
   }
 
+  debugStageEnemyRelayRouteCase():
+    | {
+        carrierEnemyId: string;
+        supportEnemyIds: string[];
+        siteLabel: string;
+        sitePosition: { x: number; y: number; z: number };
+      }
+    | null {
+    if (
+      this.activeMode !== "local" ||
+      !this.bombState ||
+      this.bombState.phase !== "carried"
+    ) {
+      return null;
+    }
+
+    const carrier = this.objectiveEnemyById(this.bombState.carrierId);
+    if (!carrier) {
+      return null;
+    }
+
+    for (let index = 0; index < this.enemies.length; index += 1) {
+      const enemy = this.enemies[index];
+      enemy.avatar.group.position.copy(this.enemySpawnPoint(index));
+      enemy.movementState.verticalVelocity = 0;
+      enemy.movementState.heightOffset = 0;
+      enemy.movementState.grounded = true;
+      enemy.movementState.crouchBlend = 0;
+      enemy.speed = 0;
+      enemy.qaJumpRequested = false;
+      this.configureEnemyAi(enemy, index);
+      enemy.ai.lastProgressPosition.copy(enemy.avatar.group.position);
+    }
+
+    this.qaAllowEnemyObjectiveActions = true;
+    const sitePosition = new THREE.Vector3(
+      this.bombState.site.position[0],
+      0,
+      this.bombState.site.position[2],
+    );
+    const spawn = this.teamSpawnPositions[this.localTeamId];
+    this.debugSetView(
+      spawn.x,
+      currentEyeHeight(this.movementState),
+      spawn.z,
+      sitePosition.x,
+      currentEyeHeight(this.movementState),
+      sitePosition.z,
+    );
+
+    return {
+      carrierEnemyId: carrier.id,
+      supportEnemyIds: this.enemies
+        .filter((enemy) => enemy.id !== carrier.id)
+        .map((enemy) => enemy.id),
+      siteLabel: this.bombState.site.label,
+      sitePosition: this.toPoint(sitePosition, 0),
+    };
+  }
+
+  debugStageEnemyRelayDefuseCase():
+    | {
+        defuserEnemyId: string;
+        siteLabel: string;
+        sitePosition: { x: number; y: number; z: number };
+      }
+    | null {
+    if (this.activeMode !== "local" || !this.bombState) {
+      return null;
+    }
+
+    const sitePosition = new THREE.Vector3(
+      this.bombState.site.position[0],
+      0,
+      this.bombState.site.position[2],
+    );
+    this.bombState = {
+      ...this.bombState,
+      phase: "planted",
+      carrierId: null,
+      carrierName: null,
+      plantedById: this.playerIdentity.id,
+      plantedByName: this.playerIdentity.name,
+      actingCombatantId: null,
+      actingCombatantName: null,
+      plantStartedAt: null,
+      plantEndsAt: null,
+      defuseStartedAt: null,
+      defuseEndsAt: null,
+      detonatesAt: this.gameNow() + this.bombState.fuseSeconds,
+      updatedAt: this.gameNow(),
+    };
+    this.roundState = {
+      ...this.roundState,
+      phaseEndsAt: this.gameNow() + this.bombState.fuseSeconds,
+    };
+
+    const defuser =
+      this.enemies.find((enemy) => enemy.alive && enemy.teamId === this.bombState?.defendingTeam) ??
+      null;
+    if (!defuser) {
+      return null;
+    }
+
+    defuser.avatar.group.position.copy(sitePosition);
+    defuser.movementState.verticalVelocity = 0;
+    defuser.movementState.heightOffset = 0;
+    defuser.movementState.grounded = true;
+    defuser.movementState.crouchBlend = 0;
+    defuser.speed = 0;
+    this.configureEnemyAi(defuser, this.enemies.indexOf(defuser));
+    defuser.ai.lastProgressPosition.copy(sitePosition);
+    this.qaAllowEnemyObjectiveActions = true;
+    const spawn = this.teamSpawnPositions[this.localTeamId];
+    this.debugSetView(
+      spawn.x,
+      currentEyeHeight(this.movementState),
+      spawn.z,
+      sitePosition.x,
+      currentEyeHeight(this.movementState),
+      sitePosition.z,
+    );
+    this.startBombDefuse(this.gameNow(), defuser.id, defuser.name);
+
+    return {
+      defuserEnemyId: defuser.id,
+      siteLabel: this.bombState.site.label,
+      sitePosition: this.toPoint(sitePosition, 0),
+    };
+  }
+
+  debugStageEnemyHostageEscortCase():
+    | {
+        rescuerEnemyId: string;
+        supportEnemyIds: string[];
+        clusterLabel: string;
+        extractionLabel: string;
+        routeLabels: string[];
+        clusterPosition: { x: number; y: number; z: number };
+        extractionPosition: { x: number; y: number; z: number };
+      }
+    | null {
+    if (
+      this.activeMode !== "local" ||
+      !this.hostageState ||
+      this.hostageState.phase !== "awaiting-rescue"
+    ) {
+      return null;
+    }
+
+    const rescuer =
+      this.enemies.find(
+        (enemy) => enemy.alive && enemy.teamId === this.hostageState?.attackingTeam,
+      ) ?? null;
+    if (!rescuer) {
+      return null;
+    }
+
+    const clusterPosition = findOpenGroundPosition(
+      this.collisionWorld,
+      new THREE.Vector3(
+        this.hostageState.cluster.position[0],
+        0,
+        this.hostageState.cluster.position[2],
+      ),
+      PLAYER_RADIUS,
+      this.enemyBodyHeight(rescuer),
+    );
+    const extractionPosition = findOpenGroundPosition(
+      this.collisionWorld,
+      new THREE.Vector3(
+        this.hostageState.extraction.position[0],
+        0,
+        this.hostageState.extraction.position[2],
+      ),
+      PLAYER_RADIUS,
+      this.enemyBodyHeight(rescuer),
+    );
+    rescuer.avatar.group.position.copy(clusterPosition);
+    rescuer.movementState.verticalVelocity = 0;
+    rescuer.movementState.heightOffset = 0;
+    rescuer.movementState.grounded = true;
+    rescuer.movementState.crouchBlend = 0;
+    rescuer.speed = 0;
+    this.configureEnemyAi(rescuer, this.enemies.indexOf(rescuer));
+    rescuer.ai.lastProgressPosition.copy(clusterPosition);
+    this.qaAllowEnemyObjectiveActions = true;
+    const spawn = this.teamSpawnPositions[this.localTeamId];
+    this.debugSetView(
+      spawn.x,
+      currentEyeHeight(this.movementState),
+      spawn.z,
+      clusterPosition.x,
+      currentEyeHeight(this.movementState),
+      clusterPosition.z,
+    );
+
+    return {
+      rescuerEnemyId: rescuer.id,
+      supportEnemyIds: this.enemies
+        .filter((enemy) => enemy.id !== rescuer.id)
+        .map((enemy) => enemy.id),
+      clusterLabel: this.hostageState.cluster.label,
+      extractionLabel: this.hostageState.extraction.label,
+      routeLabels: this.hostageState.route.map((point) => point.label),
+      clusterPosition: this.toPoint(clusterPosition, 0),
+      extractionPosition: this.toPoint(extractionPosition, 0),
+    };
+  }
+
   debugEvaluateEnemyShot(
     combatantId: string,
     overrides?: Partial<{
@@ -2274,6 +2598,14 @@ export class LocalMatch {
     for (let index = 0; index < 3; index += 1) {
       const avatar = createCombatantAvatar(this.enemyTeamId);
       const spawnPoint = this.enemySpawnPoint(index);
+      const role: EnemySquadRole = index === 0 ? "anchor" : index === 1 ? "route" : "flank";
+      const profile = createEnemyStrategyProfile({
+        enemyId: `enemy-${index}`,
+        mapId: this.map.id,
+        teamId: this.enemyTeamId,
+        roundNumber: this.roundState.roundNumber,
+        role,
+      });
       avatar.group.position.copy(spawnPoint);
       this.scene.add(avatar.group);
 
@@ -2303,7 +2635,14 @@ export class LocalMatch {
         lookDirection: new THREE.Vector3(0, 0, 1),
         qaJumpRequested: false,
         ai: {
-          role: index === 0 ? "anchor" : index === 1 ? "route" : "flank",
+          role,
+          profile,
+          strategy: role === "anchor" ? "anchor_site" : role === "flank" ? "flank_rotate" : "route_probe",
+          strategyReason: "role-default",
+          objectiveIntent: "objective_hold",
+          teammateInfluence: null,
+          strategyEnteredAt: this.gameNow(),
+          strategyCooldownUntil: this.gameNow(),
           behavior: index === 0 ? "objective" : "patrol",
           stance: "standing",
           targetLabel: "Spawn",
@@ -2331,15 +2670,35 @@ export class LocalMatch {
           repositionReason: null,
           lastRecoveryReason: null,
           recoveryCount: 0,
+          lastRecoveryAction: "none",
+          recoveryActionUntil: Number.NEGATIVE_INFINITY,
+          lastRecoveryAt: Number.NEGATIVE_INFINITY,
+          recoveryDirection: new THREE.Vector2(),
+          recentRecoveryTargetIds: [],
           lastJumpReason: null,
           jumpCount: 0,
           lastJumpAt: Number.NEGATIVE_INFINITY,
+          jumpStartedAt: Number.NEGATIVE_INFINITY,
+          jumpStartPosition: null,
+          jumpStartTargetDistance: Number.POSITIVE_INFINITY,
+          jumpAssessmentPending: false,
+          failedJumpSuppressUntil: Number.NEGATIVE_INFINITY,
+          failedJumpLocation: null,
+          failedJumpReason: null,
+          jumpSuppressionCount: 0,
           behaviorEnteredAt: this.gameNow(),
           behaviorHoldUntil: this.gameNow(),
           burstShotsRemaining: 0,
           burstCooldownUntil: 0,
           lastProgressAt: this.gameNow(),
           lastProgressPosition: spawnPoint.clone(),
+          lastTargetDistance: Number.POSITIVE_INFINITY,
+          lastWaypointDistance: Number.POSITIVE_INFINITY,
+          stuckClassification: "holding",
+          stuckSince: Number.NEGATIVE_INFINITY,
+          routePlan: null,
+          routePlanUpdatedAt: Number.NEGATIVE_INFINITY,
+          routeDestinationKey: "",
           forcedBehavior: null,
           forcedTargetPosition: null,
           forcedTargetLabel: null,
@@ -2422,6 +2781,20 @@ export class LocalMatch {
     enemy.ai.objectiveAnchor = objectiveAnchor;
     enemy.ai.patrolRoute = patrolRoute;
     enemy.ai.patrolIndex = Math.min(index, Math.max(0, patrolRoute.length - 1));
+    enemy.ai.profile = createEnemyStrategyProfile({
+      enemyId: enemy.id,
+      mapId: this.map.id,
+      teamId: this.enemyTeamId,
+      roundNumber: this.roundState.roundNumber,
+      role: enemy.ai.role,
+    });
+    enemy.ai.strategy =
+      enemy.ai.role === "anchor" ? "anchor_site" : enemy.ai.role === "flank" ? "flank_rotate" : "route_probe";
+    enemy.ai.strategyReason = "role-default";
+    enemy.ai.objectiveIntent = "objective_hold";
+    enemy.ai.teammateInfluence = null;
+    enemy.ai.strategyEnteredAt = this.gameNow();
+    enemy.ai.strategyCooldownUntil = this.gameNow();
     enemy.ai.behavior = enemy.ai.role === "anchor" ? "objective" : "patrol";
     enemy.ai.stance = "standing";
     enemy.ai.targetLabel =
@@ -2446,15 +2819,35 @@ export class LocalMatch {
     enemy.ai.repositionReason = null;
     enemy.ai.lastRecoveryReason = null;
     enemy.ai.recoveryCount = 0;
+    enemy.ai.lastRecoveryAction = "none";
+    enemy.ai.recoveryActionUntil = Number.NEGATIVE_INFINITY;
+    enemy.ai.lastRecoveryAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.recoveryDirection.set(0, 0);
+    enemy.ai.recentRecoveryTargetIds.length = 0;
     enemy.ai.lastJumpReason = null;
     enemy.ai.jumpCount = 0;
     enemy.ai.lastJumpAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.jumpStartedAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.jumpStartPosition = null;
+    enemy.ai.jumpStartTargetDistance = Number.POSITIVE_INFINITY;
+    enemy.ai.jumpAssessmentPending = false;
+    enemy.ai.failedJumpSuppressUntil = Number.NEGATIVE_INFINITY;
+    enemy.ai.failedJumpLocation = null;
+    enemy.ai.failedJumpReason = null;
+    enemy.ai.jumpSuppressionCount = 0;
     enemy.ai.behaviorEnteredAt = this.gameNow();
     enemy.ai.behaviorHoldUntil = this.gameNow();
     enemy.ai.burstShotsRemaining = 0;
     enemy.ai.burstCooldownUntil = 0;
     enemy.ai.lastProgressAt = this.gameNow();
     enemy.ai.lastProgressPosition.copy(enemy.spawnPoint);
+    enemy.ai.lastTargetDistance = Number.POSITIVE_INFINITY;
+    enemy.ai.lastWaypointDistance = Number.POSITIVE_INFINITY;
+    enemy.ai.stuckClassification = "holding";
+    enemy.ai.stuckSince = Number.NEGATIVE_INFINITY;
+    enemy.ai.routePlan = null;
+    enemy.ai.routePlanUpdatedAt = Number.NEGATIVE_INFINITY;
+    enemy.ai.routeDestinationKey = "";
     enemy.ai.forcedBehavior = null;
     enemy.ai.forcedTargetPosition = null;
     enemy.ai.forcedTargetLabel = null;
@@ -5274,10 +5667,362 @@ export class LocalMatch {
     enemy.ai.forcedUntil = Number.NEGATIVE_INFINITY;
   }
 
+  private enemyObjectiveActionActive(enemy: EnemyActor): boolean {
+    return (
+      this.bombState?.actingCombatantId === enemy.id ||
+      this.hostageState?.actingCombatantId === enemy.id
+    );
+  }
+
+  private enemyDestinationKey(
+    behavior: EnemyBehavior,
+    targetLabel: string,
+    targetPosition: THREE.Vector3,
+  ): string {
+    return `${behavior}:${targetLabel}:${targetPosition.x.toFixed(1)}:${targetPosition.z.toFixed(1)}`;
+  }
+
+  private anchorForFocus(
+    focusId: string,
+    label: string,
+    kind: TacticalAnchor["kind"] = "objective",
+  ): TacticalAnchor | null {
+    const existing = this.tacticalProfile.anchors.find((anchor) => anchor.focusId === focusId);
+    if (existing) {
+      return {
+        ...existing,
+        label,
+        kind,
+      };
+    }
+
+    const focusPoint = this.map.scene.focusPoints.find((focus) => focus.id === focusId);
+    if (!focusPoint) {
+      return null;
+    }
+
+    return {
+      id: `${kind}:${focusId}`,
+      focusId,
+      label,
+      kind,
+      position: new THREE.Vector3(focusPoint.target[0], 0, focusPoint.target[2]),
+    };
+  }
+
+  private anchorForRouteId(routeId: string): TacticalAnchor | null {
+    const route = this.map.tacticalRoutes.find((entry) => entry.id === routeId);
+    if (!route) {
+      return null;
+    }
+
+    return this.anchorForFocus(route.focusId, route.name, "route");
+  }
+
+  private objectiveRouteAnchor(routeIds: string[], role: EnemySquadRole): TacticalAnchor | null {
+    if (routeIds.length <= 0) {
+      return null;
+    }
+
+    const preferredIndex = role === "flank" ? routeIds.length - 1 : role === "route" ? 0 : 0;
+    for (let offset = 0; offset < routeIds.length; offset += 1) {
+      const routeId = routeIds[(preferredIndex + offset) % routeIds.length];
+      const anchor = this.anchorForRouteId(routeId);
+      if (anchor) {
+        return anchor;
+      }
+    }
+
+    return null;
+  }
+
+  private bombSiteRouteIds(): string[] {
+    if (!this.bombState || !this.map.objectives.bomb) {
+      return [];
+    }
+
+    return (
+      this.map.objectives.bomb.sites.find((site) => site.id === this.bombState?.site.id)
+        ?.routeIds ?? []
+    );
+  }
+
+  private hostageClusterRouteIds(): string[] {
+    if (!this.hostageState || !this.map.objectives.hostage) {
+      return [];
+    }
+
+    return (
+      this.map.objectives.hostage.hostageClusters.find(
+        (cluster) => cluster.id === this.hostageState?.cluster.id,
+      )?.routeIds ?? this.hostageState.cluster.routeIds
+    );
+  }
+
+  private hostageRouteAnchorForEnemy(enemy: EnemyActor, preferExtraction: boolean): TacticalAnchor | null {
+    if (!this.hostageState) {
+      return null;
+    }
+
+    if (preferExtraction) {
+      const routeIds = this.hostageState.extraction.routeIds;
+      return (
+        this.objectiveRouteAnchor(routeIds, enemy.ai.role) ??
+        this.anchorForFocus(this.hostageState.extraction.focusId, this.hostageState.extraction.label)
+      );
+    }
+
+    return (
+      this.objectiveRouteAnchor(this.hostageClusterRouteIds(), enemy.ai.role) ??
+      this.anchorForFocus(this.hostageState.cluster.focusId, this.hostageState.cluster.label)
+    );
+  }
+
+  private hostageEscortProgressAnchor(): TacticalAnchor | null {
+    if (!this.hostageState) {
+      return null;
+    }
+
+    if (this.allHostagesAtExtraction()) {
+      return this.anchorForFocus(
+        this.hostageState.extraction.focusId,
+        this.hostageState.extraction.label,
+      );
+    }
+
+    const routeEnd = Math.max(0, this.hostageState.route.length - 1);
+    const earliestActiveIndex = this.hostageState.hostages.reduce((earliest, hostage) => {
+      if (hostage.extracted) {
+        return earliest;
+      }
+
+      return Math.min(earliest, hostage.pathIndex);
+    }, routeEnd);
+    const targetIndex = THREE.MathUtils.clamp(earliestActiveIndex, 1, routeEnd);
+    const routePoint = this.hostageState.route[targetIndex] ?? this.hostageState.route[routeEnd];
+    if (!routePoint) {
+      return null;
+    }
+
+    return this.anchorForFocus(routePoint.focusId, routePoint.label, "route");
+  }
+
+  private hostageEscortProgressAnchorForEnemy(enemy: EnemyActor): TacticalAnchor | null {
+    if (!this.hostageState) {
+      return null;
+    }
+
+    const fallback = this.hostageEscortProgressAnchor();
+    const routeEnd = Math.max(0, this.hostageState.route.length - 1);
+    const enemyFeet = enemy.avatar.group.position.clone().setY(0);
+
+    const firstIndex = this.allHostagesAtExtraction()
+      ? routeEnd
+      : this.hostageState.hostages.reduce((earliest, hostage) => {
+          if (hostage.extracted) {
+            return earliest;
+          }
+
+          return Math.min(earliest, hostage.pathIndex);
+        }, routeEnd);
+
+    for (let index = THREE.MathUtils.clamp(firstIndex, 1, routeEnd); index <= routeEnd; index += 1) {
+      const routePoint = this.hostageState.route[index];
+      if (!routePoint) {
+        continue;
+      }
+
+      const anchor = this.anchorForFocus(routePoint.focusId, routePoint.label, "route");
+      if (!anchor) {
+        continue;
+      }
+
+      const plan = planTacticalRoute({
+        graph: this.tacticalRouteGraph,
+        world: this.collisionWorld,
+        start: enemyFeet,
+        destination: anchor.position,
+        destinationLabel: anchor.label,
+        radius: PLAYER_RADIUS,
+        bodyHeight: this.enemyBodyHeight(enemy),
+      });
+      if (plan.reason !== "unreachable") {
+        return anchor;
+      }
+    }
+
+    return fallback;
+  }
+
+  private objectiveTargetForEnemy(
+    enemy: EnemyActor,
+    decision: EnemyStrategyDecision,
+  ): TacticalAnchor {
+    const fallback = enemy.ai.objectiveAnchor;
+
+    if (this.bombState && this.roundState.activeMission.missionType === "bomb") {
+      const siteAnchor =
+        this.anchorForFocus(this.bombState.site.focusId, this.bombState.site.label) ?? fallback;
+      const siteRouteAnchor = this.objectiveRouteAnchor(this.bombSiteRouteIds(), enemy.ai.role);
+
+      if (
+        this.bombState.phase === "planted" ||
+        this.bombState.phase === "defusing" ||
+        enemy.id === this.bombState.carrierId
+      ) {
+        return siteAnchor;
+      }
+
+      if (enemy.teamId === this.bombState.attackingTeam) {
+        if (decision.objectiveIntent === "carrier_flank_screen" && siteRouteAnchor) {
+          return siteRouteAnchor;
+        }
+
+        if (decision.objectiveIntent === "carrier_escort") {
+          const carrier = this.objectiveEnemyById(this.bombState.carrierId);
+          if (carrier && carrier !== enemy) {
+            return {
+              id: `objective:escort:${carrier.id}`,
+              focusId: siteAnchor.focusId,
+              label: `${carrier.name} escort`,
+              kind: "objective",
+              position: carrier.avatar.group.position.clone().setY(0),
+            };
+          }
+        }
+
+        return siteRouteAnchor ?? siteAnchor;
+      }
+
+      if (decision.objectiveIntent === "site_lane_guard" && siteRouteAnchor) {
+        return siteRouteAnchor;
+      }
+
+      return siteRouteAnchor ?? siteAnchor;
+    }
+
+    if (this.hostageState && this.roundState.activeMission.missionType === "hostage") {
+      const clusterAnchor =
+        this.anchorForFocus(this.hostageState.cluster.focusId, this.hostageState.cluster.label) ??
+        fallback;
+      const extractionAnchor =
+        this.anchorForFocus(
+          this.hostageState.extraction.focusId,
+          this.hostageState.extraction.label,
+        ) ?? fallback;
+      const hostageMoving =
+        this.hostageState.phase === "escorting" ||
+        this.hostageState.phase === "extracting";
+
+      if (enemy.teamId === this.hostageState.attackingTeam) {
+        if (this.hostageState.rescuerId === enemy.id || enemy.ai.role === "anchor") {
+          return hostageMoving
+            ? this.hostageEscortProgressAnchorForEnemy(enemy) ?? extractionAnchor
+            : clusterAnchor;
+        }
+
+        return (
+          this.hostageRouteAnchorForEnemy(enemy, hostageMoving) ??
+          (hostageMoving ? extractionAnchor : clusterAnchor)
+        );
+      }
+
+      if (hostageMoving) {
+        if (decision.objectiveIntent === "extraction_lane_cutoff") {
+          return this.hostageRouteAnchorForEnemy(enemy, true) ?? extractionAnchor;
+        }
+
+        return this.hostageRouteAnchorForEnemy(enemy, false) ?? clusterAnchor;
+      }
+
+      return this.hostageRouteAnchorForEnemy(enemy, false) ?? clusterAnchor;
+    }
+
+    return fallback;
+  }
+
+  private updateEnemyRoutePlan(
+    enemy: EnemyActor,
+    behavior: EnemyBehavior,
+    targetPosition: THREE.Vector3,
+    targetLabel: string,
+    now: number,
+  ): TacticalRoutePlan {
+    const enemyFeet = enemy.avatar.group.position.clone().setY(0);
+    const destinationKey = this.enemyDestinationKey(behavior, targetLabel, targetPosition);
+    const current = enemy.ai.routePlan;
+    const targetMoved =
+      !current || current.destination.distanceToSquared(targetPosition.clone().setY(0)) > 0.8;
+    const reachedWaypoint =
+      current !== null && current.waypoint.distanceTo(enemyFeet) <= 0.78 && !current.direct;
+    const stale = now - enemy.ai.routePlanUpdatedAt > (current?.direct ? 0.42 : 0.32);
+    const destinationChanged = enemy.ai.routeDestinationKey !== destinationKey;
+
+    if (!current || targetMoved || reachedWaypoint || stale || destinationChanged) {
+      const plan = planTacticalRoute({
+        graph: this.tacticalRouteGraph,
+        world: this.collisionWorld,
+        start: enemyFeet,
+        destination: targetPosition,
+        destinationLabel: targetLabel,
+        radius: PLAYER_RADIUS,
+        bodyHeight: this.enemyBodyHeight(enemy),
+      });
+      enemy.ai.routePlan = plan;
+      enemy.ai.routePlanUpdatedAt = now;
+      enemy.ai.routeDestinationKey = destinationKey;
+      enemy.waypoints = [plan.waypoint.clone()];
+      enemy.waypointIndex = 0;
+      return plan;
+    }
+
+    return current;
+  }
+
+  private startEnemyLocalRecovery(
+    enemy: EnemyActor,
+    now: number,
+    targetPosition: THREE.Vector3,
+  ): void {
+    if (enemy.ai.recoveryActionUntil > now) {
+      return;
+    }
+
+    const toTarget = targetPosition.clone().sub(enemy.avatar.group.position).setY(0);
+    if (toTarget.lengthSq() > 0.001) {
+      toTarget.normalize();
+    } else {
+      toTarget.set(0, 0, 1);
+    }
+
+    const sideSign = enemy.ai.role === "flank" ? 1 : enemy.ai.role === "route" ? -1 : 1;
+    const action: TacticalRecoveryAction =
+      enemy.ai.recoveryCount % 3 === 0 ? "backout" : enemy.ai.recoveryCount % 3 === 1 ? "strafe" : "rotate";
+    enemy.ai.lastRecoveryAction = action;
+    enemy.ai.recoveryActionUntil = now + (action === "rotate" ? 0.28 : 0.38);
+    enemy.ai.lastRecoveryAt = now;
+    enemy.ai.recoveryDirection.set(
+      action === "strafe" ? sideSign : -toTarget.x,
+      action === "rotate" ? 0 : -toTarget.z,
+    );
+    enemy.ai.recoveryCount += 1;
+  }
+
+  private noteEnemyRecoveryTarget(enemy: EnemyActor, nodeId: string | null): void {
+    if (!nodeId) {
+      return;
+    }
+
+    enemy.ai.recentRecoveryTargetIds.push(nodeId);
+    if (enemy.ai.recentRecoveryTargetIds.length > 5) {
+      enemy.ai.recentRecoveryTargetIds.splice(0, enemy.ai.recentRecoveryTargetIds.length - 5);
+    }
+  }
+
   private chooseEnemyRecoveryTarget(
     enemy: EnemyActor,
     blockedTargetPosition: THREE.Vector3,
-  ): TacticalAnchor | null {
+  ): EnemyRecoveryTarget | null {
     const targetVisibilityPoints = buildVisibilityPoints(
       blockedTargetPosition,
       STANDING_EYE_HEIGHT,
@@ -5291,13 +6036,115 @@ export class LocalMatch {
       blockedTargetPosition,
       blockedTargetVisibilityPoints: targetVisibilityPoints,
       objectiveAnchor: enemy.ai.objectiveAnchor,
+      excludeAnchorIds: enemy.ai.recentRecoveryTargetIds,
     });
 
-    return (
-      recovery?.anchor ??
+    const enemyFeet = enemy.avatar.group.position.clone().setY(0);
+    if (recovery?.anchor) {
+      const plan = planTacticalRoute({
+        graph: this.tacticalRouteGraph,
+        world: this.collisionWorld,
+        start: enemyFeet,
+        destination: recovery.anchor.position,
+        destinationLabel: recovery.anchor.label,
+        radius: PLAYER_RADIUS,
+        bodyHeight: this.enemyBodyHeight(enemy),
+      });
+      if (plan.reachable || plan.usesGraph) {
+        return {
+          position: recovery.anchor.position.clone(),
+          label: recovery.anchor.label,
+          nodeId: recovery.anchor.id,
+        };
+      }
+    }
+
+    const fallbackNode = this.tacticalRouteGraph.nodes
+      .filter((node) => !enemy.ai.recentRecoveryTargetIds.includes(node.id))
+      .map((node) => {
+        const travelDistance = node.position.distanceTo(enemyFeet);
+        const targetDistance = node.position.distanceTo(blockedTargetPosition);
+        const traversable =
+          travelDistance > 1.2 &&
+          travelDistance < 18 &&
+          isSegmentTraversable(
+            this.collisionWorld,
+            enemyFeet,
+            node.position,
+            PLAYER_RADIUS,
+            this.enemyBodyHeight(enemy),
+          );
+        return {
+          node,
+          score: targetDistance + travelDistance * 0.35,
+          traversable,
+        };
+      })
+      .filter((entry) => entry.traversable)
+      .sort((left, right) => left.score - right.score)[0]?.node;
+
+    if (fallbackNode) {
+      return {
+        position: fallbackNode.position.clone(),
+        label: fallbackNode.label,
+        nodeId: fallbackNode.id,
+      };
+    }
+
+    const patrolFallback =
       enemy.ai.patrolRoute[(enemy.ai.patrolIndex + 1) % Math.max(enemy.ai.patrolRoute.length, 1)] ??
-      null
+      null;
+    return patrolFallback
+      ? {
+          position: patrolFallback.position.clone(),
+          label: patrolFallback.label,
+          nodeId: patrolFallback.id,
+        }
+      : null;
+  }
+
+  private enemyJumpSuppressed(enemy: EnemyActor, targetPosition: THREE.Vector3, now: number): boolean {
+    if (enemy.ai.failedJumpSuppressUntil <= now || !enemy.ai.failedJumpLocation) {
+      return false;
+    }
+
+    const enemyFeet = enemy.avatar.group.position.clone().setY(0);
+    return (
+      enemyFeet.distanceTo(enemy.ai.failedJumpLocation) <= 2.4 &&
+      targetPosition.distanceTo(enemy.ai.failedJumpLocation) >= 1.2
     );
+  }
+
+  private assessEnemyJumpRecovery(
+    enemy: EnemyActor,
+    targetPosition: THREE.Vector3,
+    now: number,
+  ): void {
+    if (
+      !enemy.ai.jumpAssessmentPending ||
+      !enemy.movementState.grounded ||
+      now - enemy.ai.jumpStartedAt < 0.24 ||
+      enemy.ai.lastJumpReason !== "stuck-recovery" ||
+      !enemy.ai.jumpStartPosition
+    ) {
+      return;
+    }
+
+    enemy.ai.jumpAssessmentPending = false;
+    const enemyFeet = enemy.avatar.group.position.clone().setY(0);
+    const targetDistance = enemyFeet.distanceTo(targetPosition);
+    const improved = enemy.ai.jumpStartTargetDistance - targetDistance;
+    const horizontalMove = enemyFeet.distanceTo(enemy.ai.jumpStartPosition);
+    if (improved >= 0.35 || horizontalMove >= 0.55) {
+      return;
+    }
+
+    enemy.ai.failedJumpSuppressUntil = now + 6;
+    enemy.ai.failedJumpLocation = enemy.ai.jumpStartPosition.clone();
+    enemy.ai.failedJumpReason = enemy.ai.lastJumpReason;
+    enemy.ai.jumpSuppressionCount += 1;
+    enemy.ai.lastRecoveryAction = "jump-suppressed";
+    enemy.ai.recoveryActionUntil = Math.max(enemy.ai.recoveryActionUntil, now + 0.65);
   }
 
   private chooseEnemyJumpReason(
@@ -5306,6 +6153,7 @@ export class LocalMatch {
     stance: EnemyStance,
     shouldMove: boolean,
     targetDistance: number,
+    targetPosition: THREE.Vector3,
     now: number,
     tuning: BotDifficultyTuning,
   ): EnemyJumpReason | null {
@@ -5330,13 +6178,37 @@ export class LocalMatch {
       return null;
     }
 
-    if (now - enemy.ai.lastJumpAt < 1.15) {
+    if (
+      enemy.ai.recoveryCount < 1 ||
+      enemy.ai.lastRecoveryAction !== "replan" ||
+      now - enemy.ai.lastRecoveryAt < 0.35
+    ) {
+      return null;
+    }
+
+    if (
+      enemy.ai.canSeePlayer ||
+      enemy.ai.lastVisibility > 0.2 ||
+      now - enemy.ai.lastDamagedAt < 1.4
+    ) {
+      enemy.ai.lastRecoveryAction = "jump-suppressed";
+      enemy.ai.recoveryActionUntil = Math.max(enemy.ai.recoveryActionUntil, now + 0.35);
+      return null;
+    }
+
+    if (this.enemyJumpSuppressed(enemy, targetPosition, now)) {
+      enemy.ai.lastRecoveryAction = "jump-suppressed";
+      enemy.ai.recoveryActionUntil = Math.max(enemy.ai.recoveryActionUntil, now + 0.35);
+      return null;
+    }
+
+    if (now - enemy.ai.lastJumpAt < 2.35) {
       return null;
     }
 
     const stalledFor = now - enemy.ai.lastProgressAt;
-    const jumpStallSeconds = Math.min(0.46, tuning.stuckSeconds * 0.6);
-    if (stalledFor < jumpStallSeconds || stalledFor >= tuning.stuckSeconds) {
+    const jumpStallSeconds = tuning.stuckSeconds * 1.25;
+    if (stalledFor < jumpStallSeconds) {
       return null;
     }
 
@@ -5348,6 +6220,15 @@ export class LocalMatch {
     const playerFeet = new THREE.Vector3(this.camera.position.x, 0, this.camera.position.z);
     const playerVisibilityPoints = this.playerVisibilityPoints();
     this.processEnemyContactQueue(now);
+    const currentStrategyCounts = this.enemies.reduce<Partial<Record<EnemyStrategy, number>>>(
+      (counts, enemy) => {
+        if (enemy.alive) {
+          counts[enemy.ai.strategy] = (counts[enemy.ai.strategy] ?? 0) + 1;
+        }
+        return counts;
+      },
+      {},
+    );
 
     for (const enemy of this.enemies) {
       enemy.recoil = THREE.MathUtils.damp(enemy.recoil, 0, 12, delta);
@@ -5450,8 +6331,114 @@ export class LocalMatch {
         enemy.ai.lastHeardPosition = null;
       }
 
-      let behavior: EnemyBehavior = enemy.ai.role === "anchor" ? "objective" : "patrol";
-      let stance: EnemyStance = enemy.ai.role === "anchor" ? "crouched" : "standing";
+      const recentlyFinishedBurst =
+        enemy.ai.lastShotAt > Number.NEGATIVE_INFINITY &&
+        enemy.ai.burstShotsRemaining <= 0 &&
+        now - enemy.ai.lastShotAt <= tuning.postContactRepositionSeconds;
+      const underPressure =
+        now - enemy.ai.lastDamagedAt <= tuning.postContactRepositionSeconds ||
+        recentlyFinishedBurst ||
+        now - enemy.ai.lastLostSightAt <= tuning.postContactRepositionSeconds;
+      const needsCover =
+        underPressure ||
+        visibility < tuning.clearShotVisibilityThreshold ||
+        playerDistance < 4.4 ||
+        enemy.health <= 42;
+      const repositionChoice = needsCover
+        ? chooseRepositionAnchor({
+            profile: this.tacticalProfile,
+            world: this.collisionWorld,
+            bodyHeight: this.enemyBodyHeight(enemy),
+            enemyPosition: enemyFeet,
+            enemyEyeHeight: this.enemyEyeHeight(enemy),
+            playerPosition: playerFeet,
+            playerVisibilityPoints,
+            objectiveAnchor: enemy.ai.objectiveAnchor,
+            tuning: {
+              minimumScore: tuning.repositionMinimumScore,
+              coverWeight:
+                this.botDifficulty === "hard" ? 1.1 : this.botDifficulty === "easy" ? 0.9 : 1,
+              angleWeight: this.botDifficulty === "hard" ? 1.08 : 1,
+            },
+          })
+        : null;
+      const teammateSupportCount = this.enemies.filter(
+        (teammate) =>
+          teammate !== enemy &&
+          teammate.alive &&
+          teammate.avatar.group.position.distanceTo(enemyPosition) <= 9,
+      ).length;
+      const teammateContactCount =
+        enemy.ai.lastSharedContactAt > Number.NEGATIVE_INFINITY &&
+        now - enemy.ai.lastSharedContactAt <= tuning.communicationMemorySeconds
+          ? 1
+          : 0;
+      let strategyDecision = chooseEnemyStrategy({
+        currentStrategy: enemy.ai.strategy,
+        profile: enemy.ai.profile,
+        enemyId: enemy.id,
+        enemyTeamId: this.enemyTeamId,
+        mission: this.roundState.activeMission,
+        bombState: this.bombState,
+        hostageState: this.hostageState,
+        roundPhase: this.roundState.phase,
+        roundTimeRemaining: roundTimeRemaining(this.roundState, this.roundNow()),
+        health: enemy.health,
+        recentDamageSeconds:
+          enemy.ai.lastDamagedAt > Number.NEGATIVE_INFINITY
+            ? now - enemy.ai.lastDamagedAt
+            : null,
+        ammoReady: enemy.nextFireAt <= now,
+        burstCoolingDown: enemy.ai.burstCooldownUntil > now,
+        canSeePlayer,
+        playerDistance,
+        visibility,
+        lastKnownSeconds:
+          enemy.ai.lastKnownPlayerPosition && enemy.ai.lastSeenAt > Number.NEGATIVE_INFINITY
+            ? now - enemy.ai.lastSeenAt
+            : null,
+        lastHeardSeconds:
+          enemy.ai.lastHeardPosition && enemy.ai.lastHeardAt > Number.NEGATIVE_INFINITY
+            ? now - enemy.ai.lastHeardAt
+            : null,
+        lostSightSeconds:
+          enemy.ai.lastLostSightAt > Number.NEGATIVE_INFINITY
+            ? now - enemy.ai.lastLostSightAt
+            : null,
+        objectiveDistance: enemyFeet.distanceTo(enemy.ai.objectiveAnchor.position),
+        coverAvailable: repositionChoice !== null,
+        escapeRouteAvailable: repositionChoice !== null || enemy.ai.patrolRoute.length > 1,
+        teammateSupportCount,
+        teammateContactCount,
+        teammateStrategyCounts: currentStrategyCounts,
+        difficulty: this.botDifficulty,
+      });
+      const urgentStrategyChange =
+        canSeePlayer ||
+        underPressure ||
+        enemy.health <= 42 ||
+        this.bombState?.phase === "planted" ||
+        this.hostageState?.phase === "escorting" ||
+        this.hostageState?.phase === "extracting" ||
+        roundTimeRemaining(this.roundState, this.roundNow()) <= 18;
+      if (
+        strategyDecision.strategy !== enemy.ai.strategy &&
+        now < enemy.ai.strategyCooldownUntil &&
+        !urgentStrategyChange
+      ) {
+        strategyDecision = {
+          ...strategyDecision,
+          strategy: enemy.ai.strategy,
+          reason: enemy.ai.strategyReason,
+          behavior: enemy.ai.behavior,
+          stance: enemy.ai.stance,
+          objectiveIntent: enemy.ai.objectiveIntent,
+          teammateInfluence: enemy.ai.teammateInfluence ?? "strategy_cooldown",
+        };
+      }
+
+      let behavior: EnemyBehavior = strategyDecision.behavior;
+      let stance: EnemyStance = strategyDecision.stance;
       let targetPosition = enemy.ai.objectiveAnchor.position.clone();
       let targetLabel = enemy.ai.objectiveAnchor.label;
       let moveTowardTarget = true;
@@ -5469,61 +6456,20 @@ export class LocalMatch {
         stance = enemy.ai.forcedStance;
         targetPosition = enemy.ai.forcedTargetPosition.clone();
         targetLabel = enemy.ai.forcedTargetLabel ?? "Recovery angle";
-      } else if (canSeePlayer) {
-        const recentlyFinishedBurst =
-          enemy.ai.lastShotAt > Number.NEGATIVE_INFINITY &&
-          enemy.ai.burstShotsRemaining <= 0 &&
-          now - enemy.ai.lastShotAt <= tuning.postContactRepositionSeconds;
-        const underPressure =
-          now - enemy.ai.lastDamagedAt <= tuning.postContactRepositionSeconds ||
-          recentlyFinishedBurst ||
-          now - enemy.ai.lastLostSightAt <= tuning.postContactRepositionSeconds;
-        const repositionChoice =
-          underPressure ||
-          visibility < tuning.clearShotVisibilityThreshold ||
-          playerDistance < 4.4
-            ? chooseRepositionAnchor({
-                profile: this.tacticalProfile,
-                world: this.collisionWorld,
-                bodyHeight: this.enemyBodyHeight(enemy),
-                enemyPosition: enemyFeet,
-                enemyEyeHeight: this.enemyEyeHeight(enemy),
-                playerPosition: playerFeet,
-                playerVisibilityPoints,
-                objectiveAnchor: enemy.ai.objectiveAnchor,
-                tuning: {
-                  minimumScore: tuning.repositionMinimumScore,
-                  coverWeight: this.botDifficulty === "hard" ? 1.1 : this.botDifficulty === "easy" ? 0.9 : 1,
-                  angleWeight: this.botDifficulty === "hard" ? 1.08 : 1,
-                },
-              })
-            : null;
+      } else if (
+        strategyDecision.strategy === "cover_reposition" ||
+        strategyDecision.strategy === "fallback_guard"
+      ) {
         const fallbackAnchor =
           repositionChoice?.anchor ??
           enemy.ai.patrolRoute[(enemy.ai.patrolIndex + 1) % Math.max(enemy.ai.patrolRoute.length, 1)] ??
           enemy.ai.objectiveAnchor;
-
-        if (underPressure) {
-          behavior = "reposition";
-          stance = repositionChoice?.reason === "cover" ? "crouched" : "standing";
-          targetPosition = fallbackAnchor.position.clone();
-          targetLabel = fallbackAnchor.label;
-          enemy.ai.repositionReason = repositionChoice?.reason ?? "angle";
-          shouldShoot = visibility >= tuning.engageVisibilityThreshold;
-        } else if (repositionChoice) {
-          behavior = "reposition";
-          stance = repositionChoice.reason === "cover" ? "crouched" : "standing";
-          targetPosition = repositionChoice.anchor.position.clone();
-          targetLabel = repositionChoice.anchor.label;
-          enemy.ai.repositionReason = repositionChoice.reason;
-          shouldShoot = visibility >= tuning.engageVisibilityThreshold;
-        } else if (playerDistance > 11.5) {
-          behavior = "pursue";
-          stance = "standing";
-          targetPosition = playerFeet.clone();
-          targetLabel = "Last seen angle";
-          shouldShoot = visibility >= tuning.engageVisibilityThreshold;
-        } else {
+        targetPosition = fallbackAnchor.position.clone();
+        targetLabel = fallbackAnchor.label;
+        enemy.ai.repositionReason = repositionChoice?.reason ?? "angle";
+        shouldShoot = canSeePlayer && visibility >= tuning.engageVisibilityThreshold;
+      } else if (strategyDecision.strategy === "pursue_contact") {
+        if (canSeePlayer && playerDistance <= 11.5) {
           behavior = "engage";
           stance = visibility < tuning.clearShotVisibilityThreshold ? "crouched" : "standing";
           targetPosition = playerDistance > 6.2 ? playerFeet.clone() : enemyFeet.clone();
@@ -5531,33 +6477,64 @@ export class LocalMatch {
             visibility >= tuning.clearShotVisibilityThreshold ? "Clear shot" : "Partial angle";
           moveTowardTarget = playerDistance > 6.2;
           shouldShoot = visibility >= tuning.engageVisibilityThreshold;
+        } else {
+          behavior = "pursue";
+          stance = "standing";
+          targetPosition = (canSeePlayer ? playerFeet : enemy.ai.lastKnownPlayerPosition ?? playerFeet).clone();
+          targetLabel = canSeePlayer ? "Last seen angle" : "Last known position";
+          shouldShoot = canSeePlayer && visibility >= tuning.engageVisibilityThreshold;
         }
-      } else if (
-        enemy.ai.lastKnownPlayerPosition &&
-        now - enemy.ai.lastSeenAt <= tuning.pursuitSeconds
-      ) {
-        behavior = "pursue";
-        stance = "standing";
-        targetPosition = enemy.ai.lastKnownPlayerPosition.clone();
-        targetLabel = "Last known position";
-      } else if (
-        enemy.ai.lastHeardPosition &&
-        now - enemy.ai.lastHeardAt <= tuning.investigationSeconds
-      ) {
+      } else if (strategyDecision.strategy === "route_probe" && enemy.ai.lastHeardPosition) {
         behavior = "investigate";
         stance = "standing";
         targetPosition = enemy.ai.lastHeardPosition.clone();
         targetLabel = "Sound contact";
-      } else if (enemy.ai.role === "anchor") {
+      } else if (
+        this.roundState.activeMission.missionType === "bomb" &&
+        this.bombState &&
+        (strategyDecision.strategy === "route_probe" ||
+          strategyDecision.strategy === "flank_rotate") &&
+        (strategyDecision.objectiveIntent.startsWith("carrier_") ||
+          strategyDecision.objectiveIntent.startsWith("site_"))
+      ) {
+        behavior = "patrol";
+        stance = strategyDecision.objectiveIntent.includes("guard") ? "crouched" : "standing";
+        const objectiveTarget = this.objectiveTargetForEnemy(enemy, strategyDecision);
+        targetPosition = objectiveTarget.position.clone();
+        targetLabel = objectiveTarget.label;
+      } else if (
+        this.roundState.activeMission.missionType === "hostage" &&
+        this.hostageState &&
+        (strategyDecision.strategy === "route_probe" ||
+          strategyDecision.strategy === "flank_rotate") &&
+        (strategyDecision.objectiveIntent.startsWith("hostage_") ||
+          strategyDecision.objectiveIntent.startsWith("escort_") ||
+          strategyDecision.objectiveIntent.startsWith("extraction_"))
+      ) {
+        behavior = "patrol";
+        stance = strategyDecision.objectiveIntent.includes("guard") ? "crouched" : "standing";
+        const objectiveTarget = this.objectiveTargetForEnemy(enemy, strategyDecision);
+        targetPosition = objectiveTarget.position.clone();
+        targetLabel = objectiveTarget.label;
+      } else if (
+        strategyDecision.strategy === "anchor_site" ||
+        strategyDecision.strategy === "pressure_objective" ||
+        strategyDecision.strategy === "objective_commit"
+      ) {
         behavior = "objective";
-        stance = enemy.ai.role === "anchor" ? "crouched" : "standing";
-        targetPosition = enemy.ai.objectiveAnchor.position.clone();
-        targetLabel = enemy.ai.objectiveAnchor.label;
+        stance = strategyDecision.strategy === "anchor_site" ? "crouched" : "standing";
+        const objectiveTarget = this.objectiveTargetForEnemy(enemy, strategyDecision);
+        targetPosition = objectiveTarget.position.clone();
+        targetLabel = objectiveTarget.label;
       } else {
         behavior = "patrol";
         stance = "standing";
         const routeTarget =
-          enemy.ai.patrolRoute[enemy.ai.patrolIndex] ?? enemy.ai.objectiveAnchor;
+          enemy.ai.patrolRoute[
+            strategyDecision.strategy === "flank_rotate"
+              ? (enemy.ai.patrolIndex + 1) % Math.max(enemy.ai.patrolRoute.length, 1)
+              : enemy.ai.patrolIndex
+          ] ?? enemy.ai.objectiveAnchor;
         targetPosition = routeTarget.position.clone();
         targetLabel = routeTarget.label;
       }
@@ -5580,20 +6557,32 @@ export class LocalMatch {
 
       const toTarget = targetPosition.clone().sub(enemyFeet);
       toTarget.y = 0;
-      const targetDistance = toTarget.length();
+      let targetDistance = toTarget.length();
       if (behavior === "patrol" && targetDistance < 0.9 && enemy.ai.patrolRoute.length > 0) {
         enemy.ai.patrolIndex = (enemy.ai.patrolIndex + 1) % enemy.ai.patrolRoute.length;
         const nextPatrol = enemy.ai.patrolRoute[enemy.ai.patrolIndex] ?? enemy.ai.objectiveAnchor;
         targetPosition = nextPatrol.position.clone();
         targetLabel = nextPatrol.label;
+        targetDistance = targetPosition.clone().sub(enemyFeet).setY(0).length();
       }
+
+      const routePlan = this.updateEnemyRoutePlan(enemy, behavior, targetPosition, targetLabel, now);
+      const moveTargetPosition = routePlan.waypoint.clone();
+      const waypointDistance = moveTargetPosition.distanceTo(enemyFeet);
+      const directSegmentClear = isSegmentTraversable(
+        this.collisionWorld,
+        enemyFeet,
+        targetPosition,
+        PLAYER_RADIUS,
+        this.enemyBodyHeight(enemy),
+      );
 
       const lookTargetBeforeMove = canSeePlayer
         ? this.camera.position
-        : targetPosition.clone().setY(enemyEye.y);
+        : moveTargetPosition.clone().setY(enemyEye.y);
       this.faceCombatantAt(enemy.avatar.group, enemyPosition, lookTargetBeforeMove);
 
-      const desiredMoveDirection = targetPosition.clone().sub(enemyFeet).setY(0);
+      const desiredMoveDirection = moveTargetPosition.clone().sub(enemyFeet).setY(0);
       const shouldMove = moveTowardTarget && desiredMoveDirection.length() > 0.5;
       let moveX = 0;
       let moveZ = 0;
@@ -5620,12 +6609,26 @@ export class LocalMatch {
         }
       }
 
+      if (enemy.ai.recoveryActionUntil > now) {
+        if (enemy.ai.lastRecoveryAction === "backout") {
+          moveX = 0;
+          moveZ = -0.82;
+        } else if (enemy.ai.lastRecoveryAction === "strafe") {
+          moveX = enemy.ai.recoveryDirection.x >= 0 ? 0.85 : -0.85;
+          moveZ = -0.18;
+        } else if (enemy.ai.lastRecoveryAction === "rotate") {
+          moveX = enemy.ai.role === "flank" ? 0.7 : -0.7;
+          moveZ = 0;
+        }
+      }
+
       const jumpReason = this.chooseEnemyJumpReason(
         enemy,
         behavior,
         stance,
         shouldMove,
         targetDistance,
+        targetPosition,
         now,
         tuning,
       );
@@ -5665,25 +6668,78 @@ export class LocalMatch {
         enemy.ai.lastJumpReason = jumpReason;
         enemy.ai.jumpCount += 1;
         enemy.ai.lastJumpAt = now;
+        enemy.ai.jumpStartedAt = now;
+        enemy.ai.jumpStartPosition = movedEnemyFeet.clone();
+        enemy.ai.jumpStartTargetDistance = movedEnemyFeet.distanceTo(targetPosition);
+        enemy.ai.jumpAssessmentPending = jumpReason === "stuck-recovery";
         if (jumpReason === "stuck-recovery") {
           enemy.ai.lastProgressAt = now;
           enemy.ai.lastProgressPosition.copy(movedEnemyFeet);
+          enemy.ai.lastRecoveryAction = "jump";
+          enemy.ai.recoveryActionUntil = Math.max(enemy.ai.recoveryActionUntil, now + 0.28);
         }
       }
 
-      const movedEnough =
-        movedEnemyFeet.distanceToSquared(enemy.ai.lastProgressPosition) > 0.08 ||
-        enemy.speed > 0.42;
-      if (!moveTowardTarget || targetDistance <= 1.1 || movedEnough) {
+      this.assessEnemyJumpRecovery(enemy, targetPosition, now);
+
+      const finalTargetDistanceAfter = movedEnemyFeet.distanceTo(targetPosition);
+      const waypointDistanceAfter = movedEnemyFeet.distanceTo(moveTargetPosition);
+      const movedDistance = movedEnemyFeet.distanceTo(enemy.ai.lastProgressPosition);
+      const targetDistanceImprovement = targetDistance - finalTargetDistanceAfter;
+      const holding =
+        behavior === "engage" ||
+        (!moveTowardTarget && !shouldMove) ||
+        (behavior === "objective" && finalTargetDistanceAfter <= 1.35);
+      const objectiveAction = this.enemyObjectiveActionActive(enemy);
+      const classification = classifyTacticalStuck({
+        shouldMove,
+        finalTargetDistance: finalTargetDistanceAfter,
+        waypointDistance: waypointDistanceAfter,
+        speed: enemy.speed,
+        movedDistance,
+        targetDistanceImprovement,
+        stalledSeconds: now - enemy.ai.lastProgressAt,
+        stuckSeconds: tuning.stuckSeconds,
+        grounded: enemy.movementState.grounded,
+        crouching: movement.crouching,
+        holding,
+        objectiveAction,
+        recoveryAction: enemy.ai.recoveryActionUntil > now ? enemy.ai.lastRecoveryAction : "none",
+      });
+      enemy.ai.stuckClassification = classification;
+      if (classification === "blocked_geometry" || classification === "blocked_tactical") {
+        if (enemy.ai.stuckSince === Number.NEGATIVE_INFINITY) {
+          enemy.ai.stuckSince = now;
+        }
+      } else {
+        enemy.ai.stuckSince = Number.NEGATIVE_INFINITY;
+      }
+
+      if (
+        classification !== "blocked_geometry" ||
+        !moveTowardTarget ||
+        targetDistance <= 1.1 ||
+        directSegmentClear === false && routePlan.usesGraph && enemy.speed > 0.22
+      ) {
         enemy.ai.lastProgressAt = now;
         enemy.ai.lastProgressPosition.copy(movedEnemyFeet);
       } else if (now - enemy.ai.lastProgressAt >= tuning.stuckSeconds) {
+        const recentLocalRecovery =
+          (enemy.ai.lastRecoveryAction === "backout" ||
+            enemy.ai.lastRecoveryAction === "strafe" ||
+            enemy.ai.lastRecoveryAction === "rotate") &&
+          now - enemy.ai.lastRecoveryAt <= 1.2;
         const recoveryTarget = this.chooseEnemyRecoveryTarget(enemy, targetPosition);
-        if (recoveryTarget) {
+        if (recoveryTarget && recentLocalRecovery) {
           enemy.ai.lastRecoveryReason = "repath";
+          enemy.ai.lastRecoveryAction = "replan";
+          enemy.ai.recoveryActionUntil = now + 0.42;
+          enemy.ai.lastRecoveryAt = now;
           enemy.ai.recoveryCount += 1;
           enemy.ai.lastProgressAt = now;
           enemy.ai.lastProgressPosition.copy(movedEnemyFeet);
+          this.noteEnemyRecoveryTarget(enemy, recoveryTarget.nodeId);
+          enemy.ai.routePlan = null;
           this.setEnemyForcedDirective(
             enemy,
             now,
@@ -5693,15 +6749,39 @@ export class LocalMatch {
             recoveryTarget.label,
             tuning.recoveryCommitSeconds,
           );
+        } else if (enemy.ai.recoveryActionUntil <= now) {
+          this.startEnemyLocalRecovery(enemy, now, targetPosition);
         } else {
           enemy.ai.lastProgressAt = now;
         }
+      } else if (
+        classification === "blocked_geometry" &&
+        now - enemy.ai.lastProgressAt >= tuning.stuckSeconds * 0.52 &&
+        enemy.ai.recoveryActionUntil <= now
+      ) {
+        this.startEnemyLocalRecovery(enemy, now, targetPosition);
       }
+      enemy.ai.lastTargetDistance = finalTargetDistanceAfter;
+      enemy.ai.lastWaypointDistance = waypointDistanceAfter;
 
       if (behavior !== enemy.ai.behavior) {
         enemy.ai.behaviorEnteredAt = now;
         enemy.ai.behaviorHoldUntil = now + tuning.behaviorHoldSeconds;
       }
+      if (strategyDecision.strategy !== enemy.ai.strategy) {
+        currentStrategyCounts[enemy.ai.strategy] = Math.max(
+          0,
+          (currentStrategyCounts[enemy.ai.strategy] ?? 1) - 1,
+        );
+        currentStrategyCounts[strategyDecision.strategy] =
+          (currentStrategyCounts[strategyDecision.strategy] ?? 0) + 1;
+        enemy.ai.strategyEnteredAt = now;
+        enemy.ai.strategyCooldownUntil = now + strategyDecision.cooldownSeconds;
+      }
+      enemy.ai.strategy = strategyDecision.strategy;
+      enemy.ai.strategyReason = strategyDecision.reason;
+      enemy.ai.objectiveIntent = strategyDecision.objectiveIntent;
+      enemy.ai.teammateInfluence = strategyDecision.teammateInfluence;
       enemy.ai.behavior = behavior;
       enemy.ai.stance = stance;
       enemy.ai.targetLabel = targetLabel;
@@ -5710,7 +6790,7 @@ export class LocalMatch {
       const currentEnemyEye = this.enemyEyePosition(enemy);
       const lookTarget = canSeePlayer
         ? this.camera.position
-        : targetPosition.clone().setY(currentEnemyEye.y);
+        : moveTargetPosition.clone().setY(currentEnemyEye.y);
       const aimPitch = this.aimPitchBetween(currentEnemyEye, lookTarget);
       this.faceCombatantAt(enemy.avatar.group, enemyPosition, lookTarget);
       this.tempLook.copy(lookTarget).sub(currentEnemyEye);

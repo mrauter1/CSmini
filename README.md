@@ -23,6 +23,10 @@ Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The cu
   - engage
   - reposition
   - pursue
+  - graph waypoint routing around blocked direct paths
+  - independent anchor, route, and flank strategy selection
+  - map-aware Relay Charge carrier/escort/defuse intent
+  - map-aware Evac Escort rescue/escort/extraction guard intent
 
 Solo bots use the same walk, crouch, jump, gravity, and collision contract as the player. `easy`, `medium`, and `hard` change tactical quality instead: reaction time, communication delay, memory, burst discipline, cover choice, and shot spread. `medium` remains the default.
 
@@ -87,6 +91,7 @@ Durable QA artifacts:
 - `docs/qa/local-play.md`
 - `docs/qa/multiplayer.md`
 - `docs/qa/classic-feel.md`
+- `docs/qa/human-like-map-aware-bots.md`
 - `docs/qa/visual-report.md`
 - `docs/qa/final-release.md`
 

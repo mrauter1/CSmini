@@ -1,205 +1,277 @@
-# Botpipe Goal: Smarter Bots With Player-Equivalent Mechanics
+# Botpipe Goal: Human-Like Map-Aware Solo Bots
 
-Implement a focused tactical-AI pass for Dustline Protocol that makes solo bots smarter while putting them on the same movement and mechanics contract as the player.
+Implement a deep tactical-AI improvement pass for Dustline Protocol so solo bots play more like believable human opponents in a classic CS 1.5-era tactical FPS homage.
 
-Read `AGENTS.md`, `README.md`, `docs/visual-target.md`, `docs/assets.md`, `docs/qa/*.md`, `src/game/playerMovement.ts`, `src/game/tacticalAi.ts`, `src/game/localMatch.ts`, and `scripts/qa/finalVerification.mjs` before editing. This repo is a browser-only Vite/TypeScript/Three.js tactical FPS prototype inspired by CS 1.5-era feel. Preserve original assets, names, teams, UI, sounds, and maps.
+This is not a generic "make bots harder" task. First analyze and understand the current AI, maps, collision, objective systems, QA hooks, and user-reported failure modes, then plan the best practical solution for this repo before editing code. The solution should improve bot navigation, stuck recovery, map knowledge, tactical strategy selection, objective pressure, and mid-round adaptation while preserving browser-only constraints and the existing CS 1.5-inspired feel.
 
-## Current Understanding
+## Required Reading Before Editing
 
-- Player movement is centralized in `src/game/playerMovement.ts`:
-  - walk speed `PLAYER_WALK_SPEED = 8.6`
-  - crouch multiplier `0.56`
-  - air control `0.78`
-  - gravity `13.6`
-  - jump velocity `5.25`
-  - crouch blend, grounded/airborne state, body height, collision-safe horizontal movement
-- Current solo enemies in `src/game/localMatch.ts` are behaviorally tactical but mechanically separate:
-  - bot speed is `ENEMY_SPEED = 2.35`, much slower than player walk speed
-  - bot movement directly resolves horizontal deltas toward targets instead of using a bot/player shared movement state
-  - bot stance is `standing | crouched`, but there is no bot-owned crouch blend, grounded state, vertical velocity, jump request, air control, or landing state
-  - bots do not use the same jump/crouch mechanics as players
-- Current AI already has useful tactical primitives:
-  - behaviors: `objective`, `patrol`, `investigate`, `pursue`, `reposition`, `engage`
-  - roles: `anchor`, `route`, `flank`
-  - visibility sampling and line-of-sight blockers
-  - deterministic shot profile and miss model affected by range, visibility, movement, crouch, and target speed
-  - map tactical anchors, patrol routes, objective anchors, and cover/reposition choices
-- There is currently no bot difficulty setting.
-- `docs/qa/multiplayer.md` notes that tactical-AI multiplayer behavior is outside current coverage; this pass should stay focused on solo-local bots unless a shared-room fallback naturally uses local bots.
+Read these files before making code changes:
 
-## Design Direction
+- `AGENTS.md`
+- `README.md`
+- `docs/visual-target.md`
+- `docs/assets.md`
+- `docs/qa/local-play.md`
+- `docs/qa/classic-feel.md`
+- other relevant `docs/qa/*.md`
+- `src/data/maps.ts`
+- `src/game/tacticalAi.ts`
+- `src/game/localMatch.ts`
+- `src/game/playerMovement.ts`
+- `src/game/collision.ts`
+- `src/game/botDifficulty.ts`
+- `src/game/botDifficultyTuning.ts`
+- `src/game/bombState.ts`
+- `src/game/hostageState.ts`
+- `src/game/rounds.ts`
+- `scripts/qa/finalVerification.mjs`
 
-The right fix is not to make bots faster through another bot-only constant. Bots should use the same movement constants and physical mechanics as the player, then make tactical choices that produce input-like intent:
+Preserve all project constraints: browser-only Vite/TypeScript/Three.js, `three` as the only runtime dependency, no server requirement, original assets/names/maps/UI/sounds, no Counter-Strike content copying, no sprint layer, no heavy engine, and no deployment unless explicitly asked.
 
-- desired movement direction
-- crouch intent
-- jump intent
-- hold/peek/reposition intent
-- aim/fire/reload intent
-- objective-interaction intent
+## Current Baseline
 
-Difficulty should affect perception delay, reaction time, aim/spread, memory, coordination, burst discipline, and tactical choices. Difficulty must not grant wall vision, impossible speed, instant turns, perfect aim, or movement mechanics the player cannot perform.
+The existing implementation already has important foundations:
 
-## Goal
+- Solo bot difficulty exists: `easy`, `medium`, `hard`, with `medium` default.
+- Bots use the shared player-equivalent movement contract for walk, crouch, jump, gravity, body/eye height, and collision.
+- Current behaviors include `objective`, `patrol`, `investigate`, `pursue`, `reposition`, and `engage`.
+- Current tactical primitives include anchors, route anchors, focus anchors, objective anchors, visibility checks, line-of-sight blockers, last-known player memory, delayed squad contact, burst fire, difficulty-dependent tuning, and limited stuck recovery.
+- QA already verifies difficulty, shared movement, crouch/jump, line-of-sight blocking, delayed contact, hit/miss readability, enemy-side objective pressure, and one bounded solo round resolution.
 
-Make solo bots feel like more believable classic tactical FPS opponents:
+Treat those as useful foundations. Do not redo them unless analysis proves they are the cause of the remaining failures.
 
-- They move with the same base speed and mechanics as players.
-- They can crouch, jump, become airborne, land, and collide through the same movement rules or a clearly shared equivalent.
-- They make smarter tactical decisions around objectives, cover, sound, last-known positions, peeking, holding, repositioning, and pressure.
-- They support exactly three bot levels: `easy`, `medium`, and `hard`.
-- `medium` is the default everywhere.
-- The implementation remains browser-only, lightweight, deterministic enough for QA, and compatible with Render static deployment.
+## User-Reported Problems To Investigate
 
-## Required Behavior
+Analyze these specific observed problems and reproduce or reason about them from code and QA:
 
-### 1. Add Bot Difficulty
+- Bots get stuck against geometry or places they cannot pass through.
+- When stuck, bots do not reliably rotate, back out, choose another route, or commit to a sensible fallback.
+- Bots appear to lack real map/path knowledge; they move toward targets as if a direct line is always viable.
+- Bots may repeatedly jump in the same spot or at the same obstruction, becoming predictable and vulnerable.
+- Bots expose themselves to shots from behind or beside walls because they do not understand the tactical risk of a position.
+- Bots can remain too synchronized or simplistic instead of each bot using an independent strategy.
+- Bots do not always change strategy when the objective state, player position, health, teammate status, or round phase changes.
+- Bots should be able to rotate, hold, probe, flank, fall back, guard objectives, investigate, pursue, or disengage depending on the live situation.
 
-- Add a typed difficulty model, for example `BotDifficulty = "easy" | "medium" | "hard"`.
-- Default must be `medium`.
-- Expose the current difficulty through the match debug snapshot.
-- Provide a player-facing way to choose difficulty for solo play. Keep it compact and consistent with the current menu/catalog/match controls. Do not make the game UI feel like a SaaS settings dashboard.
-- Persisting the choice in `localStorage` is acceptable, but storage failure must not break the game.
-- Shared-room mode should not imply real network bots. If difficulty only affects solo-local bots, say so in UI/docs.
-- Add QA hooks if needed so `scripts/qa/finalVerification.mjs` can set and verify each difficulty deterministically.
+## Mandatory Analysis And Planning Step
 
-### 2. Bots Use Player-Equivalent Movement Mechanics
+Before implementation, produce a concise analysis and plan artifact in the Botpipe run output and, if useful for repo history, in `docs/qa/` or another appropriate docs path.
 
-- Remove hidden bot-only movement advantages or penalties as the source of core locomotion.
-- Bots must share the player movement constants:
-  - walk speed `8.6u/s`
-  - crouch speed derived from the same `PLAYER_CROUCH_MULTIPLIER`
-  - same radius/body-height assumptions unless a visible avatar size difference justifies a documented exception
-  - same gravity, jump velocity, grounded/airborne state, air control, and landing behavior
-- Prefer extracting a shared movement helper from `src/game/playerMovement.ts` rather than duplicating physics in `localMatch.ts`.
-- Bots should have their own movement state:
-  - crouch blend
-  - vertical velocity
-  - grounded/airborne
-  - body height and eye height derived from stance/crouch blend
-  - jump request / jumped / landed result
-- Bot movement should be generated from AI intent and passed through the shared mechanics:
-  - move toward tactical target
-  - crouch when holding cover, partial visibility, defusing/planting/guarding, or steadying fire
-  - jump only when useful and readable, such as small obstruction handling, unstick recovery, or tactical route traversal if a map route needs it
-- Do not add sprint. Do not add bunnyhop/parkour behavior. Jump should remain committed and limited, matching the player feel contract.
-- Bot animation/posture must reflect crouch and airborne state. Alive bots must remain upright above ground while weapon pitch continues to apply only to the gun.
+The analysis must cover:
 
-### 3. Make Bots Smarter Without Cheating
+- Current bot navigation model: direct movement, patrol anchors, reposition anchors, stuck tracking, recovery jumps, forced directives, and collision response.
+- Current map knowledge: what route/focus/objective metadata exists in `src/data/maps.ts`, what is missing for pathfinding, and how it can be converted into reliable navigation without adding a heavy engine.
+- Current failure causes: why direct movement can push bots into impassable geometry, why current recovery can fail, and why repeated jump recovery can make bots vulnerable.
+- Strategy model gaps: what state each bot currently tracks, where independent role/strategy selection is too shallow, and what live signals should influence strategy changes.
+- Objective-specific gaps for Relay Charge and Evac Escort.
+- QA gaps: what deterministic hooks or browser harness assertions are needed to prove the new behavior without faking the gameplay.
 
-Improve the tactical controller while preserving the current readable CS 1.5-inspired feel:
+The plan must justify the chosen approach and reject weaker alternatives. Prefer the simplest robust solution that fits this codebase. Do not start with a full navmesh or imported pathfinding dependency unless analysis proves no lighter option will work.
 
-- Perception:
-  - respect line-of-sight blockers and visibility fractions
-  - hear player movement/fire through existing noise model, with difficulty-dependent confidence/delay
-  - remember last-known player positions for a bounded time
-  - communicate contact to squadmates with a small delay, not instant omniscience
-- Movement and positioning:
-  - use tactical anchors and route metadata to hold, patrol, flank, investigate, pursue, and reposition
-  - avoid standing still in the open when under pressure
-  - prefer cover or off-angles after firing, taking damage, losing sight, or reloading
-  - do not jitter rapidly between states; state transitions need cooldowns/hysteresis
-  - handle stuck cases through route replanning or a rare jump/step attempt, not teleporting
-- Combat:
-  - keep non-perfect aim with hits and misses
-  - use short readable bursts rather than constant perfect fire
-  - crouch can improve bot steadiness but should commit movement speed just like the player
-  - hard bots may react faster and pick better angles, but still miss sometimes
-  - easy bots should be slower to react and make more positioning/aim mistakes, but still use the same movement mechanics
-- Objective play:
-  - bots should respect bomb and hostage mission pressure, not only chase the player
-  - defenders should prioritize site/hostage defense, rotations, and planted-bomb defuse opportunities when appropriate
-  - attackers/rescuers should pressure objective space when the round requires it
-  - if implementing full bot plant/defuse/rescue is too large, make that limitation explicit in docs and provide a clear follow-up path. Still ensure objective-aware positioning improves in this pass.
+## Core Goal
 
-### 4. Difficulty Tuning Contract
+Make solo bots feel like map-aware human opponents:
 
-All difficulty levels must use the same movement mechanics and max movement constants as the player. Difficulty changes tactical quality and combat readability, not physical rules.
+- They know the declared map routes and use them to move around blockers instead of walking straight into walls.
+- They recover from blocked movement by rotating, backing out, selecting nearby route nodes, or replanning to a reachable waypoint.
+- They avoid repeated jump loops; jumping is rare, committed, and only used when tactically justified or as a bounded recovery attempt.
+- They choose positions with cover, visibility, objective pressure, flank value, and escape routes in mind.
+- Each bot can run an independent strategy based on role, map, objective, health, player contact, teammate contact, bomb/hostage state, time pressure, and round phase.
+- Bots can switch strategies mid-round when the situation demands it.
+- They still miss, hesitate, commit to crouch/jump tradeoffs, and remain readable rather than becoming perfect or omniscient.
 
-Suggested tuning dimensions:
+## Navigation And Pathfinding Requirements
 
-- `easy`
-  - longer perception and reaction delays
-  - lower hit chance / wider spread
-  - shorter memory
-  - less reliable cover choice
-  - slower squad communication
-  - more likely to hold predictable angles
-- `medium` default
-  - current intended baseline feel
-  - believable patrol/investigate/engage/reposition behavior
-  - clear misses under movement, range, crouch, or partial visibility
-  - moderate objective awareness
-- `hard`
-  - faster but still human-readable reaction
-  - better cover and off-angle selection
-  - better burst discipline
-  - longer but bounded memory
-  - more decisive objective pressure
-  - no wall vision, no instant perfect shots, no hidden speed boost
+Implement map-aware navigation using lightweight route knowledge derived from existing map metadata and collision.
+
+Required behavior:
+
+1. Build a tactical navigation graph or equivalent route planner.
+   - Use existing `map.tacticalRoutes`, `scene.focusPoints`, team spawns, bomb sites, hostage clusters, extraction zones, and collision-opened anchor positions.
+   - Connect anchors only when the segment is traversable or accepted by collision/line checks.
+   - Include enough intermediate route nodes to avoid direct-line failures on current maps.
+   - Keep the implementation lightweight and deterministic.
+   - Do not add runtime dependencies.
+
+2. Route to tactical targets through waypoints.
+   - Bots should path to objectives, last-known positions, sounds, recovery targets, cover anchors, flank anchors, and patrol points using route graph waypoints rather than only direct vectors.
+   - If the direct route is clear, direct movement is acceptable.
+   - If direct movement is blocked, the bot should select the next graph waypoint or replan.
+
+3. Detect and classify stuck cases.
+   - Track intended movement, actual movement, target distance progress, repeated collision direction, failed jump attempts, and time spent near the same blocked position.
+   - Distinguish "arrived", "holding", "blocked by geometry", "blocked by tactical choice", and "temporarily slowed by crouch/jump/airborne state".
+   - Avoid treating valid holds, crouched peeks, planting/defusing/securing, and objective guarding as stuck.
+
+4. Recover from stuck cases like a human.
+   - First rotate/strafe/back out briefly if the bot is wedged against a local obstruction.
+   - Then replan through a nearby reachable anchor or alternate lane.
+   - Use a jump only as a rare bounded recovery attempt, with a cooldown and failed-jump memory.
+   - Do not teleport.
+   - Do not spam the same jump or recovery target.
+   - Expose recovery state in debug snapshots.
+
+5. Prevent predictable jump vulnerability.
+   - Add per-bot memory of recent jump locations/reasons.
+   - If a jump recovery does not improve position or route progress, suppress repeated jumps at that obstruction for a bounded time.
+   - Prefer crouch/strafe/route change over jumping when the bot is under fire or near a wall that exposes it.
+
+## Human-Like Strategy Requirements
+
+Add or improve a strategy layer above raw behaviors. A bot strategy is a medium-term intent that can choose behavior, stance, route, and target selection.
+
+Suggested strategies:
+
+- `anchor_site`: hold an objective or defensive angle.
+- `route_probe`: clear a route slowly and investigate sound/contact.
+- `flank_rotate`: take an alternate lane toward last-known/player/objective pressure.
+- `pressure_objective`: move decisively toward bomb/hostage objective when time or role requires it.
+- `cover_reposition`: break line of sight, reload/recover, and take a new angle.
+- `pursue_contact`: chase last-known information for a bounded time.
+- `fallback_guard`: back out from low-health or exposed positions and guard a chokepoint.
+- `escort_or_defuse`: commit to hostage extraction, bomb plant, or defuse only when tactically plausible.
+
+You may choose different names, but the implementation must support equivalent behavior.
+
+Each bot should evaluate strategy from:
+
+- role: anchor, route, flank, carrier/rescuer/defuser if applicable
+- map and route metadata
+- current objective mode and phase
+- bomb state: carried, planting, planted, defusing, resolved
+- hostage state: awaiting rescue, securing, escorting, extracting, resolved
+- round phase and remaining time
+- health and recent damage
+- ammo/reload/fire cadence if available
+- player visibility, last-known position, sound contact, and lost-sight timing
+- teammate contacts and current teammate strategies
+- distance to objective, cover, escape route, and teammate support
+- current difficulty tuning
+
+Strategy switching must have hysteresis/cooldowns so bots do not jitter between strategies every frame. Urgent events such as being shot, seeing the player, bomb planted, low fuse time, or hostage extraction progress can override the cooldown.
+
+## Independent Bot Behavior Requirements
+
+Bots should not all make the same decision at the same time unless the objective forces it.
+
+Required behavior:
+
+- Assign or derive distinct squad roles at round start and after objective phase changes.
+- Use per-bot deterministic variation seeded by bot id/map/round so QA remains stable.
+- Avoid all bots selecting the same route anchor, same cover anchor, or same recovery target when alternatives exist.
+- Allow one bot to anchor while another rotates, another investigates, and another pressures objective.
+- Share information with existing delayed communication; do not grant instant omniscience.
+- Preserve difficulty differences as tactical quality, not physical advantages.
+
+## Objective-Specific Requirements
+
+Relay Charge:
+
+- Attackers should route the carrier toward valid bomb sites using route graph waypoints.
+- Non-carrier attackers should escort, screen, flank, or hold angles near the carrier/site.
+- Defenders should guard likely approach lanes, rotate to a planted charge, and attempt defuse when plausible.
+- A planted charge should change strategy priorities immediately.
+- Bots must not abandon objective pressure just because a stale sound happened far away.
+
+Evac Escort:
+
+- Rescuers should route to hostage clusters, secure hostages, escort along declared route metadata, and extract when plausible.
+- Defenders should hold or rotate around hostage clusters, extraction lanes, and chokepoints.
+- Bots should not get stuck trying to walk directly through blockers to hostages/extraction.
+- Hostage escort strategy should respect route progress and danger.
+
+If full human-like objective execution is too large for one pass, implement the highest-impact slice and document the remaining limitation with a specific follow-up path. Do not leave objective behavior worse than the current baseline.
+
+## Combat And Exposure Requirements
+
+Improve tactical survivability without making bots unfair:
+
+- Prefer cover/off-angles after taking damage, finishing a burst, losing sight, reloading, or being exposed in the open.
+- Avoid choosing cover positions that expose the bot to known player lines without a reason.
+- When behind a wall or partial blocker, bots should hold, shoulder-peek, rotate, or investigate rather than jumping in place.
+- Bots must not shoot through blockers.
+- Bots must not get wall vision from route graph knowledge.
+- Hard bots may choose better routes/angles faster, but still miss and remain readable.
+- Easy bots should make more tactical mistakes while still using the same navigation system.
 
 ## Implementation Guidance
 
-- Keep changes scoped and modular. `src/game/localMatch.ts` is already large; move reusable bot mechanics into focused modules where practical.
-- Likely modules to touch or add:
-  - `src/game/playerMovement.ts` or a new shared movement adapter
-  - `src/game/tacticalAi.ts`
-  - `src/game/localMatch.ts`
-  - `src/ui/templates.ts`
-  - `src/ui/app.ts`
-  - `src/styles.css`
-  - `scripts/qa/finalVerification.mjs`
-  - `README.md`
-  - relevant `docs/qa/*.md`
-- Avoid adding runtime dependencies. `three` should remain the only runtime dependency.
-- Preserve current browser-safe controls and pointer-lock/input-capture behavior.
-- Preserve same-browser `BroadcastChannel` shared-room limits. Do not introduce a server or matchmaking backend.
-- Preserve original team names, map names, audio, geometry, and UI.
-- Do not deploy unless explicitly asked.
+Keep `src/game/localMatch.ts` from growing casually. Prefer focused modules where practical, for example:
 
-## QA And Acceptance Criteria
+- `src/game/tacticalAi.ts` for strategy scoring and tactical decisions.
+- a new `src/game/tacticalNavigation.ts` for graph construction, waypoint planning, route scoring, and stuck classification.
+- `src/game/botDifficultyTuning.ts` for tuning values.
+- small integration changes in `src/game/localMatch.ts`.
+- QA hooks in `scripts/qa/finalVerification.mjs` only where needed to prove real behavior.
 
-Update `scripts/qa/finalVerification.mjs` rather than bypassing it. Add deterministic QA hooks only when necessary.
+Do not introduce a second movement model. Bots must keep using `updateSharedMovement()` and the current player-equivalent movement constants.
 
-Required verification:
+Do not add:
 
-- `npm run typecheck` passes.
-- `npm run build` passes.
-- `npm test` passes.
-- QA proves default difficulty is `medium`.
-- QA can select or force `easy`, `medium`, and `hard`, and the debug snapshot reports the selected value.
-- QA proves bot movement uses player-equivalent movement constants:
-  - bot tuning reports walk speed `8.6`
-  - bot crouch speed derives from `PLAYER_CROUCH_MULTIPLIER`
-  - bot jump sample has a grounded start, airborne phase, peak height, and safe landing comparable to the player jump sample
-- QA proves bots can crouch during a tactical state and that crouch changes their eye/body height and movement speed.
-- QA proves bots still remain upright and above ground while crouching, jumping, landing, aiming, patrolling, engaging, repositioning, and pursuing.
-- QA preserves the blocked line-of-sight case:
-  - bots cannot see or shoot through the staged blocker
-  - they may investigate sound/contact without wall-firing
-- QA preserves hit/miss readability:
-  - easy, medium, and hard produce ordered shot-profile differences where hard is more dangerous than medium and medium more dangerous than easy
-  - no level reaches perfect aim
-- QA proves smarter behavior:
-  - at least one bot chooses cover or a new angle after pressure
-  - at least one bot investigates sound, then pursues last-known position after losing sight
-  - at least one bot demonstrates objective-aware positioning or interaction in a live round
-- QA verifies a bounded solo round still resolves without deadlock.
-- Update docs to explain:
-  - bot difficulty levels
-  - medium default
-  - bots using player-equivalent movement mechanics
-  - any remaining AI limitations
+- sprint
+- bunnyhop/parkour behavior
+- real network multiplayer bots
+- backend matchmaking
+- external assets
+- copied Counter-Strike content
+- heavy pathfinding/game-engine dependencies
 
-If screenshots or visible UI settings change materially, refresh the screenshot artifacts through the QA harness.
+## Debug Snapshot And QA Hook Requirements
+
+Expose enough debug information for deterministic QA:
+
+- bot current strategy
+- current behavior and stance
+- current route/waypoint target
+- planned path labels or ids
+- stuck state classification
+- recovery action and recovery count
+- recent failed jump suppression state
+- selected cover/reposition reason
+- objective-specific intent, such as carrier escort, defuse rotate, hostage escort, extraction guard
+- per-bot role and deterministic variation seed or profile
+
+Add QA hooks only if needed. Hooks must stage realistic live states and then verify shipped behavior, not bypass the AI logic being tested.
+
+## Required Verification
+
+Run:
+
+- `npm run typecheck`
+- `npm run build`
+- `npm test`
+
+Update `scripts/qa/finalVerification.mjs` instead of bypassing it when accepted runtime behavior changes.
+
+QA should prove at least:
+
+- Default difficulty remains `medium`.
+- Bots still use player-equivalent movement constants.
+- Bots still crouch, jump, land, and remain upright above ground.
+- Bots do not see or shoot through a known blocker.
+- Stuck recovery no longer repeats the same jump at the same obstruction.
+- A blocked direct route causes rotate/back-out/replan/path waypoint behavior instead of deadlock.
+- At least one bot uses a route graph or planned waypoint path around geometry to reach a tactical target.
+- At least two bots choose different strategies or routes in the same live round when alternatives exist.
+- A bot changes strategy mid-round because of a meaningful state change, such as damage, lost sight, planted charge, hostage progress, low health, or time pressure.
+- Relay Charge bots show objective-aware carrier/site/defuse behavior.
+- Evac Escort bots show objective-aware hostage/extraction route behavior or a documented partial implementation with a verified non-regression.
+- A bounded solo round still resolves without AI deadlock.
+- Easy/medium/hard remain ordered by tactical quality and combat danger without perfect aim or hidden speed.
+
+Update `README.md` and relevant `docs/qa/*.md` if user-visible bot behavior, limitations, QA evidence, or debug surfaces change. Refresh screenshots only if visual/HUD presentation changes materially.
 
 ## Done Criteria
 
-- A local solo round has smarter, readable bots that move, crouch, jump, hold, investigate, pursue, reposition, and fight through the same movement mechanics as the player.
-- `easy`, `medium`, and `hard` exist, with `medium` default.
-- Difficulty changes are observable and documented without granting unfair hidden mechanics.
-- Browser QA covers the new movement/mechanics contract, difficulty selection, line-of-sight safety, shot readability, and bounded round completion.
-- The final report lists changed files, validation commands, and remaining risks or deferred AI limitations.
+- The implementation is based on an explicit analysis and plan, not a superficial tweak.
+- Solo bots use map-aware route planning or an equivalent lightweight navigation system.
+- Bots recover from blocked paths by rotating/backing out/replanning before any bounded jump attempt.
+- Bots do not repeatedly jump in place at the same obstruction.
+- Each bot can independently choose and switch strategy based on objective, map, health, player contact, teammates, and round state.
+- Objective behavior is improved for both Relay Charge and Evac Escort or remaining limitations are clearly documented with targeted follow-up work.
+- Browser QA proves the new behavior and all required baseline behavior still passes.
+- The final report lists changed files, validation commands, observed QA evidence, and remaining risks.
 
 ## Botpipe CLI
 
@@ -207,9 +279,9 @@ Run from the repository root:
 
 ```bash
 botpipe run goal \
-  --workspace /home/rauter/code/cs \
+  --workspace /home/rauter/code/cs-dev \
   --provider codex \
   --model gpt-5.5 \
-  --task smarter-bots-player-mechanics \
+  --task human-like-map-aware-bots \
   "$(cat docs/botpipe-smarter-bots-goal.md)"
 ```

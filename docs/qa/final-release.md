@@ -1,6 +1,6 @@
 # Final Release QA
 
-Date: `2026-05-30`
+Date: `2026-06-02`
 
 ## Scope
 
@@ -11,6 +11,7 @@ Final verification for the current presentation and release guardrail pass cover
 - solo-local smarter-bot difficulty selection with `easy`, `medium`, and `hard` (`medium` default)
 - solo bots using the same walk, crouch, jump, gravity, and collision contract as the player
 - smarter tactical-AI coverage for blocked LOS safety, delayed communication, repositioning, stuck recovery, objective pressure, and bounded solo-round resolution
+- human-like map-aware solo bot coverage for graph waypoint routing, non-repeated stuck jumps, independent strategies, damage-driven strategy switching, Relay carrier/support/defuse intent, and Evac hostage/extraction intent
 - compact in-match HUD behavior, hold-Tab operations board, and viewport fullscreen control
 - first-person weapon alignment, upright combatant posture, third-person weapon pitch, and team-specific avatar uniforms
 - procedural opponent gunfire audio with a user-gesture unlock pulse and playable distance-normalized world-fire gain
@@ -22,20 +23,13 @@ Final verification for the current presentation and release guardrail pass cover
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh current-tree verifier reruns were completed on `2026-05-30`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper.
+Fresh smarter-bot verifier reruns were completed on `2026-06-02`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper. Broader cloud/manual multiplayer command evidence remains from the earlier release pass and is not re-claimed as newly rerun in this bot-focused update.
 
 ## Commands Run
 
 ```bash
 npm run typecheck
 npm run build
-npm run qa:local-flow
-npm run qa:manual-signaling
-npm run qa:signaling-worker
-npm run qa:cloud-signaling
-npm run qa:cloud-signaling-14
-npm run qa:host-room
-npm run qa:shot-validation
 npm run qa:final
 npm test
 ```
@@ -44,19 +38,12 @@ Results on the current tree:
 
 - `npm run typecheck`: passed
 - `npm run build`: passed and produced static `dist/` output
-- `npm run qa:local-flow`: passed
-- `npm run qa:manual-signaling`: passed
-- `npm run qa:signaling-worker`: passed
-- `npm run qa:cloud-signaling`: passed
-- `npm run qa:cloud-signaling-14`: passed
-- `npm run qa:host-room`: passed
-- `npm run qa:shot-validation`: passed
 - `npm run qa:final`: passed and refreshed `assets/screenshots/` from the current `dist/` output
 - `npm test`: passed and returned successfully after rebuilding the app and running the full browser QA harness
 
 Non-blocking note:
 
-- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `636.70 kB`. This did not block verification.
+- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `668.94 kB`. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -98,7 +85,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - Cobalt avatars exposed blue-gray uniforms without masks, while Amber avatars exposed warm rust/tan uniforms with dark domino masks
 - Movement:
   - crouch lowered the camera from `1.62` to `1.18`
-  - crouch reduced same-window travel from `1.72` to `0.98`
+  - crouch reduced same-window travel from `2.06` to `1.18`
   - jump peaked at `2.59`, landed at `1.62`, and stayed airborne for `0.767s`
 - Teams and spawns:
   - all five shipped maps loaded round-one bomb metadata live
@@ -118,16 +105,20 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - shared-room play proved rescuer sync, route progress sync, extraction progress, and matching rescue resolution on both pages
 - Tactical AI:
   - observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors
+  - opening strategy diversity proved `anchor_site`, `route_probe`, and `flank_rotate` in one live fireteam, with per-bot role/profile debug fields and objective intent
   - the opening objective bot already held a live crouch state, and deterministic bot movement samples matched the player-equivalent tuning: walk `8.6u/s`, crouch `4.82u/s`, gravity `13.6`, jump velocity `5.25`
   - deterministic bot jump samples proved grounded start, airborne phase, readable peak, safe landing, and upright posture with root-pitch/body-yaw separated from weapon pitch while aiming
   - blocker `Crate stack west` prevented through-wall fire at `visibility: 0`
   - delayed shared contact kept the staged receiver on `patrol` before delivery, then let it switch to `investigate` or `pursue` only after the communication lag elapsed
   - pressure on the staged enemy produced a real `reposition` with reason `angle`, then a `pursue` state after lost sight
-  - a blocked traversal case recovered through `repath` instead of teleporting
+  - a blocked traversal case recovered through a graph route to `Central Yard route offset` instead of teleporting, with `routeUsesGraph: true`, `routeReason: partial-route`, and `jumpCount: 0`
+  - player damage forced a strategy switch to `cover_reposition` with reason `recent-damage`
   - ordered difficulty danger stayed fair: `easy` `0.487s / 7.124 / 0.407`, `medium` `0.377s / 6.037 / 0.537`, `hard` `0.237s / 4.951 / 0.657`
   - bot fire interval now matches the player fire interval at `0.18s`, and enemy damage now matches player damage at `34`
-  - staged hard combat fired `6` shots over `2.07s` while still producing both hits and misses
+  - staged hard combat fired `6` shots over `1.66s` while still producing both hits and misses
   - an enemy-side `Kiln Yard` plant case proved objective-aware pressure and bounded solo-round resolution without deadlock
+  - Relay-aware staging proved carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, distinct support targets, and defender `defuse_rotate` during planted/defusing state
+  - Evac-aware staging proved rescuer `escort_extract`, a graph route to declared route label `Drain Underpass` through `Loading Bay route offset`, escort support intent, and defender `hostage_cluster_anchor` / `hostage_lane_probe` intent
   - shot model produced both hits and misses, with hit-chance dropping from `0.722` close-standing to `0.262` far-moving and `0.449` crouched-partial
   - enemy live fire emitted a playable distance-normalized world-fire audio event
 - Shared-room fallback:
@@ -143,7 +134,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-05-30`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-06-02`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`
@@ -166,5 +157,6 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 - Cloud/manual objective state is serialized through host snapshots today; a future split can move every bomb/hostage mutation into dedicated reliable `objective-event` messages.
 - Solo bot difficulty remains a solo-local setting only; shared-room tabs remain human-only.
 - Tactical AI coverage is centered on solo-local rounds rather than shared-room bot opponents.
+- Solo bot strategy/objective debug surfaces are QA/debug evidence; they are not exposed as a player-facing tactical command UI.
 - The live visuals remain intentionally flatter than the painted reference set, especially in walls and ground materials.
 - `src/game/localMatch.ts` is still the heaviest gameplay file and the next refactor target if the prototype grows further.

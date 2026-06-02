@@ -16,6 +16,47 @@ export type EnemyBehavior =
   | "engage";
 
 export type EnemyStance = "standing" | "crouched";
+export type EnemySquadRole = "anchor" | "route" | "flank";
+export type EnemyStrategy =
+  | "anchor_site"
+  | "route_probe"
+  | "flank_rotate"
+  | "pressure_objective"
+  | "cover_reposition"
+  | "pursue_contact"
+  | "fallback_guard"
+  | "objective_commit";
+
+export interface EnemyStrategyProfile {
+  seed: number;
+  role: EnemySquadRole;
+  aggression: number;
+  coverDiscipline: number;
+  routePatience: number;
+  flankPreference: number;
+}
+
+export interface EnemyStrategyDecision {
+  strategy: EnemyStrategy;
+  reason:
+    | "role-default"
+    | "visual-contact"
+    | "last-known-contact"
+    | "sound-contact"
+    | "recent-damage"
+    | "low-health"
+    | "lost-sight"
+    | "planted-objective"
+    | "hostage-progress"
+    | "late-round"
+    | "carrier-duty"
+    | "support-duty";
+  behavior: EnemyBehavior;
+  stance: EnemyStance;
+  objectiveIntent: string;
+  teammateInfluence: string | null;
+  cooldownSeconds: number;
+}
 
 export interface TacticalAnchor {
   id: string;
@@ -76,6 +117,258 @@ export interface RepositionTuning {
 export interface RecoveryChoice {
   anchor: TacticalAnchor;
   visibility: number;
+}
+
+function hashStrategySeed(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return hash >>> 0;
+}
+
+function profileValue(seed: number, salt: number): number {
+  return nextDeterministicRandom((seed ^ Math.imul(salt, 0x9e3779b1)) >>> 0).value;
+}
+
+export function createEnemyStrategyProfile(input: {
+  enemyId: string;
+  mapId: string;
+  teamId: TeamId;
+  roundNumber: number;
+  role: EnemySquadRole;
+}): EnemyStrategyProfile {
+  const seed = hashStrategySeed(
+    `${input.enemyId}:${input.mapId}:${input.teamId}:${input.roundNumber}:${input.role}`,
+  );
+
+  return {
+    seed,
+    role: input.role,
+    aggression: Number((0.35 + profileValue(seed, 11) * 0.5).toFixed(3)),
+    coverDiscipline: Number((0.42 + profileValue(seed, 23) * 0.46).toFixed(3)),
+    routePatience: Number((0.38 + profileValue(seed, 37) * 0.48).toFixed(3)),
+    flankPreference: Number((0.28 + profileValue(seed, 47) * 0.58).toFixed(3)),
+  };
+}
+
+export function objectiveIntentForStrategy(input: {
+  role: EnemySquadRole;
+  enemyId: string;
+  enemyTeamId: TeamId;
+  missionType: ActiveMissionBrief["missionType"];
+  bombState: BombRuntimeState | null;
+  hostageState: HostageRuntimeState | null;
+}): string {
+  if (input.missionType === "bomb" && input.bombState) {
+    const state = input.bombState;
+    if (state.phase === "planted" || state.phase === "defusing") {
+      return input.enemyTeamId === state.defendingTeam ? "defuse_rotate" : "site_postplant_hold";
+    }
+
+    if (input.enemyTeamId === state.attackingTeam) {
+      return state.carrierId === input.enemyId
+        ? "carrier_site_commit"
+        : input.role === "flank"
+          ? "carrier_flank_screen"
+          : "carrier_escort";
+    }
+
+    return input.role === "anchor" ? "site_lane_guard" : "site_rotate_screen";
+  }
+
+  if (input.missionType === "hostage" && input.hostageState) {
+    const state = input.hostageState;
+    if (input.enemyTeamId === state.attackingTeam) {
+      if (state.phase === "escorting" || state.phase === "extracting") {
+        return input.role === "flank" ? "escort_flank_screen" : "escort_extract";
+      }
+
+      return input.role === "anchor" ? "hostage_secure_commit" : "hostage_route_screen";
+    }
+
+    if (state.phase === "escorting" || state.phase === "extracting") {
+      return input.role === "flank" ? "extraction_lane_cutoff" : "hostage_route_guard";
+    }
+
+    return input.role === "anchor" ? "hostage_cluster_anchor" : "hostage_lane_probe";
+  }
+
+  return input.role === "anchor" ? "objective_hold" : "route_pressure";
+}
+
+export function chooseEnemyStrategy(input: {
+  currentStrategy: EnemyStrategy;
+  profile: EnemyStrategyProfile;
+  enemyId: string;
+  enemyTeamId: TeamId;
+  mission: ActiveMissionBrief;
+  bombState: BombRuntimeState | null;
+  hostageState: HostageRuntimeState | null;
+  roundPhase: "briefing" | "active" | "resolution";
+  roundTimeRemaining: number;
+  health: number;
+  recentDamageSeconds: number | null;
+  ammoReady: boolean;
+  burstCoolingDown: boolean;
+  canSeePlayer: boolean;
+  playerDistance: number;
+  visibility: number;
+  lastKnownSeconds: number | null;
+  lastHeardSeconds: number | null;
+  lostSightSeconds: number | null;
+  objectiveDistance: number;
+  coverAvailable: boolean;
+  escapeRouteAvailable: boolean;
+  teammateSupportCount: number;
+  teammateContactCount: number;
+  teammateStrategyCounts: Partial<Record<EnemyStrategy, number>>;
+  difficulty: "easy" | "medium" | "hard";
+}): EnemyStrategyDecision {
+  const role = input.profile.role;
+  const objectiveIntent = objectiveIntentForStrategy({
+    role,
+    enemyId: input.enemyId,
+    enemyTeamId: input.enemyTeamId,
+    missionType: input.mission.missionType,
+    bombState: input.bombState,
+    hostageState: input.hostageState,
+  });
+  const lateRound = input.roundPhase === "active" && input.roundTimeRemaining <= 18;
+  const recentDamage = input.recentDamageSeconds !== null && input.recentDamageSeconds <= 1.7;
+  const lowHealth = input.health <= (input.difficulty === "hard" ? 34 : 42);
+  const freshKnown = input.lastKnownSeconds !== null && input.lastKnownSeconds <= 3.8;
+  const freshSound = input.lastHeardSeconds !== null && input.lastHeardSeconds <= 2.5;
+  const recentlyLostSight = input.lostSightSeconds !== null && input.lostSightSeconds <= 1.4;
+  const bombPlanted = input.bombState?.phase === "planted" || input.bombState?.phase === "defusing";
+  const hostageMoving =
+    input.hostageState?.phase === "escorting" || input.hostageState?.phase === "extracting";
+  const coverWanted =
+    input.coverAvailable &&
+    (recentDamage ||
+      recentlyLostSight ||
+      input.visibility < 0.72 ||
+      input.burstCoolingDown ||
+      !input.ammoReady);
+  let strategy: EnemyStrategy;
+  let reason: EnemyStrategyDecision["reason"];
+
+  if (lowHealth && input.escapeRouteAvailable) {
+    strategy = "fallback_guard";
+    reason = "low-health";
+  } else if (recentDamage && coverWanted) {
+    strategy = "cover_reposition";
+    reason = "recent-damage";
+  } else if (bombPlanted) {
+    strategy =
+      input.enemyTeamId === input.bombState?.defendingTeam ? "objective_commit" : "anchor_site";
+    reason = "planted-objective";
+  } else if (hostageMoving) {
+    strategy =
+      input.enemyTeamId === input.hostageState?.attackingTeam
+        ? "objective_commit"
+        : "pressure_objective";
+    reason = "hostage-progress";
+  } else if (input.canSeePlayer) {
+    strategy = coverWanted ? "cover_reposition" : "pursue_contact";
+    reason = "visual-contact";
+  } else if (freshKnown) {
+    strategy = input.teammateContactCount > 0 && role === "anchor" ? "anchor_site" : "pursue_contact";
+    reason = "last-known-contact";
+  } else if (freshSound) {
+    strategy = role === "flank" ? "flank_rotate" : "route_probe";
+    reason = "sound-contact";
+  } else if (recentlyLostSight && input.coverAvailable) {
+    strategy = "cover_reposition";
+    reason = "lost-sight";
+  } else if (
+    input.mission.missionType === "bomb" &&
+    input.bombState?.phase === "carried" &&
+    input.enemyTeamId === input.bombState.attackingTeam &&
+    input.bombState.carrierId === input.enemyId
+  ) {
+    strategy = "objective_commit";
+    reason = "carrier-duty";
+  } else if (lateRound && input.objectiveDistance > 2.8) {
+    strategy = "pressure_objective";
+    reason = "late-round";
+  } else if (role === "anchor") {
+    strategy = "anchor_site";
+    reason = "role-default";
+  } else if (role === "flank") {
+    strategy = "flank_rotate";
+    reason = "role-default";
+  } else {
+    strategy = "route_probe";
+    reason = "role-default";
+  }
+
+  const duplicateRouteProbes = (input.teammateStrategyCounts.route_probe ?? 0) > 0;
+  const duplicateFlanks = (input.teammateStrategyCounts.flank_rotate ?? 0) > 0;
+  let teammateInfluence: string | null = null;
+  if (strategy === "route_probe" && duplicateRouteProbes && role === "flank") {
+    strategy = "flank_rotate";
+    teammateInfluence = "route_probe_occupied";
+  } else if (strategy === "flank_rotate" && duplicateFlanks && role === "route") {
+    strategy = "route_probe";
+    teammateInfluence = "flank_rotate_occupied";
+  } else if (input.teammateSupportCount <= 0 && strategy === "pressure_objective") {
+    teammateInfluence = "low_support";
+  } else if (input.teammateContactCount > 0 && strategy === "anchor_site") {
+    teammateInfluence = "delayed_contact_received";
+  }
+
+  let behavior: EnemyBehavior = "patrol";
+  let stance: EnemyStance = "standing";
+  switch (strategy) {
+    case "anchor_site":
+      behavior = "objective";
+      stance = "crouched";
+      break;
+    case "route_probe":
+      behavior = freshSound ? "investigate" : "patrol";
+      stance = input.difficulty === "hard" && input.objectiveDistance < 7 ? "crouched" : "standing";
+      break;
+    case "flank_rotate":
+      behavior = "patrol";
+      stance = "standing";
+      break;
+    case "pressure_objective":
+    case "objective_commit":
+      behavior = "objective";
+      stance = "standing";
+      break;
+    case "cover_reposition":
+    case "fallback_guard":
+      behavior = "reposition";
+      stance = strategy === "fallback_guard" || input.coverAvailable ? "crouched" : "standing";
+      break;
+    case "pursue_contact":
+      behavior = input.canSeePlayer && input.playerDistance <= 11.5 ? "engage" : "pursue";
+      stance =
+        input.canSeePlayer && input.visibility < 0.72 && input.playerDistance <= 11.5
+          ? "crouched"
+          : "standing";
+      break;
+  }
+
+  const baseCooldown =
+    input.difficulty === "hard" ? 0.48 : input.difficulty === "easy" ? 0.92 : 0.68;
+  const cooldownSeconds = Number(
+    (baseCooldown + input.profile.routePatience * 0.18 - input.profile.aggression * 0.12).toFixed(2),
+  );
+
+  return {
+    strategy,
+    reason,
+    behavior,
+    stance,
+    objectiveIntent,
+    teammateInfluence,
+    cooldownSeconds,
+  };
 }
 
 const TARGET_HEAD_OFFSET = 0.04;

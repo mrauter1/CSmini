@@ -1,6 +1,6 @@
 # Local Play QA
 
-Date: 2026-05-30
+Date: 2026-06-02
 
 ## Scope
 
@@ -32,6 +32,11 @@ Targeted verification for `round-core-and-movement-foundation`, `bomb-mission-mo
 - live hit and miss behavior with spread and miss chance influenced by distance, movement, crouch, and visibility
 - playable opponent gunfire world-audio events with distance-normalized gain
 - bounded solo-round resolution after the AI overhaul
+- map-aware route graph planning for blocked solo bot traversal
+- independent solo bot strategies with deterministic role/profile debug data
+- damage-driven strategy switching into cover or fallback decisions
+- Relay Charge carrier, escort, flank-screen, and defuse-rotate intent
+- Evac Escort hostage rescue, route extraction, escort support, and lane/cluster defense intent
 - compact in-match HUD, hold-Tab operations board, and viewport-shell fullscreen control behavior
 - team-specific opponent avatar uniforms
 
@@ -47,11 +52,13 @@ npm test
 
 `npm test` runs `node scripts/qa/finalVerification.mjs`, which starts `vite preview`, opens a WebGL-capable headless Chrome session, and drives the browser QA hooks exposed through `window.__dustlineQa__`.
 
-Fresh 2026-05-30 reruns passed for the local surfaces that can regress during multiplayer integration:
+Fresh 2026-06-02 reruns passed for the local surfaces that can regress during AI integration:
 
 - `npm run qa:local-flow`: 5 map cards, local ammo `24 -> 23`, hidden control prompt after engage, death line `Down for the round.`, catalog return, and zero leftover canvases
 - `npm run qa:final`: passed with solo bot difficulty default/persistence, canonical movement, HUD/Tab/fullscreen, solo bomb/hostage objective flows, AI, same-browser objective sync, fallback, and screenshot refresh
 - `npm test`: passed after rebuilding and rerunning the final browser harness
+- `npm run typecheck`: passed
+- `npm run build`: passed with only the known non-blocking `localMatch` chunk-size warning
 
 ## Fresh Results
 
@@ -93,8 +100,8 @@ Result: every shipped map loaded a live round from the declared mission metadata
 
 - Standing camera height: `1.62`
 - Crouched camera height: `1.18`
-- Standing forward sample over the same timed window: `1.72` units
-- Crouched forward sample over the same timed window: `0.98` units
+- Standing forward sample over the same timed window: `2.06` units
+- Crouched forward sample over the same timed window: `1.18` units
 - Jump sample peak camera height: `2.59`
 - Jump sample landed camera height: `1.62`
 
@@ -146,9 +153,9 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - A QA-only `stageAiSightlineCase()` hook staged `enemy-0` behind the named blocker `Crate stack west`, with the player hidden on the `Generator Hall` side and a clear fallback pose at `Water Tower Court`.
 - In the blocked pose, the debug state reported `visibility: 0` and `canSeePlayer: false`.
 - Firing once from the blocked pose drew the enemy into `investigate`, but the same debug state kept `shotsFired: 0`, proving the bot reacted to sound without shooting through the crate stack.
-- Moving to the clear pose on `hard` advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `6` shots over `2.07s` and split them into `3` hits and `3` misses.
+- Moving to the clear pose on `hard` advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `6` shots over `1.66s` and split them into `3` hits and `3` misses.
 - A deterministic bot jump sample for that same enemy started grounded, entered an airborne phase, peaked at feet `0.97` / eye `2.59`, then landed safely back at eye `1.62` after `0.767s`.
-- A staged blocked-traversal recovery case triggered a live `stuck-recovery` jump before repath, lifting the same enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract.
+- A staged blocked-traversal recovery case now routes around the blocker through the tactical navigation graph before resorting to any jump. The final QA sample planned a non-direct `partial-route` through `Central Yard route offset`, kept the enemy upright, and recorded `jumpCount: 0` for the obstruction.
 - A QA-only live jump request lifted the same engaged enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract, then landed back at `feetY 0` without breaking posture or aim separation.
 - The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility after the user-gesture unlock pulse armed the audio context.
 - The live debug tuning reported bot fire interval `0.18s` and enemy damage `34`, matching the player fire interval and player damage while still applying difficulty-specific reaction, spread, hit chance, and burst pacing.
@@ -156,7 +163,7 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then dropped into `pursue` after the player ducked back behind cover.
 - A staged observer/receiver pair proved squad contact stayed delayed: the receiver held `patrol` before delivery, then entered `pursue` only after the shared-contact lag elapsed.
 - A bounded-memory follow-up proved the same last-known pursuit expired back out of `pursue` instead of lasting indefinitely.
-- A staged blocked-traversal case forced the same enemy to recover through `repath` rather than teleporting, and the debug state recorded `recoveryCount: 1` with a held fallback target.
+- A staged blocked-traversal case forced the same enemy to use a graph waypoint rather than deadlocking or teleporting; the debug state exposed route reason, waypoint label, path labels, stuck classification, recovery action, and failed-jump suppression state.
 - A deterministic difficulty sample on the same geometry produced ordered danger without changing locomotion:
   - `easy`: `reaction 0.487s`, `spread 7.124`, `hitChance 0.407`
   - `medium`: `reaction 0.377s`, `spread 6.037`, `hitChance 0.537`
@@ -167,7 +174,20 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
   - far moving target: `hitChance 0.262`, `missChance 0.738`, `spread 9.956`
   - crouched partial target: `hitChance 0.449`, `missChance 0.551`, `spread 6.176`
 
-Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; moves, crouches, jumps, lands, and triggers a constrained live recovery hop through the same locomotion contract as the player; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
+Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`, `engage`, `reposition`, and `pursue` behaviors in a controlled round; moves, crouches, jumps, lands, and routes a blocked traversal through graph waypoints before any bounded jump recovery; does not detect or fire through blocking geometry; uses a non-perfect shot model shaped by range, movement, crouch, and visibility; and produces playable distance-normalized opponent gunfire feedback after audio is armed.
+
+### Human-like map-aware bot pass
+
+Fresh `npm run qa:final` and `npm test` runs on 2026-06-02 extended the local tactical AI proof:
+
+- Opening fireteam strategies split into `anchor_site`, `route_probe`, and `flank_rotate`, with per-bot roles `anchor`, `route`, and `flank`, deterministic profile seeds, and objective intents in the debug snapshot.
+- A blocked direct route at `Crate stack west` planned a non-direct graph route through `Central Yard route offset`; the staged obstruction kept `routeUsesGraph: true`, `routeReason: partial-route`, `jumpCount: 0`, and no teleport/deadlock.
+- The same staged sightline kept `visibility: 0`, `canSeePlayer: false`, and `shotsFired: 0` through the blocker, then entered readable combat only from the clear pose.
+- After the player damaged a bot, the bot switched to `cover_reposition` with `strategyReason: recent-damage`, proving meaningful mid-round strategy change rather than frame-by-frame jitter.
+- Relay Charge enemy staging produced carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, distinct support targets `Copper-2 escort` and `Generator Hall`, and defender intent `defuse_rotate` during the planted/defusing state.
+- Evac Escort enemy staging produced rescuer intent `escort_extract`, a graph route toward declared route label `Drain Underpass` through `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, and defender intents `hostage_cluster_anchor` plus `hostage_lane_probe`.
+
+Result: browser QA now proves the new map-aware route, recovery, strategy, and objective intent surfaces through staged live states that observe the shipped AI/update loop.
 
 ### Bounded solo resolution round
 
@@ -181,11 +201,14 @@ Result: at least one upgraded solo round now progresses from live objective pres
 
 - The movement and round verification stayed inside the browser build; no extra engine or non-browser runtime was introduced.
 - The jump sample in the QA harness uses the live movement integrator through a dedicated QA hook to avoid headless browser timing noise while still validating the same movement code path.
-- The shared bot-movement proof uses QA-only `enemyMovementSample()` and `requestEnemyJump()` hooks for deterministic sampling, while the staged recovery case separately proves that a shipped solo bot can trigger a normal `stuck-recovery` jump through live AI intent before fallback repathing.
+- The shared bot-movement proof uses QA-only `enemyMovementSample()` and `requestEnemyJump()` hooks for deterministic sampling, while the staged recovery case separately proves that a shipped solo bot can use a non-direct graph waypoint around a blocked route and avoid repeated stuck-recovery jumps at that obstruction.
 - The bomb proof uses QA-only hooks for `forceRoundActive`, `setInvulnerable`, and `startObjectiveAction` so the test can isolate the mission flow from headless timing while still exercising the shipped plant, fuse, and round-resolution code paths.
 - The hostage proof also uses `forceNextRound`, `forceRoundActive`, `setInvulnerable`, `setCameraPose`, and `startObjectiveAction` so the harness can deterministically enter the round-2 evac mission, stage the escort path, and verify the real rescue timers and round-reset behavior without relying on manual headless navigation.
 - The AI proof uses QA-only hooks for `stageAiSightlineCase()` and `evaluateEnemyShot()` so the harness can reproduce the same blocked-cover case and shot-profile comparisons on every run without weakening the live line-of-sight or combat code.
-- The smarter-bot pass adds three more QA-only staging hooks:
+- The smarter-bot pass adds QA-only staging hooks:
   - `stageAiCommunicationCase()` for delayed squad-contact proof
   - `stageAiRecoveryCase()` for blocked-route recovery proof
   - `stageEnemyBombPlantCase()` for deterministic enemy-side objective pressure and bounded solo-round resolution
+  - `stageEnemyRelayRouteCase()` for carrier/escort/flank-screen intent
+  - `stageEnemyRelayDefuseCase()` for planted-charge defender rotation
+  - `stageEnemyHostageEscortCase()` for hostage route extraction and support intent

@@ -1713,8 +1713,43 @@ export class TacticalShellApp {
         siteLabel: string;
         sitePosition: { x: number; y: number; z: number };
       }
-    | null {
+  | null {
     return this.match?.debugStageEnemyBombPlantCase() ?? null;
+  }
+
+  debugStageEnemyRelayRouteCase():
+    | {
+        carrierEnemyId: string;
+        supportEnemyIds: string[];
+        siteLabel: string;
+        sitePosition: { x: number; y: number; z: number };
+      }
+    | null {
+    return this.match?.debugStageEnemyRelayRouteCase() ?? null;
+  }
+
+  debugStageEnemyRelayDefuseCase():
+    | {
+        defuserEnemyId: string;
+        siteLabel: string;
+        sitePosition: { x: number; y: number; z: number };
+      }
+    | null {
+    return this.match?.debugStageEnemyRelayDefuseCase() ?? null;
+  }
+
+  debugStageEnemyHostageEscortCase():
+    | {
+        rescuerEnemyId: string;
+        supportEnemyIds: string[];
+        clusterLabel: string;
+        extractionLabel: string;
+        routeLabels: string[];
+        clusterPosition: { x: number; y: number; z: number };
+        extractionPosition: { x: number; y: number; z: number };
+      }
+    | null {
+    return this.match?.debugStageEnemyHostageEscortCase() ?? null;
   }
 
   debugEvaluateEnemyShot(

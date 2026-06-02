@@ -122,6 +122,32 @@ declare global {
             sitePosition: { x: number; y: number; z: number };
           }
         | null;
+      stageEnemyRelayRouteCase: () =>
+        | {
+            carrierEnemyId: string;
+            supportEnemyIds: string[];
+            siteLabel: string;
+            sitePosition: { x: number; y: number; z: number };
+          }
+        | null;
+      stageEnemyRelayDefuseCase: () =>
+        | {
+            defuserEnemyId: string;
+            siteLabel: string;
+            sitePosition: { x: number; y: number; z: number };
+          }
+        | null;
+      stageEnemyHostageEscortCase: () =>
+        | {
+            rescuerEnemyId: string;
+            supportEnemyIds: string[];
+            clusterLabel: string;
+            extractionLabel: string;
+            routeLabels: string[];
+            clusterPosition: { x: number; y: number; z: number };
+            extractionPosition: { x: number; y: number; z: number };
+          }
+        | null;
       evaluateEnemyShot: (
         combatantId: string,
         overrides?: Partial<{
@@ -265,6 +291,9 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     stageAiCommunicationCase: () => app.debugStageAiCommunicationCase(),
     stageAiRecoveryCase: () => app.debugStageAiRecoveryCase(),
     stageEnemyBombPlantCase: () => app.debugStageEnemyBombPlantCase(),
+    stageEnemyRelayRouteCase: () => app.debugStageEnemyRelayRouteCase(),
+    stageEnemyRelayDefuseCase: () => app.debugStageEnemyRelayDefuseCase(),
+    stageEnemyHostageEscortCase: () => app.debugStageEnemyHostageEscortCase(),
     evaluateEnemyShot: (combatantId, overrides) => app.debugEvaluateEnemyShot(combatantId, overrides),
     fire: () => app.debugFire(),
     forcePlayerDeath: (attackerName) => app.debugForcePlayerDeath(attackerName),

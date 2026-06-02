@@ -802,6 +802,27 @@ async function stageEnemyBombPlantCase(page) {
   return plantCase;
 }
 
+async function stageEnemyRelayRouteCase(page) {
+  const routeCase = await page.evaluate("window.__dustlineQa__.stageEnemyRelayRouteCase()");
+  assert(routeCase, "Expected a deterministic enemy relay-route case");
+  await delay(180);
+  return routeCase;
+}
+
+async function stageEnemyRelayDefuseCase(page) {
+  const defuseCase = await page.evaluate("window.__dustlineQa__.stageEnemyRelayDefuseCase()");
+  assert(defuseCase, "Expected a deterministic enemy relay-defuse case");
+  await delay(180);
+  return defuseCase;
+}
+
+async function stageEnemyHostageEscortCase(page) {
+  const escortCase = await page.evaluate("window.__dustlineQa__.stageEnemyHostageEscortCase()");
+  assert(escortCase, "Expected a deterministic enemy hostage-escort case");
+  await delay(180);
+  return escortCase;
+}
+
 async function evaluateEnemyShot(page, combatantId, overrides = undefined) {
   const profile = await page.evaluate(
     `window.__dustlineQa__.evaluateEnemyShot(${JSON.stringify(combatantId)}, ${JSON.stringify(overrides)})`,
@@ -1273,7 +1294,15 @@ async function main() {
     assertWeaponViewAlignment(weaponIdleState, "idle viewmodel");
     await captureScreenshot(localPage, "08-weapon-idle-hud.png", capturedScreenshots);
     await fire(localPage);
-    const weaponFiringState = await getState(localPage);
+    const weaponFiringState = await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.weaponView?.muzzleFlashRecent === true ? state : false;
+        })()
+      `,
+      1_000,
+    );
     assertWeaponViewAlignment(weaponFiringState, "firing viewmodel");
     assert(
       weaponFiringState.weaponView?.muzzleFlashRecent === true,
@@ -1765,6 +1794,30 @@ async function main() {
 
     const aiOpeningState = await getState(localPage);
     const openingBehaviors = aiOpeningState.enemies.map((enemy) => enemy.ai.behavior);
+    const openingStrategies = aiOpeningState.enemies.map((enemy) => enemy.ai.strategy);
+    const openingStrategySet = new Set(openingStrategies);
+    assert(
+      openingStrategySet.size >= 2,
+      `Expected at least two distinct opening bot strategies, saw ${openingStrategies.join(", ")}`,
+    );
+    assert(
+      aiOpeningState.enemies.every(
+        (enemy) =>
+          typeof enemy.ai.profileSeed === "number" &&
+          enemy.ai.profile &&
+          typeof enemy.ai.strategyAge === "number" &&
+          typeof enemy.ai.strategyCooldownRemaining === "number" &&
+          typeof enemy.ai.objectiveIntent === "string",
+      ),
+      "Expected every bot debug snapshot to expose strategy profile, age/cooldown, and objective intent",
+    );
+    assert(
+      aiOpeningState.enemies.some((enemy) => enemy.ai.strategy === "anchor_site") &&
+        aiOpeningState.enemies.some(
+          (enemy) => enemy.ai.strategy === "route_probe" || enemy.ai.strategy === "flank_rotate",
+        ),
+      `Expected opening fireteam to split anchor and route/flank strategies, saw ${openingStrategies.join(", ")}`,
+    );
     const botMovementTuning = aiOpeningState.tuning?.botMovement;
     assert(botMovementTuning, "Expected bot movement tuning in debug snapshot");
     assert(
@@ -2085,6 +2138,16 @@ async function main() {
       (enemy) => enemy.id === sightlineCase.enemyId,
     );
     assertAlivePosture([repositionEnemy], "reposition solo enemy");
+    assert(
+      repositionEnemy?.ai?.strategy === "cover_reposition" ||
+        repositionEnemy?.ai?.strategy === "fallback_guard",
+      `Expected damage to force a cover/fallback strategy switch, saw ${repositionEnemy?.ai?.strategy}`,
+    );
+    assert(
+      repositionEnemy?.ai?.strategyReason === "recent-damage" ||
+        repositionEnemy?.ai?.strategyReason === "low-health",
+      `Expected strategy switch to cite damage or low health, saw ${repositionEnemy?.ai?.strategyReason}`,
+    );
 
     await setView(localPage, sightlineCase.blockedPlayerPosition, sightlineCase.enemyPosition);
     await localPage.waitForExpression(
@@ -2092,7 +2155,12 @@ async function main() {
         (() => {
           const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
             .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
-          return enemy?.ai?.canSeePlayer === false && enemy?.ai?.behavior === 'pursue';
+          return enemy?.ai?.canSeePlayer === false
+            && (
+              enemy?.ai?.behavior === 'pursue'
+              || enemy?.ai?.behavior === 'reposition'
+              || enemy?.ai?.strategy === 'pursue_contact'
+            );
         })()
       `,
       6_000,
@@ -2127,30 +2195,24 @@ async function main() {
         (() => {
           const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
             .find((entry) => entry.id === ${JSON.stringify(recoveryCase.enemyId)});
-          return enemy?.ai?.lastJumpReason === 'stuck-recovery'
-            && (enemy?.ai?.jumpCount ?? 0) >= 1
-            && enemy?.movement?.airborne === true
-            && (enemy?.posture?.feetY ?? 0) > 0.05;
+          const route = enemy?.ai?.route;
+          return route
+            && route.direct === false
+            && (route.usesGraph === true || (route.pathNodeIds ?? []).length > 0)
+            && route.waypointLabel !== ${JSON.stringify(recoveryCase.targetLabel)}
+            && typeof enemy?.ai?.stuckClassification === 'string'
+            && typeof enemy?.ai?.recoveryAction === 'string'
+            && enemy?.ai?.failedJumpSuppression;
         })()
       `,
       6_000,
     );
-    const recoveryJumpState = await getState(localPage);
-    const recoveryJumpEnemy = recoveryJumpState.enemies.find(
+    const recoveryRouteState = await getState(localPage);
+    const recoveryRouteEnemy = recoveryRouteState.enemies.find(
       (enemy) => enemy.id === recoveryCase.enemyId,
     );
-    assertAlivePosture([recoveryJumpEnemy], "live recovery-jump solo enemy");
-    assertAimContract([recoveryJumpEnemy], "live recovery-jump solo enemy");
-    await localPage.waitForExpression(
-      `
-        (() => {
-          const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
-            .find((entry) => entry.id === ${JSON.stringify(recoveryCase.enemyId)});
-          return enemy?.ai?.lastRecoveryReason === 'repath' && (enemy?.ai?.recoveryCount ?? 0) >= 1;
-        })()
-      `,
-      6_000,
-    );
+    assertAlivePosture([recoveryRouteEnemy], "route-planning solo enemy");
+    assertAimContract([recoveryRouteEnemy], "route-planning solo enemy");
     await localPage.waitForExpression(
       `
         (() => {
@@ -2162,14 +2224,28 @@ async function main() {
           const dx = enemy.position.x - ${recoveryCase.enemyPosition.x};
           const dz = enemy.position.z - ${recoveryCase.enemyPosition.z};
           const distance = Math.hypot(dx, dz);
-          return distance > 0.6 && distance < 8;
+          const route = enemy.ai?.route;
+          return distance > 0.6
+            && distance < 10
+            && route
+            && (route.reachable === true || route.usesGraph === true || route.reason === 'partial-route')
+            && (enemy.ai?.jumpCount ?? 0) <= 1;
         })()
       `,
       6_000,
     );
+    await delay(1_500);
     const recoveryState = await getState(localPage);
     const recoveryEnemy = recoveryState.enemies.find((enemy) => enemy.id === recoveryCase.enemyId);
     assertAlivePosture([recoveryEnemy], "recovery solo enemy");
+    assert(
+      (recoveryEnemy?.ai?.jumpCount ?? 0) <= 1,
+      `Expected stuck recovery not to repeat jumps at the same obstruction, saw ${recoveryEnemy?.ai?.jumpCount}`,
+    );
+    assert(
+      recoveryEnemy?.ai?.route?.direct === false || recoveryEnemy?.ai?.route?.reachable === true,
+      `Expected blocked recovery case to keep a graph route or finish on a clear segment, saw ${JSON.stringify(recoveryEnemy?.ai?.route)}`,
+    );
 
     const closeStandingShot = await evaluateEnemyShot(localPage, sightlineCase.enemyId, {
       distance: 6,
@@ -2233,6 +2309,14 @@ async function main() {
       crouchedObjectiveEnemyId: openingObjectiveEnemy.id,
       botMovementSample,
       observedOpeningBehaviors: openingBehaviors,
+      observedOpeningStrategies: openingStrategies,
+      openingStrategyProfiles: aiOpeningState.enemies.map((enemy) => ({
+        id: enemy.id,
+        role: enemy.ai.role,
+        seed: enemy.ai.profileSeed,
+        strategy: enemy.ai.strategy,
+        objectiveIntent: enemy.ai.objectiveIntent,
+      })),
       sightlineCase: {
         blockerName: sightlineCase.blockerName,
         blockedPlayerLabel: sightlineCase.blockedPlayerLabel,
@@ -2242,15 +2326,23 @@ async function main() {
       investigateBehavior: investigateEnemy.ai.behavior,
       engageBehavior: engageEnemy.ai.behavior,
       repositionBehavior: repositionEnemy?.ai?.behavior ?? null,
+      repositionStrategy: repositionEnemy?.ai?.strategy ?? null,
+      repositionStrategyReason: repositionEnemy?.ai?.strategyReason ?? null,
       repositionReason: repositionEnemy?.ai?.repositionReason ?? null,
       pursueBehavior: pursueEnemy?.ai?.behavior ?? null,
       boundedMemoryBehavior: boundedMemoryEnemy?.ai?.behavior ?? null,
       recovery: {
         enemyId: recoveryCase.enemyId,
         blockerName: recoveryCase.blockerName,
-        liveJumpReason: recoveryJumpEnemy?.ai?.lastJumpReason ?? null,
-        liveJumpCount: recoveryJumpEnemy?.ai?.jumpCount ?? 0,
-        liveJumpFeetY: recoveryJumpEnemy?.posture?.feetY ?? null,
+        routeReason: recoveryRouteEnemy?.ai?.route?.reason ?? null,
+        routeWaypoint: recoveryRouteEnemy?.ai?.route?.waypointLabel ?? null,
+        routePathLabels: recoveryRouteEnemy?.ai?.route?.pathLabels ?? [],
+        routeUsesGraph: recoveryRouteEnemy?.ai?.route?.usesGraph ?? false,
+        stuckClassification: recoveryEnemy?.ai?.stuckClassification ?? null,
+        recoveryAction: recoveryEnemy?.ai?.recoveryAction ?? null,
+        liveJumpReason: recoveryEnemy?.ai?.lastJumpReason ?? null,
+        liveJumpCount: recoveryEnemy?.ai?.jumpCount ?? 0,
+        failedJumpSuppression: recoveryEnemy?.ai?.failedJumpSuppression ?? null,
         reason: recoveryEnemy?.ai?.lastRecoveryReason ?? null,
         count: recoveryEnemy?.ai?.recoveryCount ?? 0,
         heldTarget: recoveryEnemy?.ai?.forcedTargetLabel ?? null,
@@ -2262,7 +2354,7 @@ async function main() {
         engage: engageEnemy.posture,
         airborne: airborneEnemy?.posture ?? null,
         landed: landedEnemy?.posture ?? null,
-        recoveryJump: recoveryJumpEnemy?.posture ?? null,
+        recoveryRoute: recoveryRouteEnemy?.posture ?? null,
         reposition: repositionEnemy?.posture ?? null,
         pursue: pursueEnemy?.posture ?? null,
       },
@@ -2330,6 +2422,150 @@ async function main() {
         enemyBombResolvedState.enemies.find((enemy) => enemy.id === enemyBombPlantCase.carrierEnemyId)?.ai
           ?.shotsFired ?? 0,
       blockerName: enemyBombPlantCase.siteLabel,
+    };
+
+    await setTeamPreference(localPage, "cobalt");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await setInvulnerable(localPage, true);
+    await forceRoundActive(localPage);
+    const enemyRelayRouteCase = await stageEnemyRelayRouteCase(localPage);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const carrier = (state?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(enemyRelayRouteCase.carrierEnemyId)});
+          const supports = (state?.enemies ?? [])
+            .filter((enemy) => ${JSON.stringify(enemyRelayRouteCase.supportEnemyIds)}.includes(enemy.id));
+          return carrier?.ai?.objectiveIntent === 'carrier_site_commit'
+            && carrier?.ai?.route
+            && carrier.ai.route.destinationLabel === ${JSON.stringify(enemyRelayRouteCase.siteLabel)}
+            && supports.some((enemy) => enemy?.ai?.objectiveIntent === 'carrier_escort')
+            && supports.some((enemy) => enemy?.ai?.objectiveIntent === 'carrier_flank_screen');
+        })()
+      `,
+      8_000,
+    );
+    const enemyRelayRouteState = await getState(localPage);
+    const relayCarrier = enemyRelayRouteState.enemies.find(
+      (enemy) => enemy.id === enemyRelayRouteCase.carrierEnemyId,
+    );
+    const relaySupports = enemyRelayRouteState.enemies.filter((enemy) =>
+      enemyRelayRouteCase.supportEnemyIds.includes(enemy.id),
+    );
+    const relaySupportTargets = new Set(relaySupports.map((enemy) => enemy.ai.targetLabel));
+    assert(
+      relaySupportTargets.size >= 2,
+      `Expected relay support bots to avoid clustering on one target, saw ${[...relaySupportTargets].join(", ")}`,
+    );
+    assert(
+      relayCarrier?.ai?.route?.pathLabels?.length >= 1,
+      "Expected relay carrier to expose a planned route path toward the active site",
+    );
+
+    await setTeamPreference(localPage, "amber");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await setInvulnerable(localPage, true);
+    await forceRoundActive(localPage);
+    const enemyRelayDefuseCase = await stageEnemyRelayDefuseCase(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.bomb?.phase === 'defusing'",
+      5_000,
+    );
+    const enemyRelayDefuseState = await getState(localPage);
+    const relayDefuser = enemyRelayDefuseState.enemies.find(
+      (enemy) => enemy.id === enemyRelayDefuseCase.defuserEnemyId,
+    );
+    assert(
+      relayDefuser?.ai?.objectiveIntent === "defuse_rotate" &&
+        relayDefuser?.ai?.strategyReason === "planted-objective",
+      `Expected planted charge to force defuse intent, saw ${relayDefuser?.ai?.objectiveIntent}/${relayDefuser?.ai?.strategyReason}`,
+    );
+
+    await setTeamPreference(localPage, "amber");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await setInvulnerable(localPage, true);
+    await localPage.evaluate("window.__dustlineQa__.forceNextRound()");
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.missionType === 'hostage'",
+      5_000,
+    );
+    await forceRoundActive(localPage);
+    const enemyHostageEscortCase = await stageEnemyHostageEscortCase(localPage);
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'securing'",
+      5_000,
+    );
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'escorting'",
+      8_000,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const rescuer = (state?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(enemyHostageEscortCase.rescuerEnemyId)});
+          const supports = (state?.enemies ?? [])
+            .filter((enemy) => ${JSON.stringify(enemyHostageEscortCase.supportEnemyIds)}.includes(enemy.id));
+          const routeLabels = ${JSON.stringify(enemyHostageEscortCase.routeLabels)};
+          return rescuer?.ai?.objectiveIntent === 'escort_extract'
+            && rescuer?.ai?.route
+            && routeLabels.includes(rescuer.ai.route.destinationLabel)
+            && rescuer.ai.route.reason !== 'unreachable'
+            && supports.some((enemy) => String(enemy?.ai?.objectiveIntent ?? '').includes('escort'));
+        })()
+      `,
+      8_000,
+    );
+    const enemyHostageEscortState = await getState(localPage);
+    const hostageRescuer = enemyHostageEscortState.enemies.find(
+      (enemy) => enemy.id === enemyHostageEscortCase.rescuerEnemyId,
+    );
+
+    await setTeamPreference(localPage, "cobalt");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await localPage.evaluate("window.__dustlineQa__.forceNextRound()");
+    await localPage.waitForExpression(
+      "window.__dustlineQa__?.getState()?.round?.missionType === 'hostage'",
+      5_000,
+    );
+    await forceRoundActive(localPage);
+    await delay(600);
+    const enemyHostageDefenseState = await getState(localPage);
+    const hostageDefenseIntents = enemyHostageDefenseState.enemies.map(
+      (enemy) => enemy.ai.objectiveIntent,
+    );
+    assert(
+      hostageDefenseIntents.some((intent) => intent === "hostage_cluster_anchor") &&
+        hostageDefenseIntents.some((intent) => intent === "hostage_lane_probe"),
+      `Expected hostage defenders to guard cluster/lane, saw ${hostageDefenseIntents.join(", ")}`,
+    );
+
+    summary.aiObjectiveRelayAware = {
+      carrierEnemyId: enemyRelayRouteCase.carrierEnemyId,
+      carrierIntent: relayCarrier?.ai?.objectiveIntent ?? null,
+      carrierRoute: relayCarrier?.ai?.route ?? null,
+      supportIntents: relaySupports.map((enemy) => enemy.ai.objectiveIntent),
+      supportTargets: relaySupports.map((enemy) => enemy.ai.targetLabel),
+      defuserEnemyId: enemyRelayDefuseCase.defuserEnemyId,
+      defuserIntent: relayDefuser?.ai?.objectiveIntent ?? null,
+      defusePhase: enemyRelayDefuseState.bomb.phase,
+    };
+    summary.aiObjectiveHostageAware = {
+      rescuerEnemyId: enemyHostageEscortCase.rescuerEnemyId,
+      rescuerIntent: hostageRescuer?.ai?.objectiveIntent ?? null,
+      rescuerRoute: hostageRescuer?.ai?.route ?? null,
+      routeLabels: enemyHostageEscortCase.routeLabels,
+      supportIntents: enemyHostageEscortState.enemies
+        .filter((enemy) => enemyHostageEscortCase.supportEnemyIds.includes(enemy.id))
+        .map((enemy) => enemy.ai.objectiveIntent),
+      defenderIntents: hostageDefenseIntents,
+      phase: enemyHostageEscortState.hostage.phase,
     };
 
     const sharedPageOne = await createPage(`${ROOT_URL}?qa=1`);
