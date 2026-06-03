@@ -492,6 +492,7 @@ export class TacticalShellApp {
     setText("mission-summary", snapshot.missionSummary);
     setText("objective-status", snapshot.objectiveStatus);
     setText("objective-progress-label", snapshot.objectiveProgressLabel);
+    setText("objective-action-progress-label", snapshot.objectiveActionProgressLabel);
     setText("alive-state", snapshot.aliveState);
 
     const promptPanel = this.root.querySelector<HTMLElement>('[data-ui="prompt-panel"]');
@@ -595,6 +596,16 @@ export class TacticalShellApp {
     });
     this.root.querySelectorAll<HTMLElement>('[data-ui="objective-progress-fill"]').forEach((objectiveProgressFill) => {
       objectiveProgressFill.style.width = `${Math.max(0, Math.min(1, snapshot.objectiveProgress)) * 100}%`;
+    });
+    const showObjectiveActionProgress =
+      snapshot.objectiveActionProgressVisible &&
+      snapshot.objectiveActionProgressLabel.length > 0;
+    this.root.querySelectorAll<HTMLElement>('[data-ui="objective-action-progress"]').forEach((objectiveActionProgress) => {
+      objectiveActionProgress.hidden = !showObjectiveActionProgress;
+      objectiveActionProgress.dataset.actionKind = snapshot.objectiveActionProgressKind ?? "";
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-ui="objective-action-progress-fill"]').forEach((objectiveActionProgressFill) => {
+      objectiveActionProgressFill.style.width = `${Math.max(0, Math.min(1, snapshot.objectiveActionProgress)) * 100}%`;
     });
 
     this.syncClassicCrouchUi();

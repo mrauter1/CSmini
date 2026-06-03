@@ -1117,6 +1117,56 @@ p {
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.86);
 }
 
+.hud-action-progress {
+  position: absolute;
+  left: 50%;
+  bottom: 58px;
+  display: grid;
+  width: min(360px, calc(100% - 360px));
+  min-width: 220px;
+  gap: 5px;
+  padding: 7px 9px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(241, 218, 179, 0.2);
+  border-radius: 6px;
+  background: rgba(7, 8, 6, 0.62);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  color: #f1d4a1;
+  text-align: center;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.86);
+}
+
+.hud-action-progress[hidden] {
+  display: none;
+}
+
+.hud-action-progress__bar {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.hud-action-progress__bar span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(214, 160, 103, 0.95), rgba(255, 214, 133, 0.95));
+  transition: width 90ms linear;
+}
+
+.hud-action-progress small {
+  overflow: hidden;
+  color: #f4dfb5;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  font-size: 0.7rem;
+}
+
 .hud-hint,
 .hud-downline {
   position: absolute;
@@ -1552,6 +1602,10 @@ p {
     width: min(390px, calc(100% - 310px));
   }
 
+  .hud-action-progress {
+    width: min(340px, calc(100% - 310px));
+  }
+
   .scoreboard-controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1656,6 +1710,15 @@ p {
     right: 14px;
     bottom: 82px;
     width: auto;
+    transform: none;
+  }
+
+  .hud-action-progress {
+    left: 14px;
+    right: 14px;
+    bottom: 118px;
+    width: auto;
+    min-width: 0;
     transform: none;
   }
 

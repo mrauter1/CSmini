@@ -273,6 +273,10 @@ export interface LocalMatchSnapshot {
   objectiveStatus: string;
   objectiveProgress: number;
   objectiveProgressLabel: string;
+  objectiveActionProgressVisible: boolean;
+  objectiveActionProgress: number;
+  objectiveActionProgressLabel: string;
+  objectiveActionProgressKind: "plant" | "defuse" | "secure" | "extract" | null;
   aliveState: string;
   teamCounts: TeamHudCount[];
   scoreboardVisible: boolean;
@@ -7840,6 +7844,10 @@ export class LocalMatch {
       objectiveStatus: objectiveHud.status,
       objectiveProgress: objectiveHud.progress,
       objectiveProgressLabel: objectiveHud.progressLabel,
+      objectiveActionProgressVisible: objectiveHud.actionProgressVisible,
+      objectiveActionProgress: objectiveHud.actionProgress,
+      objectiveActionProgressLabel: objectiveHud.actionProgressLabel,
+      objectiveActionProgressKind: objectiveHud.actionProgressKind,
       aliveState: this.playerDead ? "Down" : "Alive",
       teamCounts: this.hudTeamCounts(teamCounts),
       scoreboardVisible: this.scoreboardVisible,
@@ -7852,6 +7860,10 @@ export class LocalMatch {
     status: string;
     progress: number;
     progressLabel: string;
+    actionProgressVisible: boolean;
+    actionProgress: number;
+    actionProgressLabel: string;
+    actionProgressKind: "plant" | "defuse" | "secure" | "extract" | null;
   } {
     return buildObjectiveHudSnapshot(this.buildObjectiveHudInput(now));
   }

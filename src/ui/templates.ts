@@ -695,6 +695,13 @@ export function renderMapStage(
 
               <div class="hud-status-line" data-ui="status">Round feed pending.</div>
 
+              <div class="hud-action-progress" data-ui="objective-action-progress" hidden>
+                <div class="hud-action-progress__bar">
+                  <span data-ui="objective-action-progress-fill"></span>
+                </div>
+                <small data-ui="objective-action-progress-label"></small>
+              </div>
+
               <div class="hud-crosshair" data-hit-indicator>
                 <span class="hud-crosshair__h"></span>
                 <span class="hud-crosshair__v"></span>

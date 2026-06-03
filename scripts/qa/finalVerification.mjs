@@ -440,6 +440,8 @@ async function readHud(page) {
         const style = window.getComputedStyle(node);
         return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
       };
+      const actionProgress = document.querySelector('[data-ui="objective-action-progress"]');
+      const actionProgressFill = document.querySelector('[data-ui="objective-action-progress-fill"]');
 
       return {
         mapName: document.querySelector('[data-ui="map-name"]')?.textContent?.trim() ?? '',
@@ -452,6 +454,10 @@ async function readHud(page) {
         missionSummary: document.querySelector('[data-ui="mission-summary"]')?.textContent?.trim() ?? '',
         objectiveStatus: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
         objectiveProgress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? '',
+        objectiveActionProgressVisible: visible('[data-ui="objective-action-progress"]'),
+        objectiveActionProgressLabel: document.querySelector('[data-ui="objective-action-progress-label"]')?.textContent?.trim() ?? '',
+        objectiveActionProgressKind: actionProgress?.dataset.actionKind ?? '',
+        objectiveActionProgressWidth: Number.parseFloat(actionProgressFill?.style.width ?? '0') || 0,
         teamName: document.querySelector('[data-ui="team-name"]')?.textContent?.trim() ?? '',
         aliveState: document.querySelector('[data-ui="alive-state"]')?.textContent?.trim() ?? '',
         firingStatus: document.querySelector('[data-ui="firing-status"]')?.textContent?.trim() ?? '',
@@ -1710,6 +1716,36 @@ async function main() {
       5_000,
     );
     await localPage.waitForExpression(
+      `
+        (() => {
+          const panel = document.querySelector('[data-ui="objective-action-progress"]');
+          const label = document.querySelector('[data-ui="objective-action-progress-label"]')?.textContent?.trim() ?? '';
+          const fill = Number.parseFloat(document.querySelector('[data-ui="objective-action-progress-fill"]')?.style.width ?? '0') || 0;
+          if (!panel || panel.hidden) return false;
+          const style = window.getComputedStyle(panel);
+          return style.display !== 'none'
+            && panel.dataset.actionKind === 'plant'
+            && /arm/i.test(label)
+            && fill > 0
+            && fill <= 100;
+        })()
+      `,
+      3_000,
+    );
+    const localBombPlantHudShell = await readHud(localPage);
+    assert(
+      localBombPlantHudShell.objectiveActionProgressVisible &&
+        localBombPlantHudShell.objectiveActionProgressKind === "plant" &&
+        /arm/i.test(localBombPlantHudShell.objectiveActionProgressLabel) &&
+        localBombPlantHudShell.objectiveActionProgressWidth > 0,
+      `Expected live bomb action progress while planting, saw ${JSON.stringify({
+        visible: localBombPlantHudShell.objectiveActionProgressVisible,
+        kind: localBombPlantHudShell.objectiveActionProgressKind,
+        label: localBombPlantHudShell.objectiveActionProgressLabel,
+        width: localBombPlantHudShell.objectiveActionProgressWidth,
+      })}`,
+    );
+    await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.bomb?.phase === 'planted'",
       7_000,
     );
@@ -1726,6 +1762,10 @@ async function main() {
       `Expected planted relay marker to expose site-armed state, saw ${localBombPlantedMarker.stateHint}`,
     );
     const localBombHudShell = await readHud(localPage);
+    assert(
+      localBombHudShell.objectiveActionProgressVisible === false,
+      "Expected live bomb action progress to hide after the plant completes",
+    );
     const localBombHud = await localPage.evaluate(`
       ({
         status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
@@ -1763,6 +1803,7 @@ async function main() {
       resolution: localBombResolved.round.result,
       hudStatus: localBombHud.status,
       hudProgress: localBombHud.progress,
+      actionProgressLabel: localBombPlantHudShell.objectiveActionProgressLabel,
     };
 
     await setTeamPreference(localPage, "cobalt");
@@ -1857,6 +1898,36 @@ async function main() {
       "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
       5_000,
     );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const panel = document.querySelector('[data-ui="objective-action-progress"]');
+          const label = document.querySelector('[data-ui="objective-action-progress-label"]')?.textContent?.trim() ?? '';
+          const fill = Number.parseFloat(document.querySelector('[data-ui="objective-action-progress-fill"]')?.style.width ?? '0') || 0;
+          if (!panel || panel.hidden) return false;
+          const style = window.getComputedStyle(panel);
+          return style.display !== 'none'
+            && panel.dataset.actionKind === 'extract'
+            && /clear/i.test(label)
+            && fill > 0
+            && fill <= 100;
+        })()
+      `,
+      1_500,
+    );
+    const localHostageExtractHudShell = await readHud(localPage);
+    assert(
+      localHostageExtractHudShell.objectiveActionProgressVisible &&
+        localHostageExtractHudShell.objectiveActionProgressKind === "extract" &&
+        /clear/i.test(localHostageExtractHudShell.objectiveActionProgressLabel) &&
+        localHostageExtractHudShell.objectiveActionProgressWidth > 0,
+      `Expected live evac action progress while extracting, saw ${JSON.stringify({
+        visible: localHostageExtractHudShell.objectiveActionProgressVisible,
+        kind: localHostageExtractHudShell.objectiveActionProgressKind,
+        label: localHostageExtractHudShell.objectiveActionProgressLabel,
+        width: localHostageExtractHudShell.objectiveActionProgressWidth,
+      })}`,
+    );
     const localHostageExtractingMarkerState = await getState(localPage);
     const localHostageExtractingMarker = assertObjectiveMarker(localHostageExtractingMarkerState, {
       kind: "extraction-zone",
@@ -1875,7 +1946,7 @@ async function main() {
         progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
       })
     `);
-    const localHostageHudShell = await readHud(localPage);
+    const localHostageHudShell = localHostageExtractHudShell;
     assert(
       /clear/i.test(localHostageHud.progress),
       "Expected the local hostage HUD to expose extraction progress",
@@ -1914,6 +1985,7 @@ async function main() {
       resolution: localHostageResolved.round.result,
       hudStatus: localHostageHud.status,
       hudProgress: localHostageHud.progress,
+      actionProgressLabel: localHostageExtractHudShell.objectiveActionProgressLabel,
       roundAfterReset: localHostageReset.round.roundNumber,
       phaseAfterReset: localHostageReset.round.phase,
     };
@@ -3338,6 +3410,10 @@ async function main() {
       `(window.__dustlineQa__?.getState()?.hostage?.extractedCount ?? 0) === ${sharedHostageCount}`,
       28_000,
     );
+    await sharedPageOne.waitForExpression(
+      "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
+      5_000,
+    );
     await sharedPageTwo.waitForExpression(
       "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
       5_000,
@@ -3414,20 +3490,20 @@ async function main() {
       notice: fallbackNotice,
     };
 
-    for (const hud of [
-      localBombHudShell,
-      localHostageHudShell,
-      sharedBombHudShell,
-      sharedHostageHudShell,
-    ]) {
-      assert(hud.teamName, "Expected HUD team name to be visible");
-      assert(hud.roundNumber, "Expected HUD round number to be visible");
-      assert(hud.roundPhase, "Expected HUD round phase to be visible");
-      assert(hud.roundTimer, "Expected HUD round timer to be visible");
-      assert(hud.missionLabel, "Expected HUD mission label to be visible");
-      assert(hud.objectiveLabel, "Expected HUD objective label to be visible");
-      assert(hud.objectiveStatus, "Expected HUD objective status to be visible");
-      assert(hud.ammo, "Expected HUD ammo readout to be visible");
+    for (const [hudName, hud] of Object.entries({
+      localBomb: localBombHudShell,
+      localHostage: localHostageHudShell,
+      sharedBomb: sharedBombHudShell,
+      sharedHostage: sharedHostageHudShell,
+    })) {
+      assert(hud.teamName, `Expected ${hudName} HUD team name to be visible`);
+      assert(hud.roundNumber, `Expected ${hudName} HUD round number to be visible`);
+      assert(hud.roundPhase, `Expected ${hudName} HUD round phase to be visible`);
+      assert(hud.roundTimer, `Expected ${hudName} HUD round timer to be visible`);
+      assert(hud.missionLabel, `Expected ${hudName} HUD mission label to be visible`);
+      assert(hud.objectiveLabel, `Expected ${hudName} HUD objective label to be visible`);
+      assert(hud.objectiveStatus, `Expected ${hudName} HUD objective status to be visible`);
+      assert(hud.ammo, `Expected ${hudName} HUD ammo readout to be visible`);
     }
 
     const bombPlantTimes = summary.mapChecks

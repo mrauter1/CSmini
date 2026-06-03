@@ -11,6 +11,10 @@ export interface ObjectiveHudSnapshot {
   status: string;
   progress: number;
   progressLabel: string;
+  actionProgressVisible: boolean;
+  actionProgress: number;
+  actionProgressLabel: string;
+  actionProgressKind: "plant" | "defuse" | "secure" | "extract" | null;
 }
 
 export interface ObjectiveHudEvidence extends ObjectiveHudSnapshot {
@@ -39,6 +43,10 @@ const EMPTY_OBJECTIVE_HUD: ObjectiveHudSnapshot = {
   status: "",
   progress: 0,
   progressLabel: "",
+  actionProgressVisible: false,
+  actionProgress: 0,
+  actionProgressLabel: "",
+  actionProgressKind: null,
 };
 
 export function buildObjectiveHudSnapshot(input: ObjectiveHudInput): ObjectiveHudSnapshot {
@@ -83,14 +91,23 @@ function buildBombHudSnapshot(input: ObjectiveHudInput): ObjectiveHudSnapshot {
         localCarrier && atSite && input.roundState.phase === "active"
           ? `Hold E to arm ${state.site.label}`
           : "",
+      actionProgressVisible: false,
+      actionProgress: 0,
+      actionProgressLabel: "",
+      actionProgressKind: null,
     };
   }
 
   if (state.phase === "planting") {
+    const progressLabel = `${secondsRemaining.toFixed(1)}s to arm`;
     return {
       status: `${state.actingCombatantName ?? "Operator"} arming ${state.site.label}.`,
       progress,
-      progressLabel: `${secondsRemaining.toFixed(1)}s to arm`,
+      progressLabel,
+      actionProgressVisible: true,
+      actionProgress: progress,
+      actionProgressLabel: progressLabel,
+      actionProgressKind: "plant",
     };
   }
 
@@ -106,13 +123,22 @@ function buildBombHudSnapshot(input: ObjectiveHudInput): ObjectiveHudSnapshot {
         canDefuse && input.distanceToBombSite <= state.site.radius
           ? `Hold E to disarm · ${secondsRemaining.toFixed(1)}s to breach`
           : `${secondsRemaining.toFixed(1)}s to breach`,
+      actionProgressVisible: false,
+      actionProgress: 0,
+      actionProgressLabel: "",
+      actionProgressKind: null,
     };
   }
 
+  const progressLabel = `${secondsRemaining.toFixed(1)}s to disarm`;
   return {
     status: `${state.actingCombatantName ?? "Operator"} disarming ${state.site.label}.`,
     progress,
-    progressLabel: `${secondsRemaining.toFixed(1)}s to disarm`,
+    progressLabel,
+    actionProgressVisible: true,
+    actionProgress: progress,
+    actionProgressLabel: progressLabel,
+    actionProgressKind: "defuse",
   };
 }
 
@@ -135,14 +161,23 @@ function buildHostageHudSnapshot(input: ObjectiveHudInput): ObjectiveHudSnapshot
       status: `${state.cluster.label} pinned near ${state.extraction.label}.`,
       progress: 0,
       progressLabel: canSecure ? `Hold E to secure ${state.cluster.label}` : "",
+      actionProgressVisible: false,
+      actionProgress: 0,
+      actionProgressLabel: "",
+      actionProgressKind: null,
     };
   }
 
   if (state.phase === "securing") {
+    const progressLabel = `${secondsRemaining.toFixed(1)}s to link escort`;
     return {
       status: `${state.actingCombatantName ?? "Operator"} securing ${state.cluster.label}.`,
       progress,
-      progressLabel: `${secondsRemaining.toFixed(1)}s to link escort`,
+      progressLabel,
+      actionProgressVisible: true,
+      actionProgress: progress,
+      actionProgressLabel: progressLabel,
+      actionProgressKind: "secure",
     };
   }
 
@@ -157,12 +192,21 @@ function buildHostageHudSnapshot(input: ObjectiveHudInput): ObjectiveHudSnapshot
       progressLabel: readyToExtract
         ? `Extraction lane clear at ${state.extraction.label}`
         : `${rescuedCount}/${totalCount} through ${state.extraction.label}`,
+      actionProgressVisible: false,
+      actionProgress: 0,
+      actionProgressLabel: "",
+      actionProgressKind: null,
     };
   }
 
+  const progressLabel = `${secondsRemaining.toFixed(1)}s to clear ${state.extraction.label}`;
   return {
     status: `${state.actingCombatantName ?? "Operator"} extracting ${state.cluster.label}.`,
     progress,
-    progressLabel: `${secondsRemaining.toFixed(1)}s to clear ${state.extraction.label}`,
+    progressLabel,
+    actionProgressVisible: true,
+    actionProgress: progress,
+    actionProgressLabel: progressLabel,
+    actionProgressKind: "extract",
   };
 }
