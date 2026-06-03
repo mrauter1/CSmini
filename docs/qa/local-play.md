@@ -77,7 +77,7 @@ Fresh 2026-06-02 reruns passed for the local surfaces that can regress during AI
 
 Each shipped playable map was opened twice in live local play: once as `Amber Vanguard` and once as `Cobalt Reach`. The harness confirmed a valid round state and mission label on load, then compared the resulting local spawn positions.
 
-- `Sandline Foundry`: spawn separation `29.17` units, live mission `Relay Charge`, objective `Kiln Yard`
+- `Sandline Foundry`: spawn separation `32.56` units, live mission `Relay Charge`, objective `Kiln Yard`
 - `Transit Crates`: spawn separation `30.41` units, live mission `Relay Charge`, objective `Gantry Console`
 - `Breaker Vault`: spawn separation `28.16` units, live mission `Relay Charge`, objective `Turbine Rim`
 - `Quarry Slip`: spawn separation `28.07` units, live mission `Relay Charge`, objective `Slip Cradle`
@@ -100,8 +100,8 @@ Result: every shipped map loaded a live round from the declared mission metadata
 
 - Standing camera height: `1.62`
 - Crouched camera height: `1.18`
-- Standing forward sample over the same timed window: `2.06` units
-- Crouched forward sample over the same timed window: `1.18` units
+- Standing forward sample over the same timed window: `1.37` units
+- Crouched forward sample over the same timed window: `0.79` units
 - Jump sample peak camera height: `2.59`
 - Jump sample landed camera height: `1.62`
 
@@ -121,7 +121,7 @@ Result: default gameplay keeps the player out for the rest of the round. The for
 - `Sandline Foundry` was reopened in local mode as `Amber Vanguard`.
 - The harness forced the round into `active`, enabled a QA-only invulnerability flag so the current solo AI could not interrupt the objective proof, and snapped the local operator onto the declared `Kiln Yard` relay site.
 - The live debug state reported `localCanPlant: true`, proving the declared bomb-site metadata was usable from the actual browser round state rather than only from static map data.
-- The harness started the relay-charge action, observed the bomb state move through `planting` into `planted`, and read a live HUD pressure line of `11.8s to breach`.
+- The harness started the relay-charge action, observed the bomb state move through `planting` into `planted`, and read a live HUD pressure line of `14.6s to breach`.
 - The round resolved by explosion with the result text ending in `breached Kiln Yard.`
 
 Result: the solo-local path now assigns the attacking operator the relay charge, only allows arming inside the declared live site, exposes a planted countdown in the HUD, and resets cleanly after the explosion resolution.
@@ -138,7 +138,7 @@ Result: the solo-local path now assigns the attacking operator the relay charge,
   - `Central Yard`
   - `Generator Hall`
   - `Water Tower Gate`
-- Both hostage slots advanced their route progress to `2`, the debug state reported `extractedCount: 2`, the HUD exposed extraction progress (`1.3s to clear Water Tower Gate`), and the round resolved with `extracted Loading Crew.`
+- Both hostage slots advanced their route progress to `2`, the debug state reported `extractedCount: 2`, the HUD exposed extraction progress (`0.7s to clear Water Tower Gate`), and the round resolved with `extracted Loading Crew.`
 - After the rescue resolution, the normal round shell automatically reset into round `3` briefing without needing a forced-round QA shortcut.
 
 Result: the solo-local hostage flow now supports live secure, escort, route traversal, extraction, readable HUD feedback, and a clean automatic reset into the next round.
@@ -153,14 +153,14 @@ Result: the solo-local hostage flow now supports live secure, escort, route trav
 - A QA-only `stageAiSightlineCase()` hook staged `enemy-0` behind the named blocker `Crate stack west`, with the player hidden on the `Generator Hall` side and a clear fallback pose at `Water Tower Court`.
 - In the blocked pose, the debug state reported `visibility: 0` and `canSeePlayer: false`.
 - Firing once from the blocked pose drew the enemy into `investigate`, but the same debug state kept `shotsFired: 0`, proving the bot reacted to sound without shooting through the crate stack.
-- Moving to the clear pose on `hard` advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `6` shots over `1.66s` and split them into `3` hits and `3` misses.
+- Moving to the clear pose on `hard` advanced the same enemy into `engage`; with QA invulnerability enabled, the bot fired `6` shots over `1.71s` while still producing both hits and misses.
 - A deterministic bot jump sample for that same enemy started grounded, entered an airborne phase, peaked at feet `0.97` / eye `2.59`, then landed safely back at eye `1.62` after `0.767s`.
-- A staged blocked-traversal recovery case now routes around the blocker through the tactical navigation graph before resorting to any jump. The final QA sample planned a non-direct `partial-route` through `Central Yard route offset`, kept the enemy upright, and recorded `jumpCount: 0` for the obstruction.
+- A staged blocked-traversal recovery case now routes around the blocker through the tactical navigation graph before resorting to any jump. The final QA sample planned a non-direct `graph-route` through `Central Yard route offset`, kept the enemy upright, and recorded `jumpCount: 0` for the obstruction.
 - A QA-only live jump request lifted the same engaged enemy to `feetY 0.355` while keeping root pitch at `0` and preserving the weapon-pitch aim contract, then landed back at `feetY 0` without breaking posture or aim separation.
 - The live enemy shot path emitted a playable `world-fire` audio event with distance data, normalized gain in the accepted `0.08..0.92` range, and boosted output gain for audibility after the user-gesture unlock pulse armed the audio context.
 - The live debug tuning reported bot fire interval `0.18s` and enemy damage `34`, matching the player fire interval and player damage while still applying difficulty-specific reaction, spread, hit chance, and burst pacing.
 - Stale opponent-fire audio is not replayed after a late browser audio unlock; blocked shots are dropped rather than played out of time.
-- After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then dropped into `pursue` after the player ducked back behind cover.
+- After the player tagged that enemy once, the same bot switched into `reposition` with reason `angle`, then returned to objective pressure after the player ducked back behind cover.
 - A staged observer/receiver pair proved squad contact stayed delayed: the receiver held `patrol` before delivery, then entered `pursue` only after the shared-contact lag elapsed.
 - A bounded-memory follow-up proved the same last-known pursuit expired back out of `pursue` instead of lasting indefinitely.
 - A staged blocked-traversal case forced the same enemy to use a graph waypoint rather than deadlocking or teleporting; the debug state exposed route reason, waypoint label, path labels, stuck classification, recovery action, and failed-jump suppression state.
@@ -181,11 +181,11 @@ Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`,
 Fresh `npm run qa:final` and `npm test` runs on 2026-06-02, plus a full `npm test` rerun on 2026-06-03, extended the local tactical AI proof:
 
 - Opening fireteam strategies split into `anchor_site`, `route_probe`, and `flank_rotate`, with per-bot roles `anchor`, `route`, and `flank`, deterministic profile seeds, and objective intents in the debug snapshot.
-- Delayed shared-contact responders split away from the same last-known point into separate target-claim buckets (`Central Yard` and `Generator Hall`) with `claimed-contact-route` adjustments.
-- A blocked direct route at `Crate stack west` planned a non-direct graph route through `Central Yard route offset`; the staged obstruction kept `routeUsesGraph: true`, `routeReason: partial-route`, `jumpCount: 0`, and no teleport/deadlock.
+- Delayed shared-contact responders split away from the same last-known point into separate target-claim buckets (`Central Yard` and `Drain Underpass`) with `claimed-contact-route` adjustments.
+- A blocked direct route at `Crate stack west` planned a non-direct graph route through `Central Yard route offset`; the staged obstruction kept `routeUsesGraph: true`, `routeReason: graph-route`, `jumpCount: 0`, and no teleport/deadlock.
 - The same staged sightline kept `visibility: 0`, `canSeePlayer: false`, and `shotsFired: 0` through the blocker, then entered readable combat only from the clear pose.
 - After the player damaged a bot, the bot switched to `cover_reposition` with `strategyReason: recent-damage`, proving meaningful mid-round strategy change rather than frame-by-frame jitter.
-- Relay Charge enemy staging produced carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, an offset `Copper-2 escort lane` claim with reason `carrier-escort-offset`, a separate `Generator Hall` screen, and defender intent `defuse_rotate` during the planted/defusing state.
+- Relay Charge enemy staging produced carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, an offset `Copper-2 escort lane` claim with reason `carrier-escort-offset`, a separate `Drain Underpass` screen, and defender intent `defuse_rotate` during the planted/defusing state.
 - Evac Escort enemy staging produced rescuer intent `escort_extract`, a graph route toward declared route label `Drain Underpass` through `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, defender intents `hostage_cluster_anchor` plus `hostage_lane_probe`, and extraction completion once an attacking escort reached the zone with all hostages extracted.
 
 Result: browser QA now proves the new map-aware route, recovery, strategy, and objective intent surfaces through staged live states that observe the shipped AI/update loop.

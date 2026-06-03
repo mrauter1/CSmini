@@ -177,7 +177,7 @@ Implemented on 2026-06-02 for subgoal `route-graph-navigation-and-stuck-recovery
 - Bot debug snapshots expose graph node/edge counts, route reason, current waypoint, path node IDs/labels, stuck classification, recovery action/timing/count, and failed-jump suppression state.
 - Stuck classification distinguishes arrived/holding/moving/blocked geometry/blocked tactical/temporary slowdown and excludes objective actions from geometry-stuck classification.
 - Recovery sequencing now prefers local backout/strafe/rotate, then graph-aware replan through a recent-target-aware recovery point, with stuck-recovery jumps gated behind prior recovery work and suppression memory.
-- Fresh `npm test` passed. The final QA recovery sample staged `Crate stack west` as the blocker and observed a `partial-route` to `Central Yard route offset`, `routeUsesGraph: true`, `jumpCount: 0`, and no teleport/deadlock.
+- Fresh `npm test` passed. The final QA recovery sample staged `Crate stack west` as the blocker and observed a `graph-route` to `Central Yard route offset`, `routeUsesGraph: true`, `jumpCount: 0`, and no teleport/deadlock.
 
 ## Strategy Layer Implementation Evidence
 
@@ -226,9 +226,9 @@ Completed on 2026-06-02 for subgoal `browser-qa-docs-and-final-evidence`.
 - Fresh `npm run qa:final` passed and refreshed screenshots from current `dist` output.
 - Fresh `npm test` passed after rebuilding and rerunning the browser harness. The run reported:
   - opening strategies `anchor_site`, `route_probe`, `flank_rotate`
-  - recovery route `partial-route` via `Central Yard route offset`, `routeUsesGraph: true`, and `jumpCount: 0`
+  - recovery route `graph-route` via `Central Yard route offset`, `routeUsesGraph: true`, and `jumpCount: 0`
   - strategy switch `cover_reposition` with `strategyReason: recent-damage`
-  - Relay carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, support targets `Copper-2 escort` and `Generator Hall`, and defender intent `defuse_rotate`
+  - Relay carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, support targets `Copper-2 escort lane` and `Drain Underpass`, and defender intent `defuse_rotate`
   - Evac rescuer intent `escort_extract`, route destination `Drain Underpass`, graph waypoint `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, and defender intents `hostage_cluster_anchor` plus `hostage_lane_probe`
   - local Relay breach, local Evac extraction/reset, shared Relay defuse, shared Evac extraction, and bounded solo enemy Relay breach
 - Fresh guardrail checks confirmed `three` remains the only runtime dependency and source/content additions did not introduce sprint, copied Counter-Strike names/assets/UI/maps/sounds, a second movement model, or a server/matchmaking requirement for solo bots.

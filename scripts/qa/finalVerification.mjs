@@ -1332,6 +1332,18 @@ async function main() {
             westRoute.cobaltToGeneratorHall?.graphReachable,
             "Expected Cobalt to graph-route into Sandline Generator Hall through player-equivalent navigation",
           );
+          assert(
+            westRoute.cobaltToShutterGap?.reachable,
+            "Expected Cobalt to physically reach the Sandline Shutter Gap opening",
+          );
+          assert(
+            westRoute.shutterGapToGeneratorHall?.reachable,
+            "Expected Sandline Shutter Gap to physically open into Generator Hall",
+          );
+          assert(
+            westRoute.drainUnderpassToKilnYard?.reachable,
+            "Expected Sandline Drain Underpass cut to physically reach Kiln Yard",
+          );
           assert(state?.objectiveMarkers?.readyForWorldMarkers, "Expected Sandline to expose world objective marker debug state");
           assertObjectiveMarker(state, {
             kind: "relay-site",

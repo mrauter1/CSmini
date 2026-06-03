@@ -95,6 +95,9 @@ export interface MapReachabilityReport {
     amberToGeneratorHall: ReachabilityCheckEvidence | null;
     generatorHallToCentralYard: ReachabilityCheckEvidence | null;
     cobaltToGeneratorHall: ReachabilityCheckEvidence | null;
+    cobaltToShutterGap: ReachabilityCheckEvidence | null;
+    shutterGapToGeneratorHall: ReachabilityCheckEvidence | null;
+    drainUnderpassToKilnYard: ReachabilityCheckEvidence | null;
     amberDirectSegmentClear: boolean | null;
     generatorToCentralDirectSegmentClear: boolean | null;
   };
@@ -424,6 +427,48 @@ export function buildMapReachabilityReport(map: MapDefinition): MapReachabilityR
     amber: resolvedFocus(map.teamSpawns.amber.focusId),
     cobalt: resolvedFocus(map.teamSpawns.cobalt.focusId),
   };
+  const addRouteLinkCheck = (input: {
+    id: string;
+    label: string;
+    fromLabel: string;
+    start: THREE.Vector3 | null;
+    toLabel: string;
+    destination: THREE.Vector3 | null;
+  }): ReachabilityCheckEvidence | null => {
+    if (!input.start || !input.destination) {
+      return null;
+    }
+
+    const plan = planTacticalRoute({
+      graph,
+      world,
+      start: input.start,
+      destination: input.destination,
+      destinationLabel: input.toLabel,
+      radius: PLAYER_RADIUS,
+      bodyHeight: STANDING_BODY_HEIGHT,
+      allowDirect: false,
+    });
+    const check = toCheck({
+      id: input.id,
+      kind: "route-link",
+      label: input.label,
+      fromLabel: input.fromLabel,
+      start: input.start,
+      toLabel: input.toLabel,
+      destination: input.destination,
+      plan,
+      collisionReachable: isCollisionReachable({
+        world,
+        start: input.start,
+        destination: input.destination,
+        radius: PLAYER_RADIUS,
+        bodyHeight: STANDING_BODY_HEIGHT,
+      }),
+    });
+    checks.push(check);
+    return check;
+  };
 
   for (const route of map.tacticalRoutes) {
     const destination = resolvedFocus(route.focusId);
@@ -556,6 +601,36 @@ export function buildMapReachabilityReport(map: MapDefinition): MapReachabilityR
     }
   }
 
+  const sandlineExactRoutes =
+    map.id === "sandline-foundry"
+      ? {
+          cobaltToShutterGap: addRouteLinkCheck({
+            id: "sandline:cobalt->shutter-gap",
+            label: "Blue Shutter Bay reaches Shutter Gap",
+            fromLabel: map.teamSpawns.cobalt.label,
+            start: spawnPositions.cobalt,
+            toLabel: focusLabel(map, "shutter-gap"),
+            destination: resolvedFocus("shutter-gap"),
+          }),
+          shutterGapToGeneratorHall: addRouteLinkCheck({
+            id: "sandline:shutter-gap->generator-hall",
+            label: "Shutter Gap opens into Generator Hall",
+            fromLabel: focusLabel(map, "shutter-gap"),
+            start: resolvedFocus("shutter-gap"),
+            toLabel: focusLabel(map, "corridor"),
+            destination: resolvedFocus("corridor"),
+          }),
+          drainUnderpassToKilnYard: addRouteLinkCheck({
+            id: "sandline:drain-underpass->kiln-yard",
+            label: "Drain Underpass cut reaches Kiln Yard",
+            fromLabel: focusLabel(map, "underpass"),
+            start: resolvedFocus("underpass"),
+            toLabel: focusLabel(map, "courtyard"),
+            destination: resolvedFocus("courtyard"),
+          }),
+        }
+      : null;
+
   const blocked = checks.filter((check) => !check.reachable);
   const sandlineWestRoute =
     map.id === "sandline-foundry"
@@ -606,6 +681,9 @@ export function buildMapReachabilityReport(map: MapDefinition): MapReachabilityR
             })(),
           cobaltToGeneratorHall:
             checks.find((check) => check.id === "cobalt:route:generator-hall") ?? null,
+          cobaltToShutterGap: sandlineExactRoutes?.cobaltToShutterGap ?? null,
+          shutterGapToGeneratorHall: sandlineExactRoutes?.shutterGapToGeneratorHall ?? null,
+          drainUnderpassToKilnYard: sandlineExactRoutes?.drainUnderpassToKilnYard ?? null,
           amberDirectSegmentClear: (() => {
             const generator = routeById(map, "generator-hall");
             const destination = generator ? resolvedFocus(generator.focusId) : null;

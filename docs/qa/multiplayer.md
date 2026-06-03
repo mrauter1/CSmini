@@ -276,7 +276,7 @@ The same two pages then stayed on `Sandline Foundry` for a live relay-charge exc
 - page 1 forced the shared round into `active`, stood in the declared `Kiln Yard` site, and began the relay-charge arm action as the attacking `Amber Vanguard` operator
 - page 2 saw the same attacking operator listed as the bomb carrier before the plant
 - both pages advanced to `planted`
-- page 2 rendered the same planted-pressure HUD line (`12.0s to breach`) and then moved onto the live site as the `Cobalt Reach` defender
+- page 2 rendered the same planted-pressure HUD line (`12.9s to breach`) and then moved onto the live site as the `Cobalt Reach` defender
 - page 2 completed the disarm, and both pages resolved with matching `disarmed Kiln Yard` result text
 
 Result: the retained shared-room path now propagates bomb carrier ownership, planted-site pressure, and defuse resolution without stale mission state between peers.

@@ -87,17 +87,17 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - Cobalt avatars exposed blue-gray uniforms without masks, while Amber avatars exposed warm rust/tan uniforms with dark domino masks
 - Movement:
   - crouch lowered the camera from `1.62` to `1.18`
-  - crouch reduced same-window travel from `2.06` to `1.18`
+  - crouch reduced same-window travel from `1.37` to `0.79`
   - jump peaked at `2.59`, landed at `1.62`, and stayed airborne for `0.767s`
 - Teams and spawns:
   - all five shipped maps loaded round-one bomb metadata live
-  - each map preserved distinct spawn separation: `29.17`, `30.41`, `28.16`, `28.07`, and `28.16` units
+  - each map preserved distinct spawn separation: `32.56`, `30.41`, `28.16`, `28.07`, and `28.16` units
 - Objective markers and reachability:
   - Sandline exposes world objective marker debug state, active/inactive marker entries, HUD-label match evidence, active-state marker hints for armed/extracting phases, and a ground-stencil/no-floating-label/non-beacon-surface marker contract
   - final screenshots include the central `Kiln Yard` floor-zone marker, `Shutter Lift`/loading-bay ground marker, and `Water Tower Gate` extraction threshold marker
   - the 2026-06-03 ground-stencil follow-up passed typecheck/build/focused marker probe, then passed the full `npm test` wrapper and refreshed the tracked screenshot set
-  - every shipped map reported zero blocked route/objective reachability checks; Sandline reported `38`, and Transit Crates, Breaker Vault, Quarry Slip, and Ledger Annex each reported `34`
-  - Sandline west-route assertions passed for `Water Tower Court` to `Generator Hall`, `Generator Hall` to `Central Yard`, and `Blue Shutter Bay` to `Generator Hall`
+  - every shipped map reported zero blocked route/objective reachability checks; Sandline reported `47`, and Transit Crates, Breaker Vault, Quarry Slip, and Ledger Annex each reported `34`
+  - Sandline west-route assertions passed for `Water Tower Court` to `Generator Hall`, `Generator Hall` to `Central Yard`, `Blue Shutter Bay` to `Generator Hall`, `Blue Shutter Bay` to `Shutter Gap`, `Shutter Gap` to `Generator Hall`, and `Drain Underpass` to `Kiln Yard`
 - Round shell:
   - forced death kept the player down for the active round
   - next-round reset revived the player and advanced the counter from round `1` to round `2`
@@ -118,12 +118,12 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - deterministic bot jump samples proved grounded start, airborne phase, readable peak, safe landing, and upright posture with root-pitch/body-yaw separated from weapon pitch while aiming
   - blocker `Crate stack west` prevented through-wall fire at `visibility: 0`
   - delayed shared contact kept the staged receiver on `patrol` before delivery, then let receivers switch only after the communication lag elapsed and split into distinct target-claim route buckets instead of stacking on the same last-known point
-  - pressure on the staged enemy produced a real `reposition` with reason `angle`, then a `pursue` state after lost sight
-  - a blocked traversal case recovered through a graph route to `Central Yard route offset` instead of teleporting, with `routeUsesGraph: true`, `routeReason: partial-route`, and `jumpCount: 0`
+  - pressure on the staged enemy produced a real `reposition` with reason `angle`, then returned to objective pressure after lost sight
+  - a blocked traversal case recovered through a graph route to `Central Yard route offset` instead of teleporting, with `routeUsesGraph: true`, `routeReason: graph-route`, and `jumpCount: 0`
   - player damage forced a strategy switch to `cover_reposition` with reason `recent-damage`
   - ordered difficulty danger stayed fair: `easy` `0.487s / 7.124 / 0.407`, `medium` `0.377s / 6.037 / 0.537`, `hard` `0.237s / 4.951 / 0.657`
   - bot fire interval now matches the player fire interval at `0.18s`, and enemy damage now matches player damage at `34`
-  - staged hard combat fired `6` shots over `1.66s` while still producing both hits and misses
+  - staged hard combat fired `6` shots over `1.71s` while still producing both hits and misses
   - an enemy-side `Kiln Yard` plant case proved objective-aware pressure and bounded solo-round resolution without deadlock
   - Relay-aware staging proved carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, an offset `carrier-escort-offset` support lane, a separate screen target, and defender `defuse_rotate` during planted/defusing state
   - Evac-aware staging proved rescuer `escort_extract`, a graph route to declared route label `Drain Underpass` through `Loading Bay route offset`, escort support intent, attacking-escort extraction completion, and defender `hostage_cluster_anchor` / `hostage_lane_probe` intent

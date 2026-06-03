@@ -50,7 +50,7 @@ Rationale: the rifle cadence supports short controlled bursts instead of permane
 - Resolution phase: `5.5s`
 - Bomb plant window across shipped maps: `3.4-3.5s`
 - Bomb defuse window across shipped maps: `4.1-4.4s`
-- Bomb fuse window across shipped maps: `11.9-12.6s`
+- Bomb fuse window across shipped maps: `11.9-15.8s`
 - Hostage secure window: `1.45s`
 - Hostage extract window: `1.8s`
 
@@ -84,7 +84,7 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
   - `easy`: `0.487s` reaction, `7.124` spread, `0.407` hit chance
   - `medium`: `0.377s` reaction, `6.037` spread, `0.537` hit chance
   - `hard`: `0.237s` reaction, `4.951` spread, `0.657` hit chance
-- Staged hard combat cadence: `6` shots over `1.66s`, with `3` hits and `3` misses
+- Staged hard combat cadence: `6` shots over `1.71s`, with mixed hit/miss results in the staged firefight
 
 Rationale: the solo fireteam now closes space, crouches, jumps, lands, and routes around blocked traversals before considering a bounded stuck-recovery hop, so the threat comes from angle choice, timing, delayed communication, burst discipline, objective intent, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, recover, reposition, and pressure objectives without snapping instantly into perfect hits.
 
@@ -100,7 +100,7 @@ Test surfaces used for the checklist:
 ### Checklist Results
 
 - Movement cadence: `pass`
-  Evidence: fresh same-window travel sample was `2.06` standing vs `1.18` crouched, with walk `8.6u/s` and crouch `4.82u/s`.
+  Evidence: fresh same-window travel sample was `1.37` standing vs `0.79` crouched, with walk `8.6u/s` and crouch `4.82u/s`.
 - Crouch readability: `pass`
   Evidence: camera dropped from `1.62` to `1.18` in the live sample, crouch speed stayed below standing pace, and recoil kick dropped from `0.8` standing to `0.58` crouched.
 - Jump readability: `pass`
@@ -108,11 +108,11 @@ Test surfaces used for the checklist:
 - Weapon timing/readability: `pass`
   Evidence: player and bot fire intervals both stayed at `0.18s`, player and bot damage both stayed at `34`, reload at `1.05s`, clip at `24`, and the live HUD kept `24 / 120` ammo plus `Ready` status visible during the round.
 - Short round pacing: `pass`
-  Evidence: the round shell stays at `4.5s` briefing / `72s` live / `5.5s` reset, while bomb fuse timing stays in the `11.9-12.6s` range and hostage secure/extract stays at `1.45s` / `1.8s`.
+  Evidence: the round shell stays at `4.5s` briefing / `72s` live / `5.5s` reset, while bomb fuse timing stays in the `11.9-15.8s` range and hostage secure/extract stays at `1.45s` / `1.8s`.
 - Objective pressure: `pass`
-  Evidence: fresh HUD samples showed solo bomb `12.0s to breach`, shared bomb `12.1s to breach`, solo hostage `1.4s to clear Water Tower Gate`, and shared hostage `1.6s to clear Water Tower Gate`.
+  Evidence: fresh HUD samples showed solo bomb `14.6s to breach`, shared bomb `12.9s to breach`, solo hostage `0.7s to clear Water Tower Gate`, and shared hostage `0.6s to clear Water Tower Gate`.
 - Cover-oriented combat: `pass`
-  Evidence: the AI used `Crate stack west` as a real blocker, held fire at blocked visibility `0`, then entered `reposition` after contact and held a cover-oriented state after broken sight.
+  Evidence: the AI used `Crate stack west` as a real blocker, held fire at blocked visibility `0`, then entered `reposition` and objective pressure after contact and broken sight.
 - Squad coordination: `pass`
   Evidence: a staged receiver stayed on `patrol` before a delayed shared contact, then switched into `pursue` after the lag elapsed instead of gaining instant wall knowledge.
 - Strategy independence: `pass`
