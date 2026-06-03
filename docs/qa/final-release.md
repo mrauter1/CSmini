@@ -12,6 +12,8 @@ Final verification for the current presentation and release guardrail pass cover
 - solo bots using the same walk, crouch, jump, gravity, and collision contract as the player
 - smarter tactical-AI coverage for blocked LOS safety, delayed communication, repositioning, stuck recovery, objective pressure, and bounded solo-round resolution
 - human-like map-aware solo bot coverage for graph waypoint routing, non-repeated stuck jumps, independent strategies, damage-driven strategy switching, Relay carrier/support/defuse intent, and Evac hostage/extraction intent
+- objective marker visibility, HUD/world label matching, Sandline west-route reachability, roster-wide objective reachability, and final objective-map UX evidence
+- localMatch modularization ownership for objective markers, reachability, objective-bot evidence, HUD/debug snapshots, hostage actors, and scene setup
 - compact in-match HUD behavior, hold-Tab operations board, and viewport fullscreen control
 - first-person weapon alignment, upright combatant posture, third-person weapon pitch, and team-specific avatar uniforms
 - procedural opponent gunfire audio with a user-gesture unlock pulse and playable distance-normalized world-fire gain
@@ -23,7 +25,7 @@ Final verification for the current presentation and release guardrail pass cover
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh smarter-bot verifier reruns were completed on `2026-06-02`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper. Broader cloud/manual multiplayer command evidence remains from the earlier release pass and is not re-claimed as newly rerun in this bot-focused update.
+Fresh objective-map UX and smarter-bot verifier reruns were completed on `2026-06-02`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper. Broader cloud/manual multiplayer command evidence remains from the earlier release pass and is not re-claimed as newly rerun in this bot-focused update.
 
 ## Commands Run
 
@@ -43,7 +45,7 @@ Results on the current tree:
 
 Non-blocking note:
 
-- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `668.94 kB`. This did not block verification.
+- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `689.10 kB`. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -90,6 +92,11 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 - Teams and spawns:
   - all five shipped maps loaded round-one bomb metadata live
   - each map preserved distinct spawn separation: `29.17`, `30.41`, `28.16`, `28.07`, and `28.16` units
+- Objective markers and reachability:
+  - Sandline exposes world objective marker debug state, active/inactive marker entries, HUD-label match evidence, and active-state marker hints for armed/extracting phases
+  - final screenshots include the central `Kiln Yard` site marker, `Shutter Lift`/loading-bay marker, and `Water Tower Gate` extraction threshold marker
+  - every shipped map reported zero blocked route/objective reachability checks; Sandline reported `38`, and Transit Crates, Breaker Vault, Quarry Slip, and Ledger Annex each reported `34`
+  - Sandline west-route assertions passed for `Water Tower Court` to `Generator Hall`, `Generator Hall` to `Central Yard`, and `Blue Shutter Bay` to `Generator Hall`
 - Round shell:
   - forced death kept the player down for the active round
   - next-round reset revived the player and advanced the counter from round `1` to round `2`
@@ -148,6 +155,19 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - `11-death-respawn-state.png`
   - `12-two-player-multiplayer.png`
   - `13-held-tab-operations-board.png`
+  - `14-sandline-loading-bay-marker.png`
+  - `15-sandline-water-tower-gate-marker.png`
+
+## Modularization Ownership
+
+- `src/game/matchScene.ts`: match scene/environment construction.
+- `src/game/hostageActors.ts`: hostage actor lifecycle.
+- `src/game/matchHudSnapshot.ts`: objective HUD snapshot and HUD-label evidence.
+- `src/game/matchDebugSnapshot.ts`: focused debug snapshot helpers.
+- `src/game/objectiveMarkers.ts`: procedural world markers and marker debug records.
+- `src/game/mapReachability.ts`: map-wide route/objective reachability reports.
+- `src/game/objectiveBotGoals.ts`: objective-bot goal evidence from live bot state.
+- `src/game/localMatch.ts`: still coordinates the match loop, input, movement, combat, objective mutation order, shared-room boundaries, and QA hooks.
 
 ## Remaining Limitations
 
@@ -159,4 +179,4 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 - Tactical AI coverage is centered on solo-local rounds rather than shared-room bot opponents.
 - Solo bot strategy/objective debug surfaces are QA/debug evidence; they are not exposed as a player-facing tactical command UI.
 - The live visuals remain intentionally flatter than the painted reference set, especially in walls and ground materials.
-- `src/game/localMatch.ts` is still the heaviest gameplay file and the next refactor target if the prototype grows further.
+- `src/game/localMatch.ts` is still the heaviest gameplay file, but the objective-map UX pass extracted several previously inline responsibilities into focused modules listed above.

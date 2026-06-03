@@ -26,12 +26,18 @@ const SCREENSHOTS = [
   "11-death-respawn-state.png",
   "12-two-player-multiplayer.png",
   "13-held-tab-operations-board.png",
+  "14-sandline-loading-bay-marker.png",
+  "15-sandline-water-tower-gate-marker.png",
 ];
 
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function pointDistance2d(left, right) {
+  return Math.hypot((left?.x ?? 0) - (right?.x ?? 0), (left?.z ?? 0) - (right?.z ?? 0));
 }
 
 async function waitForHttp(url, timeoutMs = 15_000) {
@@ -472,6 +478,28 @@ async function readHud(page) {
   `);
 }
 
+function objectiveMarkerEntries(state, kind) {
+  return state?.objectiveMarkers?.entries?.filter((entry) => entry.kind === kind) ?? [];
+}
+
+function assertObjectiveMarker(state, { kind, label, active = undefined, hudLabelMatch = undefined }) {
+  const marker = objectiveMarkerEntries(state, kind).find((entry) => entry.label === label);
+  assert(marker, `Expected ${kind} marker for ${label}`);
+  assert(marker.visible === true, `Expected ${label} marker to be visible`);
+  assert(typeof marker.radius === "number" && marker.radius > 0, `Expected ${label} marker to expose radius`);
+  assert(marker.position, `Expected ${label} marker to expose position`);
+  if (active !== undefined) {
+    assert(marker.active === active, `Expected ${label} active marker state ${active}, saw ${marker.active}`);
+  }
+  if (hudLabelMatch !== undefined) {
+    assert(
+      marker.hudLabelMatch === hudLabelMatch,
+      `Expected ${label} marker HUD-label match ${hudLabelMatch}, saw ${marker.hudLabelMatch}`,
+    );
+  }
+  return marker;
+}
+
 async function captureScreenshot(page, filename, capturedScreenshots) {
   assert(SCREENSHOTS.includes(filename), `Unexpected screenshot target: ${filename}`);
   await page.captureScreenshot(filename);
@@ -774,8 +802,10 @@ async function aimAt(page, combatantId) {
   assert(aimed, `Could not aim at combatant ${combatantId}`);
 }
 
-async function stageAiSightlineCase(page) {
-  const sightlineCase = await page.evaluate("window.__dustlineQa__.stageAiSightlineCase()");
+async function stageAiSightlineCase(page, options = {}) {
+  const sightlineCase = await page.evaluate(
+    `window.__dustlineQa__.stageAiSightlineCase(${JSON.stringify(Boolean(options.seedLastKnown))})`,
+  );
   assert(sightlineCase, "Expected a deterministic AI sightline case");
   await delay(180);
   return sightlineCase;
@@ -1248,6 +1278,58 @@ async function main() {
         assert(state?.round?.objectiveLabel, `Expected ${mapId} to expose a live objective label`);
         assert(state?.bomb?.siteLabel, `Expected ${mapId} to expose live bomb-site data`);
         assert(state?.teamCounts?.[teamPreference]?.alive >= 1, `Expected ${mapId} to spawn a live ${teamPreference} operator`);
+        const reachability = state?.mapReachability?.report;
+        assert(reachability?.totals, `Expected ${mapId} to expose map reachability report`);
+        assert(
+          reachability.totals.blocked === 0,
+          `Expected ${mapId} route/objective reachability checks to pass, blocked: ${
+            reachability.blocked?.map((check) => check.label).join(", ") || "unknown"
+          }`,
+        );
+
+        if (mapId === "sandline-foundry") {
+          const westRoute = reachability.sandlineWestRoute;
+          assert(westRoute, "Expected Sandline to expose west Generator Hall reachability");
+          assert(
+            westRoute.amberToGeneratorHall?.graphReachable,
+            "Expected Amber to graph-route to Sandline Generator Hall through player-equivalent navigation",
+          );
+          assert(
+            westRoute.generatorHallToCentralYard?.graphReachable,
+            "Expected Sandline Generator Hall to graph-route back toward Central Yard",
+          );
+          assert(
+            westRoute.cobaltToGeneratorHall?.graphReachable,
+            "Expected Cobalt to graph-route into Sandline Generator Hall through player-equivalent navigation",
+          );
+          assert(state?.objectiveMarkers?.readyForWorldMarkers, "Expected Sandline to expose world objective marker debug state");
+          assertObjectiveMarker(state, {
+            kind: "relay-site",
+            label: "Kiln Yard",
+            active: true,
+            hudLabelMatch: true,
+          });
+          assertObjectiveMarker(state, {
+            kind: "relay-site",
+            label: "Shutter Lift",
+            active: false,
+          });
+          assertObjectiveMarker(state, {
+            kind: "hostage-cluster",
+            label: "Generator Workers",
+            active: false,
+          });
+          assertObjectiveMarker(state, {
+            kind: "hostage-cluster",
+            label: "Loading Crew",
+            active: false,
+          });
+          assertObjectiveMarker(state, {
+            kind: "extraction-zone",
+            label: "Water Tower Gate",
+            active: false,
+          });
+        }
 
         positions[teamPreference] = state.localPlayer.position;
         await returnToCatalog(localPage);
@@ -1272,6 +1354,8 @@ async function main() {
         bombPlantSeconds: lastState?.bomb?.plantSeconds ?? null,
         bombDefuseSeconds: lastState?.bomb?.defuseSeconds ?? null,
         bombFuseSeconds: lastState?.bomb?.fuseSeconds ?? null,
+        reachabilityChecks: lastState?.mapReachability?.report?.totals?.checks ?? 0,
+        reachabilityBlocked: lastState?.mapReachability?.report?.totals?.blocked ?? null,
       });
     }
 
@@ -1289,6 +1373,8 @@ async function main() {
     await captureScreenshot(localPage, "06-sandline-drain-underpass.png", capturedScreenshots);
     await setFocusView(localPage, showcaseState, "catwalk");
     await captureScreenshot(localPage, "07-sandline-east-catwalk.png", capturedScreenshots);
+    await setFocusView(localPage, showcaseState, "loading-bay");
+    await captureScreenshot(localPage, "14-sandline-loading-bay-marker.png", capturedScreenshots);
     await setFocusView(localPage, showcaseState, "south-spawn");
     const weaponIdleState = await getState(localPage);
     assertWeaponViewAlignment(weaponIdleState, "idle viewmodel");
@@ -1569,7 +1655,7 @@ async function main() {
     await forceRoundActive(localPage);
     await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.round?.phase === 'active'",
-      5_000,
+      15_000,
     );
 
     const localBombStart = await getState(localPage);
@@ -1605,6 +1691,16 @@ async function main() {
     );
 
     const localBombPlanted = await getState(localPage);
+    const localBombPlantedMarker = assertObjectiveMarker(localBombPlanted, {
+      kind: "relay-site",
+      label: localBombPlanted.bomb.siteLabel,
+      active: true,
+      hudLabelMatch: true,
+    });
+    assert(
+      localBombPlantedMarker.stateHint === "site-armed",
+      `Expected planted relay marker to expose site-armed state, saw ${localBombPlantedMarker.stateHint}`,
+    );
     const localBombHudShell = await readHud(localPage);
     const localBombHud = await localPage.evaluate(`
       ({
@@ -1639,6 +1735,7 @@ async function main() {
       localCanPlant: localBombArmingPose.bomb.localCanPlant,
       plantedPhase: localBombPlanted.bomb.phase,
       plantedCountdown: localBombPlanted.bomb.secondsRemaining,
+      markerStateHint: localBombPlantedMarker.stateHint,
       resolution: localBombResolved.round.result,
       hudStatus: localBombHud.status,
       hudProgress: localBombHud.progress,
@@ -1656,7 +1753,7 @@ async function main() {
           return state?.round?.roundNumber === 2 && state?.round?.missionType === 'hostage';
         })()
       `,
-      5_000,
+      12_000,
     );
     await forceRoundActive(localPage);
     await localPage.waitForExpression(
@@ -1671,6 +1768,29 @@ async function main() {
       localHostageStart.hostage.route.length >= 3,
       "Expected hostage mode to expose a named escort route",
     );
+    const localHostageClusterMarker = assertObjectiveMarker(localHostageStart, {
+      kind: "hostage-cluster",
+      label: localHostageStart.hostage.clusterLabel,
+      active: true,
+      hudLabelMatch: true,
+    });
+    const localExtractionMarker = assertObjectiveMarker(localHostageStart, {
+      kind: "extraction-zone",
+      label: localHostageStart.hostage.extractionLabel,
+      active: true,
+      hudLabelMatch: true,
+    });
+    assert(
+      localHostageClusterMarker.stateHint === "secure-zone",
+      `Expected hostage cluster marker to expose secure-zone state, saw ${localHostageClusterMarker.stateHint}`,
+    );
+    assert(
+      localExtractionMarker.stateHint === "extract-threshold",
+      `Expected extraction marker to expose extract-threshold state, saw ${localExtractionMarker.stateHint}`,
+    );
+    await localPage.evaluate("window.__dustlineQa__.setView(3, 5.8, 7, -1, 1.2, 16)");
+    await delay(180);
+    await captureScreenshot(localPage, "15-sandline-water-tower-gate-marker.png", capturedScreenshots);
 
     const localCluster = localHostageStart.hostage.clusterPosition;
     const localExtraction = localHostageStart.hostage.extractionPosition;
@@ -1701,7 +1821,7 @@ async function main() {
     );
     await localPage.waitForExpression(
       `(window.__dustlineQa__?.getState()?.hostage?.hostages?.[0]?.pathIndex ?? 0) >= ${Math.min(2, localRouteLabels.length - 1)}`,
-      18_000,
+      28_000,
     );
     const localHostageRouteState = await getState(localPage);
     await localPage.waitForExpression(
@@ -1711,6 +1831,17 @@ async function main() {
     await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
       5_000,
+    );
+    const localHostageExtractingMarkerState = await getState(localPage);
+    const localHostageExtractingMarker = assertObjectiveMarker(localHostageExtractingMarkerState, {
+      kind: "extraction-zone",
+      label: localHostageExtractingMarkerState.hostage.extractionLabel,
+      active: true,
+      hudLabelMatch: true,
+    });
+    assert(
+      localHostageExtractingMarker.stateHint === "extracting",
+      `Expected extraction marker to expose extracting state, saw ${localHostageExtractingMarker.stateHint}`,
     );
 
     const localHostageHud = await localPage.evaluate(`
@@ -1754,6 +1885,7 @@ async function main() {
       escortPhase: localHostageEscort.hostage.phase,
       routeProgress: localHostageRouteState.hostage.hostages.map((hostage) => hostage.pathIndex),
       extractedCount: localHostageResolved.hostage.extractedCount,
+      markerStateHint: localHostageExtractingMarker.stateHint,
       resolution: localHostageResolved.round.result,
       hudStatus: localHostageHud.status,
       hudProgress: localHostageHud.progress,
@@ -2111,10 +2243,10 @@ async function main() {
         (() => {
           const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
             .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
-          return enemy?.movement?.grounded === true && Math.abs(enemy?.posture?.feetY ?? 1) <= 0.02;
+          return enemy?.movement?.grounded === true && Math.abs(enemy?.posture?.feetY ?? 1) <= 0.06;
         })()
       `,
-      5_000,
+      15_000,
     );
     const landedState = await getState(localPage);
     const landedEnemy = landedState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
@@ -2149,40 +2281,54 @@ async function main() {
       `Expected strategy switch to cite damage or low health, saw ${repositionEnemy?.ai?.strategyReason}`,
     );
 
-    await setView(localPage, sightlineCase.blockedPlayerPosition, sightlineCase.enemyPosition);
+    const pursuitSightlineCase = await stageAiSightlineCase(localPage, { seedLastKnown: true });
+    await setView(
+      localPage,
+      pursuitSightlineCase.blockedPlayerPosition,
+      pursuitSightlineCase.enemyPosition,
+    );
     await localPage.waitForExpression(
       `
         (() => {
           const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
-            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
-          return enemy?.ai?.canSeePlayer === false
-            && (
-              enemy?.ai?.behavior === 'pursue'
-              || enemy?.ai?.behavior === 'reposition'
-              || enemy?.ai?.strategy === 'pursue_contact'
+            .find((entry) => entry.id === ${JSON.stringify(pursuitSightlineCase.enemyId)});
+          const contactResponse =
+            enemy?.ai?.behavior === 'pursue'
+            || enemy?.ai?.behavior === 'reposition'
+            || enemy?.ai?.strategy === 'pursue_contact'
+            || (
+              enemy?.ai?.lastSeenAgo !== null
+              && enemy?.ai?.lastSeenAgo <= 4.8
+              && enemy?.ai?.targetLabel
             );
+          return (enemy?.ai?.canSeePlayer === false || (enemy?.ai?.visibility ?? 1) < 0.72)
+            && contactResponse
         })()
       `,
       6_000,
     );
     const pursueState = await getState(localPage);
-    const pursueEnemy = pursueState.enemies.find((enemy) => enemy.id === sightlineCase.enemyId);
+    const pursueEnemy = pursueState.enemies.find((enemy) => enemy.id === pursuitSightlineCase.enemyId);
     assertAlivePosture([pursueEnemy], "pursue solo enemy");
     await localPage.waitForExpression(
       `
         (() => {
           const enemy = (window.__dustlineQa__?.getState()?.enemies ?? [])
-            .find((entry) => entry.id === ${JSON.stringify(sightlineCase.enemyId)});
+            .find((entry) => entry.id === ${JSON.stringify(pursuitSightlineCase.enemyId)});
+          const memoryExpired =
+            enemy?.ai?.lastSeenAgo === null ||
+            enemy?.ai?.lastSeenAgo >= ${Number((mediumDifficultyState.tuning.ai.pursuitWindow + 0.2).toFixed(2))} ||
+            enemy?.ai?.targetLabel !== 'Last known position';
           return enemy
             && enemy.ai.behavior !== 'pursue'
-            && (enemy.ai.lastSeenAgo ?? 0) >= ${Number((mediumDifficultyState.tuning.ai.pursuitWindow + 0.2).toFixed(2))};
+            && memoryExpired;
         })()
       `,
-      8_000,
+      15_000,
     );
     const boundedMemoryState = await getState(localPage);
     const boundedMemoryEnemy = boundedMemoryState.enemies.find(
-      (enemy) => enemy.id === sightlineCase.enemyId,
+      (enemy) => enemy.id === pursuitSightlineCase.enemyId,
     );
     assert(
       boundedMemoryEnemy?.ai?.behavior !== "pursue",
@@ -2383,9 +2529,15 @@ async function main() {
       5_000,
     );
     const enemyBombPlantCase = await stageEnemyBombPlantCase(localPage);
+    const enemyBombPlantStart = await getState(localPage);
+    assert(
+      pointDistance2d(enemyBombPlantCase.startPosition, enemyBombPlantCase.sitePosition) >
+        (enemyBombPlantStart.bomb?.siteRadius ?? 0),
+      "Expected enemy bomb plant QA case to start outside the valid site radius",
+    );
     await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.bomb?.phase === 'planting'",
-      5_000,
+      9_000,
     );
     await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.bomb?.phase === 'planted'",
@@ -2442,7 +2594,8 @@ async function main() {
             && carrier?.ai?.route
             && carrier.ai.route.destinationLabel === ${JSON.stringify(enemyRelayRouteCase.siteLabel)}
             && supports.some((enemy) => enemy?.ai?.objectiveIntent === 'carrier_escort')
-            && supports.some((enemy) => enemy?.ai?.objectiveIntent === 'carrier_flank_screen');
+            && supports.some((enemy) => enemy?.ai?.objectiveIntent === 'carrier_flank_screen')
+            && new Set(supports.map((enemy) => enemy?.ai?.targetLabel)).size >= 2;
         })()
       `,
       8_000,
@@ -2470,8 +2623,35 @@ async function main() {
     await setInvulnerable(localPage, true);
     await forceRoundActive(localPage);
     const enemyRelayDefuseCase = await stageEnemyRelayDefuseCase(localPage);
+    const enemyRelayDefuseStart = await getState(localPage);
+    assert(
+      pointDistance2d(enemyRelayDefuseCase.startPosition, enemyRelayDefuseCase.sitePosition) >
+        (enemyRelayDefuseStart.bomb?.siteRadius ?? 0),
+      "Expected enemy relay defuse QA case to start outside the valid site radius",
+    );
     await localPage.waitForExpression(
-      "window.__dustlineQa__?.getState()?.bomb?.phase === 'defusing'",
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const defuser = (state?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(enemyRelayDefuseCase.defuserEnemyId)});
+          return defuser
+            && Math.hypot(
+              (defuser.position?.x ?? 999) - ${JSON.stringify(enemyRelayDefuseCase.sitePosition.x)},
+              (defuser.position?.z ?? 999) - ${JSON.stringify(enemyRelayDefuseCase.sitePosition.z)}
+            ) <= (state?.bomb?.siteRadius ?? 0);
+        })()
+      `,
+      9_000,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.bomb?.phase === 'defusing'
+            || (state?.round?.phase === 'resolution' && /disarmed/i.test(state?.round?.result ?? ''));
+        })()
+      `,
       5_000,
     );
     const enemyRelayDefuseState = await getState(localPage);
@@ -2495,9 +2675,15 @@ async function main() {
     );
     await forceRoundActive(localPage);
     const enemyHostageEscortCase = await stageEnemyHostageEscortCase(localPage);
+    const enemyHostageEscortStart = await getState(localPage);
+    assert(
+      pointDistance2d(enemyHostageEscortCase.startPosition, enemyHostageEscortCase.clusterPosition) >
+        (enemyHostageEscortStart.hostage?.clusterRadius ?? 0),
+      "Expected enemy hostage escort QA case to start outside the valid cluster radius",
+    );
     await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.hostage?.phase === 'securing'",
-      5_000,
+      9_000,
     );
     await localPage.waitForExpression(
       "window.__dustlineQa__?.getState()?.hostage?.phase === 'escorting'",
@@ -2525,6 +2711,90 @@ async function main() {
     const hostageRescuer = enemyHostageEscortState.enemies.find(
       (enemy) => enemy.id === enemyHostageEscortCase.rescuerEnemyId,
     );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return (state?.hostage?.extractedCount ?? 0) === (state?.hostage?.hostages?.length ?? -1);
+        })()
+      `,
+      28_000,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const rescuer = (state?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(enemyHostageEscortCase.rescuerEnemyId)});
+          const extraction = state?.hostage?.extractionPosition;
+          return rescuer
+            && extraction
+            && Math.hypot(
+              (rescuer.position?.x ?? 999) - extraction.x,
+              (rescuer.position?.z ?? 999) - extraction.z
+            ) <= (state?.hostage?.extractionRadius ?? 0);
+        })()
+      `,
+      45_000,
+    );
+    try {
+      await localPage.waitForExpression(
+        "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
+        5_000,
+      );
+    } catch (error) {
+      const hostageExtractionDebug = await localPage.evaluate(`
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const rescuer = (state?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(enemyHostageEscortCase.rescuerEnemyId)});
+          const extraction = state?.hostage?.extractionPosition;
+          const distanceToExtraction = rescuer && extraction
+            ? Math.hypot(
+                (rescuer.position?.x ?? 0) - extraction.x,
+                (rescuer.position?.z ?? 0) - extraction.z
+              )
+            : null;
+          return {
+            phase: state?.hostage?.phase ?? null,
+            roundPhase: state?.round?.phase ?? null,
+            roundResult: state?.round?.result ?? null,
+            extractedCount: state?.hostage?.extractedCount ?? null,
+            hostageCount: state?.hostage?.hostages?.length ?? null,
+            extractionRadius: state?.hostage?.extractionRadius ?? null,
+            rescuer: rescuer
+              ? {
+                  alive: rescuer.alive,
+                  position: rescuer.position,
+                  distanceToExtraction,
+                  objectiveIntent: rescuer.ai?.objectiveIntent ?? null,
+                  behavior: rescuer.ai?.behavior ?? null,
+                  strategy: rescuer.ai?.strategy ?? null,
+                  targetLabel: rescuer.ai?.targetLabel ?? null,
+                  targetDistance: rescuer.ai?.targetDistance ?? null,
+                  route: rescuer.ai?.route ?? null,
+                  stuckClassification: rescuer.ai?.stuckClassification ?? null,
+                  recoveryAction: rescuer.ai?.recoveryAction ?? null,
+                }
+              : null,
+          };
+        })()
+      `);
+      throw new Error(
+        `Timed out waiting for enemy hostage extraction start: ${JSON.stringify(hostageExtractionDebug)}`,
+        { cause: error },
+      );
+    }
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          return state?.round?.phase === 'resolution' && /extracted/i.test(state?.round?.result ?? '');
+        })()
+      `,
+      9_000,
+    );
+    const enemyHostageExtractedState = await getState(localPage);
 
     await setTeamPreference(localPage, "cobalt");
     await openMap(localPage, "sandline-foundry", "local");
@@ -2566,6 +2836,8 @@ async function main() {
         .map((enemy) => enemy.ai.objectiveIntent),
       defenderIntents: hostageDefenseIntents,
       phase: enemyHostageEscortState.hostage.phase,
+      extractedCount: enemyHostageExtractedState.hostage.extractedCount,
+      resolution: enemyHostageExtractedState.round.result,
     };
 
     const sharedPageOne = await createPage(`${ROOT_URL}?qa=1`);

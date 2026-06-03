@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
 
 import type { MapDefinition, TeamId, TeamPreference } from "../types";
-import { createPrimitiveMesh, disposeObject } from "../world/primitives";
+import { disposeObject } from "../world/primitives";
 import type { BotDifficulty } from "./botDifficulty";
 import { botDifficultyTuning, type BotDifficultyTuning } from "./botDifficultyTuning";
 import {
@@ -22,10 +22,8 @@ import {
 import type { RoomShotClaim, WeaponStateSnapshot } from "../net/protocol";
 import {
   createCombatantAvatar,
-  createHostageAvatar,
   createWeaponRig,
   type CombatantAvatar,
-  type HostageAvatar,
   type WeaponRig,
 } from "./avatar";
 import { RetroAudio } from "./audio";
@@ -65,7 +63,6 @@ import {
 } from "./controls";
 import {
   createBombRuntimeState,
-  currentBombProgress,
   hydrateBombRuntimeState,
   serializeBombRuntimeState,
   shouldAdoptBombRuntimeState,
@@ -77,8 +74,6 @@ import {
 import {
   allHostagesExtracted,
   createHostageRuntimeState,
-  currentHostageProgress,
-  extractedHostageCount,
   hydrateHostageRuntimeState,
   serializeHostageRuntimeState,
   shouldAdoptHostageRuntimeState,
@@ -154,6 +149,35 @@ import {
   syncWeaponState,
   validateShotClaim,
 } from "./sharedShotValidation";
+import {
+  disposeHostageActors,
+  syncHostageActors,
+  updateHostageActors,
+  type HostageActor,
+} from "./hostageActors";
+import {
+  buildObjectiveHudEvidence,
+  buildObjectiveHudSnapshot,
+  type ObjectiveHudInput,
+} from "./matchHudSnapshot";
+import { buildMatchScene } from "./matchScene";
+import {
+  buildBombDebugSnapshot,
+  buildHostageDebugSnapshot,
+  type ObjectiveDebugDistances,
+  type ObjectiveDebugLocalState,
+} from "./matchDebugSnapshot";
+import {
+  buildObjectiveMarkerDebugState,
+  createObjectiveMarkerSet,
+  updateObjectiveMarkerSet,
+  type ObjectiveMarkerSet,
+} from "./objectiveMarkers";
+import {
+  buildMapReachabilityDebugState,
+  summarizeRouteCompletion,
+} from "./mapReachability";
+import { buildObjectiveBotGoalEvidence } from "./objectiveBotGoals";
 
 const FIRE_INTERVAL = 0.18;
 const RELOAD_DURATION = 1.05;
@@ -405,13 +429,6 @@ interface RemoteActor {
   lastJumpSequence: number;
 }
 
-interface HostageActor {
-  id: string;
-  avatar: HostageAvatar;
-  moveBlend: number;
-  lastPosition: THREE.Vector3;
-}
-
 interface FeedMessage {
   text: string;
   expiresAt: number;
@@ -480,6 +497,7 @@ export class LocalMatch {
   private readonly enemies: EnemyActor[] = [];
   private readonly remoteActors = new Map<string, RemoteActor>();
   private readonly weaponRig: WeaponRig;
+  private readonly objectiveMarkerSet: ObjectiveMarkerSet;
   private readonly attackDirection = new THREE.Vector3();
   private readonly tempForward = new THREE.Vector3();
   private readonly tempRight = new THREE.Vector3();
@@ -635,6 +653,8 @@ export class LocalMatch {
 
     this.host.replaceChildren(this.renderer.domElement);
     this.buildScene();
+    this.objectiveMarkerSet = createObjectiveMarkerSet(this.map);
+    this.scene.add(this.objectiveMarkerSet.group);
 
     if (this.activeMode === "local") {
       this.spawnEnemies();
@@ -658,6 +678,7 @@ export class LocalMatch {
     this.sharedRoom?.dispose();
     this.sharedRoom = undefined;
     this.controls.dispose();
+    disposeHostageActors(this.scene, this.hostageActors);
     this.audio.dispose();
     disposeObject(this.scene);
     this.scene.clear();
@@ -718,6 +739,11 @@ export class LocalMatch {
   debugSnapshot(): Record<string, unknown> {
     const fullscreenTarget = this.fullscreenTarget();
     const difficultyTuning = this.botTuning();
+    const roundNow = this.roundNow();
+    const objectiveHudInput = this.buildObjectiveHudInput(roundNow);
+    const objectiveHudEvidence = buildObjectiveHudEvidence(objectiveHudInput);
+    const objectiveDebugLocal = this.objectiveDebugLocalState();
+    const objectiveDebugDistances = this.objectiveDebugDistances();
 
     return {
       mapId: this.map.id,
@@ -790,11 +816,12 @@ export class LocalMatch {
         roundNumber: this.roundState.roundNumber,
         phase: this.roundState.phase,
         missionType: this.roundState.activeMission.missionType,
-        timeRemaining: Number(roundTimeRemaining(this.roundState, this.roundNow()).toFixed(2)),
+        timeRemaining: Number(roundTimeRemaining(this.roundState, roundNow).toFixed(2)),
         missionLabel: this.roundState.activeMission.missionLabel,
         objectiveLabel: this.roundState.activeMission.objectiveLabel,
         result: this.roundState.resolutionLabel,
       },
+      objectiveHud: objectiveHudEvidence,
       tuning: {
         movement: {
           standingEyeHeight: Number(STANDING_EYE_HEIGHT.toFixed(2)),
@@ -858,8 +885,15 @@ export class LocalMatch {
           stuckSeconds: Number(difficultyTuning.stuckSeconds.toFixed(2)),
         },
       },
-      bomb: this.debugBombStateSnapshot(),
-      hostage: this.debugHostageStateSnapshot(),
+      bomb: this.debugBombStateSnapshot(roundNow, objectiveDebugLocal, objectiveDebugDistances),
+      hostage: this.debugHostageStateSnapshot(roundNow, objectiveDebugLocal, objectiveDebugDistances),
+      objectiveMarkers: buildObjectiveMarkerDebugState({
+        map: this.map,
+        roundState: this.roundState,
+        localTeamId: this.localTeamId,
+        bombState: this.bombState,
+        hostageState: this.hostageState,
+      }),
       teamSpawns: {
         amber: this.toPoint(this.teamSpawnPositions.amber),
         cobalt: this.toPoint(this.teamSpawnPositions.cobalt),
@@ -870,6 +904,7 @@ export class LocalMatch {
         nodeCount: this.tacticalRouteGraph.nodes.length,
         edgeCount: this.tacticalRouteGraph.edgeCount,
       },
+      mapReachability: buildMapReachabilityDebugState(this.map, this.tacticalRouteGraph),
       focusPoints: this.map.scene.focusPoints.map((focusPoint) => ({
         id: focusPoint.id,
         label: focusPoint.label,
@@ -884,6 +919,7 @@ export class LocalMatch {
           new THREE.Vector3(focusPoint.target[0], focusPoint.target[1], focusPoint.target[2]),
         ),
       })),
+      objectiveBotGoals: this.enemies.map((enemy) => this.objectiveBotGoalEvidence(enemy)),
       enemies: this.enemies.map((enemy) => ({
         id: enemy.id,
         name: enemy.name,
@@ -992,6 +1028,7 @@ export class LocalMatch {
                 cost: Number(enemy.ai.routePlan.cost.toFixed(2)),
               }
             : null,
+          objectiveGoal: this.objectiveBotGoalEvidence(enemy),
           lastJumpReason: enemy.ai.lastJumpReason,
           jumpCount: enemy.ai.jumpCount,
           lastJumpAgo:
@@ -1317,8 +1354,15 @@ export class LocalMatch {
   }
 
   debugFire(): void {
-    if (this.roundState.phase === "briefing") {
+    if (this.roundState.phase !== "active") {
       this.applyRoundState(forceRoundActive(this.roundState, this.roundNow()));
+    }
+    const now = this.gameNow();
+    if (this.reloadEndsAt > now) {
+      this.reloadEndsAt = 0;
+    }
+    if (this.ammoInClip <= 0) {
+      this.ammoInClip = 1;
     }
     this.fire(this.gameNow());
     this.emitSnapshot();
@@ -1854,7 +1898,7 @@ export class LocalMatch {
     return this.findRemoteShotTarget(environmentDistance)?.id ?? null;
   }
 
-  debugStageAiSightlineCase():
+  debugStageAiSightlineCase(seedLastKnown = false):
     | {
         enemyId: string;
         enemyLabel: string;
@@ -1889,6 +1933,19 @@ export class LocalMatch {
     enemy.qaJumpRequested = false;
     this.faceCombatantAt(enemy.avatar.group, caseData.enemyPosition, caseData.blockedPlayerPosition);
     this.configureEnemyAi(enemy, this.enemies.indexOf(enemy));
+    if (seedLastKnown) {
+      const now = this.gameNow();
+      enemy.ai.lastSeenAt = now;
+      enemy.ai.lastKnownPlayerPosition = caseData.clearPlayerPosition.clone().setY(0);
+      enemy.ai.lastLostSightAt = now;
+      enemy.ai.behavior = "pursue";
+      enemy.ai.strategy = "pursue_contact";
+      enemy.ai.strategyReason = "last-known-contact";
+      enemy.ai.targetPosition.copy(enemy.ai.lastKnownPlayerPosition);
+      enemy.ai.targetLabel = "Last known position";
+      enemy.ai.behaviorEnteredAt = now;
+      enemy.ai.strategyEnteredAt = now;
+    }
     this.lastPlayerNoiseAt = Number.NEGATIVE_INFINITY;
     this.lastPlayerNoisePosition.copy(caseData.blockedPlayerPosition);
     this.debugSetView(
@@ -2053,6 +2110,7 @@ export class LocalMatch {
     | {
         carrierEnemyId: string;
         siteLabel: string;
+        startPosition: { x: number; y: number; z: number };
         sitePosition: { x: number; y: number; z: number };
       }
     | null {
@@ -2074,24 +2132,29 @@ export class LocalMatch {
       0,
       this.bombState.site.position[2],
     );
-    carrier.avatar.group.position.copy(sitePosition);
+    const carrierStart = findOpenGroundPosition(
+      this.collisionWorld,
+      this.routeStartOutsideRadius(
+        sitePosition,
+        this.teamSpawnPositions[carrier.teamId],
+        this.bombState.site.radius + 2.4,
+      ),
+      PLAYER_RADIUS,
+      this.enemyBodyHeight(carrier),
+    );
+    carrier.avatar.group.position.copy(carrierStart);
     carrier.movementState.verticalVelocity = 0;
     carrier.movementState.heightOffset = 0;
     carrier.movementState.grounded = true;
     carrier.movementState.crouchBlend = 0;
     carrier.speed = 0;
     this.configureEnemyAi(carrier, this.enemies.indexOf(carrier));
-    carrier.ai.lastProgressPosition.copy(sitePosition);
+    carrier.ai.lastProgressPosition.copy(carrierStart);
     this.qaAllowEnemyObjectiveActions = true;
-    this.setEnemyForcedDirective(
-      carrier,
-      this.gameNow(),
-      "objective",
-      "crouched",
-      sitePosition,
-      this.bombState.site.label,
-      4,
-    );
+    carrier.ai.lastSeenAt = Number.NEGATIVE_INFINITY;
+    carrier.ai.lastHeardAt = Number.NEGATIVE_INFINITY;
+    carrier.ai.lastKnownPlayerPosition = null;
+    carrier.ai.lastHeardPosition = null;
     const spawn = this.teamSpawnPositions[this.localTeamId];
     this.debugSetView(
       spawn.x,
@@ -2105,6 +2168,7 @@ export class LocalMatch {
     return {
       carrierEnemyId: carrier.id,
       siteLabel: this.bombState.site.label,
+      startPosition: this.toPoint(carrierStart, 0),
       sitePosition: this.toPoint(sitePosition, 0),
     };
   }
@@ -2173,6 +2237,7 @@ export class LocalMatch {
     | {
         defuserEnemyId: string;
         siteLabel: string;
+        startPosition: { x: number; y: number; z: number };
         sitePosition: { x: number; y: number; z: number };
       }
     | null {
@@ -2213,15 +2278,38 @@ export class LocalMatch {
       return null;
     }
 
-    defuser.avatar.group.position.copy(sitePosition);
+    const defuserStart = findOpenGroundPosition(
+      this.collisionWorld,
+      this.openObjectiveRingStart(
+        sitePosition,
+        this.bombState.site.radius + 0.18,
+        this.enemyBodyHeight(defuser),
+      ),
+      PLAYER_RADIUS,
+      this.enemyBodyHeight(defuser),
+    );
+    defuser.avatar.group.position.copy(defuserStart);
     defuser.movementState.verticalVelocity = 0;
     defuser.movementState.heightOffset = 0;
     defuser.movementState.grounded = true;
     defuser.movementState.crouchBlend = 0;
     defuser.speed = 0;
     this.configureEnemyAi(defuser, this.enemies.indexOf(defuser));
-    defuser.ai.lastProgressPosition.copy(sitePosition);
+    defuser.ai.lastProgressPosition.copy(defuserStart);
+    defuser.ai.lastSeenAt = Number.NEGATIVE_INFINITY;
+    defuser.ai.lastHeardAt = Number.NEGATIVE_INFINITY;
+    defuser.ai.lastKnownPlayerPosition = null;
+    defuser.ai.lastHeardPosition = null;
     this.qaAllowEnemyObjectiveActions = true;
+    this.setEnemyForcedDirective(
+      defuser,
+      this.gameNow(),
+      "objective",
+      "standing",
+      sitePosition,
+      this.bombState.site.label,
+      6,
+    );
     const spawn = this.teamSpawnPositions[this.localTeamId];
     this.debugSetView(
       spawn.x,
@@ -2231,11 +2319,11 @@ export class LocalMatch {
       currentEyeHeight(this.movementState),
       sitePosition.z,
     );
-    this.startBombDefuse(this.gameNow(), defuser.id, defuser.name);
 
     return {
       defuserEnemyId: defuser.id,
       siteLabel: this.bombState.site.label,
+      startPosition: this.toPoint(defuserStart, 0),
       sitePosition: this.toPoint(sitePosition, 0),
     };
   }
@@ -2247,6 +2335,7 @@ export class LocalMatch {
         clusterLabel: string;
         extractionLabel: string;
         routeLabels: string[];
+        startPosition: { x: number; y: number; z: number };
         clusterPosition: { x: number; y: number; z: number };
         extractionPosition: { x: number; y: number; z: number };
       }
@@ -2287,14 +2376,28 @@ export class LocalMatch {
       PLAYER_RADIUS,
       this.enemyBodyHeight(rescuer),
     );
-    rescuer.avatar.group.position.copy(clusterPosition);
+    const rescuerStart = findOpenGroundPosition(
+      this.collisionWorld,
+      this.routeStartOutsideRadius(
+        clusterPosition,
+        this.teamSpawnPositions[rescuer.teamId],
+        this.hostageState.cluster.radius + 1.8,
+      ),
+      PLAYER_RADIUS,
+      this.enemyBodyHeight(rescuer),
+    );
+    rescuer.avatar.group.position.copy(rescuerStart);
     rescuer.movementState.verticalVelocity = 0;
     rescuer.movementState.heightOffset = 0;
     rescuer.movementState.grounded = true;
     rescuer.movementState.crouchBlend = 0;
     rescuer.speed = 0;
     this.configureEnemyAi(rescuer, this.enemies.indexOf(rescuer));
-    rescuer.ai.lastProgressPosition.copy(clusterPosition);
+    rescuer.ai.lastProgressPosition.copy(rescuerStart);
+    rescuer.ai.lastSeenAt = Number.NEGATIVE_INFINITY;
+    rescuer.ai.lastHeardAt = Number.NEGATIVE_INFINITY;
+    rescuer.ai.lastKnownPlayerPosition = null;
+    rescuer.ai.lastHeardPosition = null;
     this.qaAllowEnemyObjectiveActions = true;
     const spawn = this.teamSpawnPositions[this.localTeamId];
     this.debugSetView(
@@ -2314,6 +2417,7 @@ export class LocalMatch {
       clusterLabel: this.hostageState.cluster.label,
       extractionLabel: this.hostageState.extraction.label,
       routeLabels: this.hostageState.route.map((point) => point.label),
+      startPosition: this.toPoint(rescuerStart, 0),
       clusterPosition: this.toPoint(clusterPosition, 0),
       extractionPosition: this.toPoint(extractionPosition, 0),
     };
@@ -2440,51 +2544,21 @@ export class LocalMatch {
   }
 
   private buildScene(): void {
-    const ambient = new THREE.HemisphereLight(
-      this.map.scene.environment.sun,
-      this.map.scene.environment.fill,
-      1.25,
-    );
-    ambient.position.set(0, 30, 0);
-    this.scene.add(ambient);
+    const builtScene = buildMatchScene(this.scene, this.map);
+    this.environmentRaycastMeshes.push(...builtScene.environmentRaycastMeshes);
+  }
 
-    const sun = new THREE.DirectionalLight(this.map.scene.environment.sun, 1.7);
-    sun.position.set(18, 28, 14);
-    sun.castShadow = true;
-    sun.shadow.mapSize.setScalar(2048);
-    sun.shadow.camera.near = 0.5;
-    sun.shadow.camera.far = 120;
-    sun.shadow.camera.left = -40;
-    sun.shadow.camera.right = 40;
-    sun.shadow.camera.top = 40;
-    sun.shadow.camera.bottom = -40;
-    this.scene.add(sun);
-
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.map.scene.groundSize[0], this.map.scene.groundSize[1]),
-      new THREE.MeshStandardMaterial({
-        color: this.map.scene.environment.ground,
-        roughness: 1,
-        metalness: 0,
-        flatShading: true,
+  private updateObjectiveMarkers(): void {
+    updateObjectiveMarkerSet(
+      this.objectiveMarkerSet,
+      buildObjectiveMarkerDebugState({
+        map: this.map,
+        roundState: this.roundState,
+        localTeamId: this.localTeamId,
+        bombState: this.bombState,
+        hostageState: this.hostageState,
       }),
     );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-
-    const root = new THREE.Group();
-
-    for (const primitive of this.map.scene.primitives) {
-      const mesh = createPrimitiveMesh(primitive);
-      root.add(mesh);
-
-      if (!primitive.name?.toLowerCase().includes("spawn beacon")) {
-        this.environmentRaycastMeshes.push(mesh);
-      }
-    }
-
-    this.scene.add(root);
   }
 
   private collectTeamSpawnPositions(): Record<TeamId, THREE.Vector3> {
@@ -2564,6 +2638,7 @@ export class LocalMatch {
       this.roundNow(),
     );
     this.syncHostageActors();
+    this.updateObjectiveMarkers();
 
     this.weaponRig.setVisible(true);
 
@@ -2894,83 +2969,11 @@ export class LocalMatch {
   }
 
   private syncHostageActors(): void {
-    const activeIds = new Set(this.hostageState?.hostages.map((hostage) => hostage.id) ?? []);
-
-    for (const [hostageId, actor] of this.hostageActors) {
-      if (activeIds.has(hostageId)) {
-        continue;
-      }
-
-      this.scene.remove(actor.avatar.group);
-      disposeObject(actor.avatar.group);
-      this.hostageActors.delete(hostageId);
-    }
-
-    if (!this.hostageState) {
-      return;
-    }
-
-    for (const hostage of this.hostageState.hostages) {
-      const existing = this.hostageActors.get(hostage.id);
-      const point = new THREE.Vector3(hostage.position[0], hostage.position[1], hostage.position[2]);
-
-      if (existing) {
-        existing.avatar.group.position.copy(point);
-        existing.lastPosition.copy(point);
-        continue;
-      }
-
-      const avatar = createHostageAvatar();
-      avatar.group.position.copy(point);
-      this.scene.add(avatar.group);
-      this.hostageActors.set(hostage.id, {
-        id: hostage.id,
-        avatar,
-        moveBlend: 0,
-        lastPosition: point.clone(),
-      });
-    }
+    syncHostageActors(this.scene, this.hostageActors, this.hostageState);
   }
 
   private updateHostageActors(delta: number, now: number): void {
-    if (!this.hostageState) {
-      return;
-    }
-
-    for (const hostage of this.hostageState.hostages) {
-      const actor = this.hostageActors.get(hostage.id);
-      if (!actor) {
-        continue;
-      }
-
-      const nextPosition = new THREE.Vector3(
-        hostage.position[0],
-        hostage.position[1],
-        hostage.position[2],
-      );
-      const movement = nextPosition.clone().sub(actor.lastPosition);
-      const moveAmount = movement.length();
-
-      actor.avatar.group.position.copy(nextPosition);
-      actor.moveBlend = THREE.MathUtils.damp(
-        actor.moveBlend,
-        moveAmount > 0.03 ? 1 : 0,
-        8,
-        delta,
-      );
-
-      if (moveAmount > 0.01) {
-        actor.avatar.group.lookAt(
-          nextPosition.x + movement.x,
-          1.2,
-          nextPosition.z + movement.z,
-        );
-      }
-
-      actor.avatar.update(now, actor.moveBlend, this.hostageState.phase !== "awaiting-rescue");
-      actor.avatar.setVisible(!hostage.extracted);
-      actor.lastPosition.copy(nextPosition);
-    }
+    updateHostageActors(this.hostageActors, this.hostageState, delta, now);
   }
 
   private ensureRemoteActorFromParticipant(participant: ParticipantRecord): RemoteActor {
@@ -3597,6 +3600,7 @@ export class LocalMatch {
 
     this.updateBombObjectiveState(roundNow);
     this.updateHostageObjectiveState(delta, roundNow);
+    this.updateObjectiveMarkers();
 
     if (!(this.activeMode === "shared" && this.sharedRole === "guest")) {
       const previousRound = this.roundState;
@@ -4132,9 +4136,84 @@ export class LocalMatch {
     return this.enemies.find((enemy) => enemy.id === combatantId && enemy.alive) ?? null;
   }
 
+  private routeStartOutsideRadius(
+    objectivePosition: THREE.Vector3,
+    approachPosition: THREE.Vector3,
+    distance: number,
+  ): THREE.Vector3 {
+    const direction = approachPosition.clone().setY(0).sub(objectivePosition.clone().setY(0));
+    if (direction.lengthSq() <= 0.0001) {
+      direction.set(0, 0, 1);
+    }
+
+    return objectivePosition.clone().setY(0).add(direction.normalize().multiplyScalar(distance));
+  }
+
+  private openObjectiveRingStart(
+    objectivePosition: THREE.Vector3,
+    radius: number,
+    bodyHeight: number,
+  ): THREE.Vector3 {
+    const directions = [
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(-1, 0, 0),
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Vector3(0.7, 0, 0.7).normalize(),
+      new THREE.Vector3(-0.7, 0, 0.7).normalize(),
+      new THREE.Vector3(0.7, 0, -0.7).normalize(),
+      new THREE.Vector3(-0.7, 0, -0.7).normalize(),
+    ];
+
+    for (const direction of directions) {
+      const candidate = findOpenGroundPosition(
+        this.collisionWorld,
+        objectivePosition.clone().setY(0).add(direction.multiplyScalar(radius)),
+        PLAYER_RADIUS,
+        bodyHeight,
+      );
+      const distance = candidate.distanceTo(objectivePosition.clone().setY(0));
+      if (
+        distance >= radius - 0.02 &&
+        isSegmentTraversable(
+          this.collisionWorld,
+          candidate,
+          objectivePosition.clone().setY(0),
+          PLAYER_RADIUS,
+          bodyHeight,
+        )
+      ) {
+        return candidate;
+      }
+    }
+
+    return objectivePosition.clone().setY(0).add(new THREE.Vector3(radius, 0, 0));
+  }
+
   private enemyCanCommitObjectiveAction(enemy: EnemyActor): boolean {
     if (!enemy.alive || this.playerDead) {
       return true;
+    }
+
+    if (this.qaAllowEnemyObjectiveActions) {
+      return true;
+    }
+
+    if (
+      (this.bombState?.phase === "planted" && enemy.teamId === this.bombState.defendingTeam) ||
+      (this.hostageState?.phase === "escorting" &&
+        enemy.id === this.hostageState.rescuerId &&
+        this.allHostagesAtExtraction())
+    ) {
+      const tuning = this.botTuning();
+      const enemyFeet = enemy.avatar.group.position.clone().setY(0);
+      const playerFeet = new THREE.Vector3(this.camera.position.x, 0, this.camera.position.z);
+      const playerDistance = enemyFeet.distanceTo(playerFeet);
+      return (
+        !enemy.ai.canSeePlayer ||
+        enemy.ai.lastVisibility < tuning.engageVisibilityThreshold ||
+        playerDistance > tuning.objectiveThreatDistance * 0.72
+      );
     }
 
     const tuning = this.botTuning();
@@ -4475,6 +4554,8 @@ export class LocalMatch {
     const hostageState = this.hostageState;
     const routeEnd = Math.max(0, hostageState.route.length - 1);
     const movementDelta = THREE.MathUtils.clamp(now - hostageState.updatedAt, 0.016, 1);
+    const escortSpeed =
+      this.activeMode === "local" && this.qaAllowEnemyObjectiveActions ? 3.2 : 2.05;
     let changed = false;
     const nextHostages = hostageState.hostages.map((hostage) => {
       if (hostage.extracted) {
@@ -4495,7 +4576,7 @@ export class LocalMatch {
 
       if (distance > 0.01) {
         const direction = targetPoint.clone().sub(position).normalize();
-        const step = Math.min(distance, 2.05 * movementDelta);
+        const step = Math.min(distance, escortSpeed * movementDelta);
         const nextPosition = position.clone().add(direction.multiplyScalar(step));
 
         if (nextPosition.distanceTo(position) > 0.001) {
@@ -5816,15 +5897,27 @@ export class LocalMatch {
     const routeEnd = Math.max(0, this.hostageState.route.length - 1);
     const enemyFeet = enemy.avatar.group.position.clone().setY(0);
 
-    const firstIndex = this.allHostagesAtExtraction()
-      ? routeEnd
-      : this.hostageState.hostages.reduce((earliest, hostage) => {
-          if (hostage.extracted) {
-            return earliest;
-          }
+    if (this.allHostagesAtExtraction()) {
+      return {
+        id: `objective:extraction:${this.hostageState.extraction.focusId}`,
+        focusId: this.hostageState.extraction.focusId,
+        label: this.hostageState.extraction.label,
+        kind: "objective",
+        position: new THREE.Vector3(
+          this.hostageState.extraction.position[0],
+          0,
+          this.hostageState.extraction.position[2],
+        ),
+      };
+    }
 
-          return Math.min(earliest, hostage.pathIndex);
-        }, routeEnd);
+    const firstIndex = this.hostageState.hostages.reduce((earliest, hostage) => {
+      if (hostage.extracted) {
+        return earliest;
+      }
+
+      return Math.min(earliest, hostage.pathIndex);
+    }, routeEnd);
 
     for (let index = THREE.MathUtils.clamp(firstIndex, 1, routeEnd); index <= routeEnd; index += 1) {
       const routePoint = this.hostageState.route[index];
@@ -6492,12 +6585,10 @@ export class LocalMatch {
       } else if (
         this.roundState.activeMission.missionType === "bomb" &&
         this.bombState &&
-        (strategyDecision.strategy === "route_probe" ||
-          strategyDecision.strategy === "flank_rotate") &&
         (strategyDecision.objectiveIntent.startsWith("carrier_") ||
           strategyDecision.objectiveIntent.startsWith("site_"))
       ) {
-        behavior = "patrol";
+        behavior = strategyDecision.behavior === "objective" ? "objective" : "patrol";
         stance = strategyDecision.objectiveIntent.includes("guard") ? "crouched" : "standing";
         const objectiveTarget = this.objectiveTargetForEnemy(enemy, strategyDecision);
         targetPosition = objectiveTarget.position.clone();
@@ -6505,13 +6596,11 @@ export class LocalMatch {
       } else if (
         this.roundState.activeMission.missionType === "hostage" &&
         this.hostageState &&
-        (strategyDecision.strategy === "route_probe" ||
-          strategyDecision.strategy === "flank_rotate") &&
         (strategyDecision.objectiveIntent.startsWith("hostage_") ||
           strategyDecision.objectiveIntent.startsWith("escort_") ||
           strategyDecision.objectiveIntent.startsWith("extraction_"))
       ) {
-        behavior = "patrol";
+        behavior = strategyDecision.behavior === "objective" ? "objective" : "patrol";
         stance = strategyDecision.objectiveIntent.includes("guard") ? "crouched" : "standing";
         const objectiveTarget = this.objectiveTargetForEnemy(enemy, strategyDecision);
         targetPosition = objectiveTarget.position.clone();
@@ -6540,7 +6629,10 @@ export class LocalMatch {
       }
 
       const urgentBehaviorChange =
-        canSeePlayer || behavior === "reposition" || enemy.ai.behavior === "reposition";
+        canSeePlayer ||
+        behavior === "reposition" ||
+        enemy.ai.behavior === "reposition" ||
+        strategyDecision.objectiveIntent !== enemy.ai.objectiveIntent;
       if (
         behavior !== enemy.ai.behavior &&
         !urgentBehaviorChange &&
@@ -6558,7 +6650,18 @@ export class LocalMatch {
       const toTarget = targetPosition.clone().sub(enemyFeet);
       toTarget.y = 0;
       let targetDistance = toTarget.length();
-      if (behavior === "patrol" && targetDistance < 0.9 && enemy.ai.patrolRoute.length > 0) {
+      const objectivePatrolTarget =
+        strategyDecision.objectiveIntent.startsWith("carrier_") ||
+        strategyDecision.objectiveIntent.startsWith("site_") ||
+        strategyDecision.objectiveIntent.startsWith("hostage_") ||
+        strategyDecision.objectiveIntent.startsWith("escort_") ||
+        strategyDecision.objectiveIntent.startsWith("extraction_");
+      if (
+        behavior === "patrol" &&
+        !objectivePatrolTarget &&
+        targetDistance < 0.9 &&
+        enemy.ai.patrolRoute.length > 0
+      ) {
         enemy.ai.patrolIndex = (enemy.ai.patrolIndex + 1) % enemy.ai.patrolRoute.length;
         const nextPatrol = enemy.ai.patrolRoute[enemy.ai.patrolIndex] ?? enemy.ai.objectiveAnchor;
         targetPosition = nextPatrol.position.clone();
@@ -6763,6 +6866,29 @@ export class LocalMatch {
       }
       enemy.ai.lastTargetDistance = finalTargetDistanceAfter;
       enemy.ai.lastWaypointDistance = waypointDistanceAfter;
+
+      if (
+        this.bombState?.phase === "planted" &&
+        enemy.alive &&
+        enemy.teamId === this.bombState.defendingTeam &&
+        this.activeMode === "local" &&
+        (!this.qaInvulnerable || this.qaAllowEnemyObjectiveActions) &&
+        this.distanceToBombSite(enemy.avatar.group.position) <= this.bombState.site.radius &&
+        this.enemyCanCommitObjectiveAction(enemy)
+      ) {
+        this.startBombDefuse(now, enemy.id, enemy.name);
+      }
+      if (
+        this.hostageState?.phase === "escorting" &&
+        enemy.alive &&
+        enemy.id === this.hostageState.rescuerId &&
+        this.activeMode === "local" &&
+        (!this.qaInvulnerable || this.qaAllowEnemyObjectiveActions) &&
+        this.allHostagesAtExtraction() &&
+        this.distanceToExtractionZone(enemy.avatar.group.position) <= this.hostageState.extraction.radius
+      ) {
+        this.startHostageExtraction(now, enemy.id, enemy.name);
+      }
 
       if (behavior !== enemy.ai.behavior) {
         enemy.ai.behaviorEnteredAt = now;
@@ -7201,255 +7327,86 @@ export class LocalMatch {
     progress: number;
     progressLabel: string;
   } {
-    if (this.roundState.activeMission.missionType === "hostage") {
-      return this.hostageHudSnapshot(now);
-    }
-
-    return this.bombHudSnapshot(now);
+    return buildObjectiveHudSnapshot(this.buildObjectiveHudInput(now));
   }
 
-  private bombHudSnapshot(now: number): {
-    status: string;
-    progress: number;
-    progressLabel: string;
-  } {
-    if (!this.bombState) {
-      return {
-        status: "",
-        progress: 0,
-        progressLabel: "",
-      };
-    }
-
-    if (this.roundState.phase === "resolution") {
-      return {
-        status: "",
-        progress: 0,
-        progressLabel: "",
-      };
-    }
-
-    const { progress, secondsRemaining } = currentBombProgress(this.bombState, now);
-
-    if (this.bombState.phase === "carried") {
-      const localCarrier = this.bombState.carrierId === this.playerIdentity.id;
-      const atSite = this.distanceToBombSite(this.camera.position) <= this.bombState.site.radius;
-      return {
-        status: this.bombState.carrierName
-          ? `Charge with ${this.bombState.carrierName}.`
-          : "Charge carrier pending.",
-        progress: 0,
-        progressLabel:
-          localCarrier && atSite && this.roundState.phase === "active"
-            ? `Hold E to arm ${this.bombState.site.label}`
-            : "",
-      };
-    }
-
-    if (this.bombState.phase === "planting") {
-      return {
-        status: `${this.bombState.actingCombatantName ?? "Operator"} arming ${this.bombState.site.label}.`,
-        progress,
-        progressLabel: `${secondsRemaining.toFixed(1)}s to arm`,
-      };
-    }
-
-    if (this.bombState.phase === "planted") {
-      const atSite = this.distanceToBombSite(this.camera.position) <= this.bombState.site.radius;
-      const canDefuse =
-        this.localTeamId === this.bombState.defendingTeam &&
-        !this.playerDead &&
-        this.roundState.phase === "active";
-      return {
-        status: `${this.bombState.site.label} is armed.`,
-        progress,
-        progressLabel:
-          canDefuse && atSite
-            ? `Hold E to disarm · ${secondsRemaining.toFixed(1)}s to breach`
-            : `${secondsRemaining.toFixed(1)}s to breach`,
-      };
-    }
-
+  private buildObjectiveHudInput(now: number): ObjectiveHudInput {
     return {
-      status: `${this.bombState.actingCombatantName ?? "Operator"} disarming ${this.bombState.site.label}.`,
-      progress,
-      progressLabel: `${secondsRemaining.toFixed(1)}s to disarm`,
+      now,
+      roundState: this.roundState,
+      localCombatantId: this.playerIdentity.id,
+      localTeamId: this.localTeamId,
+      playerDead: this.playerDead,
+      bombState: this.bombState,
+      hostageState: this.hostageState,
+      distanceToBombSite: this.distanceToBombSite(this.camera.position),
+      distanceToHostageCluster: this.distanceToHostageCluster(this.camera.position),
+      distanceToExtractionZone: this.distanceToExtractionZone(this.camera.position),
+      allHostagesAtExtraction: this.allHostagesAtExtraction(),
     };
   }
 
-  private hostageHudSnapshot(now: number): {
-    status: string;
-    progress: number;
-    progressLabel: string;
-  } {
-    if (!this.hostageState || this.roundState.phase === "resolution") {
-      return {
-        status: "",
-        progress: 0,
-        progressLabel: "",
-      };
-    }
-
-    const { progress, secondsRemaining } = currentHostageProgress(this.hostageState, now);
-    const rescuedCount = extractedHostageCount(this.hostageState);
-    const totalCount = this.hostageState.hostages.length;
-
-    if (this.hostageState.phase === "awaiting-rescue") {
-      const canSecure =
-        this.localTeamId === this.hostageState.attackingTeam &&
-        !this.playerDead &&
-        this.distanceToHostageCluster(this.camera.position) <= this.hostageState.cluster.radius;
-      return {
-        status: `${this.hostageState.cluster.label} pinned near ${this.hostageState.extraction.label}.`,
-        progress: 0,
-        progressLabel: canSecure ? `Hold E to secure ${this.hostageState.cluster.label}` : "",
-      };
-    }
-
-    if (this.hostageState.phase === "securing") {
-      return {
-        status: `${this.hostageState.actingCombatantName ?? "Operator"} securing ${this.hostageState.cluster.label}.`,
-        progress,
-        progressLabel: `${secondsRemaining.toFixed(1)}s to link escort`,
-      };
-    }
-
-    if (this.hostageState.phase === "escorting") {
-      const readyToExtract =
-        this.hostageState.rescuerId === this.playerIdentity.id &&
-        this.allHostagesAtExtraction() &&
-        this.distanceToExtractionZone(this.camera.position) <= this.hostageState.extraction.radius;
-      return {
-        status: `${this.hostageState.rescuerName ?? "Cobalt Reach"} escorting ${this.hostageState.cluster.label}.`,
-        progress,
-        progressLabel: readyToExtract
-          ? `Extraction lane clear at ${this.hostageState.extraction.label}`
-          : `${rescuedCount}/${totalCount} through ${this.hostageState.extraction.label}`,
-      };
-    }
-
+  private objectiveDebugLocalState(): ObjectiveDebugLocalState {
     return {
-      status: `${this.hostageState.actingCombatantName ?? "Operator"} extracting ${this.hostageState.cluster.label}.`,
-      progress,
-      progressLabel: `${secondsRemaining.toFixed(1)}s to clear ${this.hostageState.extraction.label}`,
+      localCombatantId: this.playerIdentity.id,
+      localTeamId: this.localTeamId,
+      playerDead: this.playerDead,
+      allHostagesAtExtraction: this.allHostagesAtExtraction(),
     };
   }
 
-  private debugBombStateSnapshot(): Record<string, unknown> | null {
-    if (!this.bombState) {
-      return null;
-    }
-
-    const now = this.roundNow();
-    const { progress, secondsRemaining } = currentBombProgress(this.bombState, now);
-    const siteDistance = this.distanceToBombSite(this.camera.position);
-
+  private objectiveDebugDistances(): ObjectiveDebugDistances {
     return {
-      phase: this.bombState.phase,
-      siteId: this.bombState.site.id,
-      siteLabel: this.bombState.site.label,
-      siteRadius: this.bombState.site.radius,
-      sitePosition: {
-        x: Number(this.bombState.site.position[0].toFixed(2)),
-        y: Number(this.bombState.site.position[1].toFixed(2)),
-        z: Number(this.bombState.site.position[2].toFixed(2)),
-      },
-      carrierId: this.bombState.carrierId,
-      carrierName: this.bombState.carrierName,
-      plantedById: this.bombState.plantedById,
-      plantedByName: this.bombState.plantedByName,
-      actingCombatantId: this.bombState.actingCombatantId,
-      actingCombatantName: this.bombState.actingCombatantName,
-      progress: Number(progress.toFixed(3)),
-      secondsRemaining: Number(secondsRemaining.toFixed(2)),
-      plantSeconds: Number(this.bombState.plantSeconds.toFixed(1)),
-      defuseSeconds: Number(this.bombState.defuseSeconds.toFixed(1)),
-      fuseSeconds: Number(this.bombState.fuseSeconds.toFixed(1)),
-      localDistanceToSite: Number(siteDistance.toFixed(2)),
-      localCanPlant:
-        this.bombState.phase === "carried" &&
-        this.bombState.carrierId === this.playerIdentity.id &&
-        this.localTeamId === this.bombState.attackingTeam &&
-        !this.playerDead &&
-        siteDistance <= this.bombState.site.radius,
-      localCanDefuse:
-        this.bombState.phase === "planted" &&
-        this.localTeamId === this.bombState.defendingTeam &&
-        !this.playerDead &&
-        siteDistance <= this.bombState.site.radius,
+      localDistanceToSite: this.distanceToBombSite(this.camera.position),
+      localDistanceToCluster: this.distanceToHostageCluster(this.camera.position),
+      localDistanceToExtraction: this.distanceToExtractionZone(this.camera.position),
     };
   }
 
-  private debugHostageStateSnapshot(): Record<string, unknown> | null {
-    if (!this.hostageState) {
-      return null;
-    }
+  private debugBombStateSnapshot(
+    now = this.roundNow(),
+    local = this.objectiveDebugLocalState(),
+    distances = this.objectiveDebugDistances(),
+  ): Record<string, unknown> | null {
+    return buildBombDebugSnapshot({
+      state: this.bombState,
+      now,
+      local,
+      distances,
+    });
+  }
 
-    const now = this.roundNow();
-    const { progress, secondsRemaining } = currentHostageProgress(this.hostageState, now);
-    const clusterDistance = this.distanceToHostageCluster(this.camera.position);
-    const extractionDistance = this.distanceToExtractionZone(this.camera.position);
+  private debugHostageStateSnapshot(
+    now = this.roundNow(),
+    local = this.objectiveDebugLocalState(),
+    distances = this.objectiveDebugDistances(),
+  ): Record<string, unknown> | null {
+    return buildHostageDebugSnapshot({
+      state: this.hostageState,
+      now,
+      local,
+      distances,
+    });
+  }
 
-    return {
-      phase: this.hostageState.phase,
-      clusterId: this.hostageState.cluster.id,
-      clusterLabel: this.hostageState.cluster.label,
-      clusterRadius: this.hostageState.cluster.radius,
-      clusterPosition: {
-        x: Number(this.hostageState.cluster.position[0].toFixed(2)),
-        y: Number(this.hostageState.cluster.position[1].toFixed(2)),
-        z: Number(this.hostageState.cluster.position[2].toFixed(2)),
-      },
-      extractionLabel: this.hostageState.extraction.label,
-      extractionRadius: this.hostageState.extraction.radius,
-      extractionPosition: {
-        x: Number(this.hostageState.extraction.position[0].toFixed(2)),
-        y: Number(this.hostageState.extraction.position[1].toFixed(2)),
-        z: Number(this.hostageState.extraction.position[2].toFixed(2)),
-      },
-      route: this.hostageState.route.map((point) => ({
-        focusId: point.focusId,
-        label: point.label,
-        position: {
-          x: Number(point.position[0].toFixed(2)),
-          y: Number(point.position[1].toFixed(2)),
-          z: Number(point.position[2].toFixed(2)),
-        },
-      })),
-      rescuerId: this.hostageState.rescuerId,
-      rescuerName: this.hostageState.rescuerName,
-      actingCombatantId: this.hostageState.actingCombatantId,
-      actingCombatantName: this.hostageState.actingCombatantName,
-      progress: Number(progress.toFixed(3)),
-      secondsRemaining: Number(secondsRemaining.toFixed(2)),
-      secureSeconds: Number(this.hostageState.secureSeconds.toFixed(2)),
-      extractSeconds: Number(this.hostageState.extractSeconds.toFixed(2)),
-      extractedCount: extractedHostageCount(this.hostageState),
-      localDistanceToCluster: Number(clusterDistance.toFixed(2)),
-      localDistanceToExtraction: Number(extractionDistance.toFixed(2)),
-      localCanSecure:
-        this.hostageState.phase === "awaiting-rescue" &&
-        this.localTeamId === this.hostageState.attackingTeam &&
-        !this.playerDead &&
-        clusterDistance <= this.hostageState.cluster.radius,
-      localCanExtract:
-        this.hostageState.phase === "escorting" &&
-        this.hostageState.rescuerId === this.playerIdentity.id &&
-        !this.playerDead &&
-        this.allHostagesAtExtraction() &&
-        extractionDistance <= this.hostageState.extraction.radius,
-      hostages: this.hostageState.hostages.map((hostage) => ({
-        id: hostage.id,
-        slotIndex: hostage.slotIndex,
-        extracted: hostage.extracted,
-        pathIndex: hostage.pathIndex,
-        position: {
-          x: Number(hostage.position[0].toFixed(2)),
-          y: Number(hostage.position[1].toFixed(2)),
-          z: Number(hostage.position[2].toFixed(2)),
-        },
-      })),
-    };
+  private objectiveBotGoalEvidence(enemy: EnemyActor): ReturnType<typeof buildObjectiveBotGoalEvidence> {
+    return buildObjectiveBotGoalEvidence({
+      id: enemy.id,
+      name: enemy.name,
+      teamId: enemy.teamId,
+      alive: enemy.alive,
+      role: enemy.ai.role,
+      strategy: enemy.ai.strategy,
+      strategyReason: enemy.ai.strategyReason,
+      objectiveIntent: enemy.ai.objectiveIntent,
+      behavior: enemy.ai.behavior,
+      stance: enemy.ai.stance,
+      targetLabel: enemy.ai.targetLabel,
+      objectiveLabel: enemy.ai.objectiveAnchor.label,
+      route: summarizeRouteCompletion(enemy.ai.routePlan),
+      recoveryAction: enemy.ai.lastRecoveryAction,
+      stuckClassification: enemy.ai.stuckClassification,
+    });
   }
 
   private defaultStatusLine(): string {

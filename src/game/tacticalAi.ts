@@ -50,6 +50,7 @@ export interface EnemyStrategyDecision {
     | "hostage-progress"
     | "late-round"
     | "carrier-duty"
+    | "hostage-duty"
     | "support-duty";
   behavior: EnemyBehavior;
   stance: EnemyStance;
@@ -238,6 +239,8 @@ export function chooseEnemyStrategy(input: {
   });
   const lateRound = input.roundPhase === "active" && input.roundTimeRemaining <= 18;
   const recentDamage = input.recentDamageSeconds !== null && input.recentDamageSeconds <= 1.7;
+  const immediateThreat =
+    input.canSeePlayer && input.playerDistance <= (input.difficulty === "hard" ? 5.8 : 6.8);
   const lowHealth = input.health <= (input.difficulty === "hard" ? 34 : 42);
   const freshKnown = input.lastKnownSeconds !== null && input.lastKnownSeconds <= 3.8;
   const freshSound = input.lastHeardSeconds !== null && input.lastHeardSeconds <= 2.5;
@@ -255,10 +258,7 @@ export function chooseEnemyStrategy(input: {
   let strategy: EnemyStrategy;
   let reason: EnemyStrategyDecision["reason"];
 
-  if (lowHealth && input.escapeRouteAvailable) {
-    strategy = "fallback_guard";
-    reason = "low-health";
-  } else if (recentDamage && coverWanted) {
+  if (recentDamage && immediateThreat && coverWanted) {
     strategy = "cover_reposition";
     reason = "recent-damage";
   } else if (bombPlanted) {
@@ -271,6 +271,20 @@ export function chooseEnemyStrategy(input: {
         ? "objective_commit"
         : "pressure_objective";
     reason = "hostage-progress";
+  } else if (
+    input.mission.missionType === "bomb" &&
+    input.bombState?.phase === "carried" &&
+    input.enemyTeamId === input.bombState.attackingTeam &&
+    input.bombState.carrierId === input.enemyId
+  ) {
+    strategy = "objective_commit";
+    reason = "carrier-duty";
+  } else if (lowHealth && input.escapeRouteAvailable && !bombPlanted && !hostageMoving) {
+    strategy = "fallback_guard";
+    reason = "low-health";
+  } else if (recentDamage && coverWanted) {
+    strategy = "cover_reposition";
+    reason = "recent-damage";
   } else if (input.canSeePlayer) {
     strategy = coverWanted ? "cover_reposition" : "pursue_contact";
     reason = "visual-contact";
@@ -283,14 +297,6 @@ export function chooseEnemyStrategy(input: {
   } else if (recentlyLostSight && input.coverAvailable) {
     strategy = "cover_reposition";
     reason = "lost-sight";
-  } else if (
-    input.mission.missionType === "bomb" &&
-    input.bombState?.phase === "carried" &&
-    input.enemyTeamId === input.bombState.attackingTeam &&
-    input.bombState.carrierId === input.enemyId
-  ) {
-    strategy = "objective_commit";
-    reason = "carrier-duty";
   } else if (lateRound && input.objectiveDistance > 2.8) {
     strategy = "pressure_objective";
     reason = "late-round";

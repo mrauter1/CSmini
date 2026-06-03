@@ -1666,7 +1666,7 @@ export class TacticalShellApp {
     return this.match?.debugSharedTarget() ?? null;
   }
 
-  debugStageAiSightlineCase():
+  debugStageAiSightlineCase(seedLastKnown = false):
     | {
         enemyId: string;
         enemyLabel: string;
@@ -1678,7 +1678,7 @@ export class TacticalShellApp {
         clearPlayerLabel: string;
       }
     | null {
-    return this.match?.debugStageAiSightlineCase() ?? null;
+    return this.match?.debugStageAiSightlineCase(seedLastKnown) ?? null;
   }
 
   debugStageAiCommunicationCase():

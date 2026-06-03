@@ -83,7 +83,7 @@ declare global {
         hits: Array<{ combatantId: string | null; objectName: string; distance: number }>;
       } | null;
       sharedTarget: () => string | null;
-      stageAiSightlineCase: () =>
+      stageAiSightlineCase: (seedLastKnown?: boolean) =>
         | {
             enemyId: string;
             enemyLabel: string;
@@ -287,7 +287,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     aimAt: (combatantId) => app.debugAimAt(combatantId),
     probeShot: () => app.debugProbeShot(),
     sharedTarget: () => app.debugSharedTarget(),
-    stageAiSightlineCase: () => app.debugStageAiSightlineCase(),
+    stageAiSightlineCase: (seedLastKnown) => app.debugStageAiSightlineCase(seedLastKnown),
     stageAiCommunicationCase: () => app.debugStageAiCommunicationCase(),
     stageAiRecoveryCase: () => app.debugStageAiRecoveryCase(),
     stageEnemyBombPlantCase: () => app.debugStageEnemyBombPlantCase(),

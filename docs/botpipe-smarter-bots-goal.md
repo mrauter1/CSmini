@@ -278,10 +278,9 @@ Update `README.md` and relevant `docs/qa/*.md` if user-visible bot behavior, lim
 Run from the repository root:
 
 ```bash
-botpipe run goal \
+botpipe run goal "$(cat docs/botpipe-smarter-bots-goal.md)" \
   --workspace /home/rauter/code/cs-dev \
   --provider codex \
   --model gpt-5.5 \
-  --task human-like-map-aware-bots \
-  "$(cat docs/botpipe-smarter-bots-goal.md)"
+  --task human-like-map-aware-bots
 ```

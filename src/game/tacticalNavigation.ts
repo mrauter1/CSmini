@@ -83,6 +83,7 @@ const MAX_GRAPH_EDGE_DISTANCE = 17.5;
 const MAX_VIRTUAL_LINK_DISTANCE = 19.5;
 const FALLBACK_VIRTUAL_LINKS = 8;
 const WAYPOINT_REACHED_RADIUS = 0.82;
+const CONNECTOR_GRID_STEP = 4.2;
 const OFFSET_RADII = [3.4, 6.2] as const;
 const OFFSET_DIRECTIONS = [
   new THREE.Vector2(1, 0),
@@ -233,6 +234,32 @@ function addOffsetNodes(
   }
 }
 
+function addConnectorNodes(
+  nodes: TacticalNavNode[],
+  occupied: Set<string>,
+  world: CollisionWorld,
+  radius: number,
+  bodyHeight: number,
+): void {
+  let connectorIndex = 0;
+  for (let x = world.bounds.minX + radius; x <= world.bounds.maxX - radius; x += CONNECTOR_GRID_STEP) {
+    for (let z = world.bounds.minZ + radius; z <= world.bounds.maxZ - radius; z += CONNECTOR_GRID_STEP) {
+      if (isBlocked(world, x, z, radius, bodyHeight)) {
+        continue;
+      }
+
+      addNode(nodes, occupied, world, radius, bodyHeight, {
+        id: `connector:${connectorIndex}`,
+        label: "Tactical connector",
+        kind: "offset",
+        focusId: null,
+        position: new THREE.Vector3(x, 0, z),
+      });
+      connectorIndex += 1;
+    }
+  }
+}
+
 export function isSegmentTraversable(
   world: CollisionWorld,
   start: THREE.Vector3,
@@ -302,6 +329,7 @@ export function buildTacticalRouteGraph(input: {
     input.bodyHeight,
     nodes.filter((node) => node.kind !== "offset"),
   );
+  addConnectorNodes(nodes, occupied, input.world, input.radius, input.bodyHeight);
 
   const edges: TacticalNavEdge[][] = nodes.map(() => []);
   let edgeCount = 0;

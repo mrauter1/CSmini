@@ -174,14 +174,14 @@ const sandlineFoundryScene: SceneBlueprint = {
       label: "Central Yard",
       description: "Open courtyard with broken sightlines and crate cover.",
       cameraPosition: v(18, 12, 19),
-      target: v(0, 2, 0),
+      target: v(0, 2, 5),
     },
     {
       id: "corridor",
       label: "Generator Hall",
       description: "Tighter west-side route for close engagements.",
       cameraPosition: v(-30, 7, 6),
-      target: v(-16, 2, 1),
+      target: v(-16, 2, 7),
     },
     {
       id: "underpass",
@@ -202,7 +202,7 @@ const sandlineFoundryScene: SceneBlueprint = {
       label: "Loading Bay",
       description: "North-side landmark anchoring the main lane finish.",
       cameraPosition: v(16, 6, -5),
-      target: v(8, 2, -13),
+      target: v(8, 2, -11),
     },
   ],
   primitives: [
@@ -217,11 +217,14 @@ const sandlineFoundryScene: SceneBlueprint = {
     box("Underpass slab", v(10, 0.4, 24), v(15, 0.22, 3), "#74614B"),
     box("Generator hall outer wall", v(2, 6, 30), v(-21, 3, 1), "#6F665C"),
     box("Generator hall inner north", v(2, 6, 12), v(-11, 3, -7), "#7C7163"),
-    box("Generator hall inner south", v(2, 6, 10), v(-11, 3, 10), "#7C7163"),
+    box("Generator hall inner south", v(2, 6, 7), v(-11, 3, 11.5), "#7C7163"),
     box("Generator hall north cap", v(10, 5, 2), v(-16, 2.5, -14), "#756B5D"),
-    box("Generator hall south cap", v(10, 5, 2), v(-16, 2.5, 16), "#756B5D"),
+    box("Generator hall south west jamb", v(2.4, 5, 2), v(-19.8, 2.5, 16), "#756B5D"),
+    box("Generator hall south east jamb", v(2.4, 5, 2), v(-12.2, 2.5, 16), "#756B5D"),
     box("Generator core", v(4, 4, 4), v(-16, 2, 1), "#4A5457"),
-    box("South shed", v(11, 5, 6), v(-10, 2.5, 18), "#6F7651"),
+    box("Generator hall south route band", v(5.2, 0.26, 5.4), v(-16, 0.36, 14), "#8A6A43"),
+    box("Generator hall threshold stripe", v(4.6, 0.28, 0.7), v(-16, 0.38, 16.9), "#B49A62"),
+    box("South shed", v(8, 5, 6), v(-6.8, 2.5, 18), "#6F7651"),
     box("South low building", v(13, 4, 4), v(11, 2, 19), "#8A5E44"),
     box("South divider wall", v(6, 2.2, 1), v(4, 1.1, 11), "#756253"),
     box("Crate island base", v(8, 2.2, 5), v(0, 1.1, 0), "#7F6039"),
@@ -665,11 +668,11 @@ export const mapCatalog: MapDefinition[] = [
     cover:
       "Crate island cover, low walls, tunnel boxes, loading barriers, and corridor corners.",
     chokePoints:
-      "Broken Arch mid-crossing, Generator Hall elbows, and the catwalk stair exit.",
+      "Broken Arch mid-crossing, the narrow south Generator Hall entry, west-hall elbows, and the catwalk stair exit.",
     landmark:
       "The east catwalk over the underpass defines the flank and overlooks both the central yard and loading bay.",
     tacticalSummary:
-      "Main lane pushes through Central Yard, a tighter Generator Hall route hugs the west wall, and a Drain Underpass flank rises into the East Catwalk before reconnecting near Blue Shutter Bay.",
+      "Main lane pushes through Central Yard, a tighter left-side Generator Hall entry leaves Water Tower Court through a narrow west threshold, and a Drain Underpass flank rises into the East Catwalk before reconnecting near Blue Shutter Bay.",
     mainMap: true,
     preview: preview("#11140F", [
       rect(22, 22, 42, 44, "#586149"),
@@ -722,7 +725,7 @@ export const mapCatalog: MapDefinition[] = [
           kind: "corridor",
           name: "Generator Hall",
           description:
-            "Roofless interior-feel corridor with tight turns, close cover, and quick rotations into mid.",
+            "Roofless interior-feel corridor reached through the south west threshold, with tight turns, close cover, and quick rotations into mid.",
           focusId: "corridor",
         },
         {

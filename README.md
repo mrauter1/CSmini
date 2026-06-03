@@ -133,5 +133,5 @@ The current originality and asset-policy record is `docs/assets.md`. The project
 - Solo bot difficulty is currently a solo-local setting only; shared-room sessions remain human-only across tabs.
 - Tactical AI verification is focused on solo-local rounds, not on shared-room opponent bots.
 - The live art direction is intentionally flatter than the richer reference paintings, especially on walls and ground materials.
-- `src/game/localMatch.ts` remains the largest gameplay file and the first refactor target if the prototype expands further.
+- `src/game/localMatch.ts` remains the largest gameplay file, but objective markers, reachability evidence, objective-bot goal evidence, HUD/debug snapshots, hostage actors, and scene setup now live in focused `src/game/` modules.
 - `vite build` still emits a non-blocking chunk-size warning for the `localMatch` bundle.

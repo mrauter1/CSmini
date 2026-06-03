@@ -1,6 +1,6 @@
 # Visual QA Report
 
-Date: 2026-05-30
+Date: 2026-06-02
 
 ## Scope
 
@@ -53,6 +53,16 @@ Captured from the current browser build in `assets/screenshots/`:
 - `11-death-respawn-state.png`
 - `12-two-player-multiplayer.png`
 - `13-held-tab-operations-board.png`
+- `14-sandline-loading-bay-marker.png`
+- `15-sandline-water-tower-gate-marker.png`
+
+2026-06-02 objective-marker addendum:
+
+- `04-sandline-central-yard.png` now shows the active `Kiln Yard` marker tied to central crate-island pressure.
+- `14-sandline-loading-bay-marker.png` shows the north loading/shutter marker treatment for `Shutter Lift`.
+- `15-sandline-water-tower-gate-marker.png` shows the active `Water Tower Gate` extraction threshold, low sign, hostage actors, and low barrier context.
+- The marker treatment stays procedural and primitive: worn floor rings, utility plates, low state panels, low signs, and muted industrial colors. No waypoint beam, neon objective UI, minimap/radar clone, copied site mark, or external asset was added.
+- Fresh final reruns passed `npm run typecheck`, `npm run build`, `npm test`, and a bounded standalone `npm run qa:final`. The standalone `qa:final` pass refreshed the marker screenshots from current `dist` and completed the full browser harness.
 
 ## Commands Run
 
@@ -72,7 +82,7 @@ Results:
 
 Non-blocking note:
 
-- `vite build` emitted a chunk-size warning for the minified `localMatch` bundle at `636.70 kB`. This did not block runtime verification.
+- `vite build` emitted a chunk-size warning for the minified `localMatch` bundle at `689.10 kB`. This did not block runtime verification.
 
 The 2026-05-30 rerun did not change the accepted visual target. It refreshed the same screenshot set through `scripts/qa/finalVerification.mjs` after the multiplayer merge so the visual report still compares the current browser output against `docs/visual-target.md`.
 
@@ -225,7 +235,7 @@ Cross-cutting technical quality review:
 
 - pass on separation of concerns across `src/data`, `src/game`, `src/ui`, and `src/world`
 - pass on dependency discipline: the runtime remains browser-only with `three` as the only runtime dependency
-- residual maintainability note: `src/game/localMatch.ts` remains the heaviest file and is the main refactor candidate if the prototype expands
+- residual maintainability note: `src/game/localMatch.ts` remains the heaviest file, but objective markers, reachability, objective-bot evidence, HUD/debug snapshots, hostage actors, and match scene setup have been extracted into focused modules
 
 ## Assets And Licensing
 

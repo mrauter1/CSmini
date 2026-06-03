@@ -343,10 +343,9 @@ The goal is complete only when:
 Run from the target worktree:
 
 ```bash
-botpipe run goal \
+botpipe run goal "$(cat docs/botpipe/merge-cs-webrtc.goal.md)" \
   --workspace /home/rauter/code/cs-merge-webrtc \
   --provider codex \
   --model gpt-5.5 \
-  --task merge-cs-webrtc \
-  "$(cat docs/botpipe/merge-cs-webrtc.goal.md)"
+  --task merge-cs-webrtc
 ```
