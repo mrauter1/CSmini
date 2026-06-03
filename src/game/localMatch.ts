@@ -187,6 +187,7 @@ const PLAYER_DAMAGE = 34;
 const ENEMY_DAMAGE = PLAYER_DAMAGE;
 const ENEMY_FIRE_INTERVAL = FIRE_INTERVAL;
 const ENEMY_ENGAGE_DISTANCE = 20;
+const OBJECTIVE_VISIBLE_THREAT_FIRE_DISTANCE = 11.5;
 const HIT_INDICATOR_DURATION = 0.16;
 const DAMAGE_FLASH_DURATION = 0.2;
 const MUZZLE_FLASH_DURATION = 0.06;
@@ -2230,6 +2231,85 @@ export class LocalMatch {
         .map((enemy) => enemy.id),
       siteLabel: this.bombState.site.label,
       sitePosition: this.toPoint(sitePosition, 0),
+    };
+  }
+
+  debugStageEnemyObjectiveThreatCase():
+    | {
+        carrierEnemyId: string;
+        carrierEnemyLabel: string;
+        siteLabel: string;
+        playerPosition: { x: number; y: number; z: number };
+        carrierPosition: { x: number; y: number; z: number };
+      }
+    | null {
+    if (
+      this.activeMode !== "local" ||
+      !this.bombState ||
+      this.bombState.phase !== "carried"
+    ) {
+      return null;
+    }
+
+    const carrier = this.objectiveEnemyById(this.bombState.carrierId);
+    if (!carrier) {
+      return null;
+    }
+
+    const carrierIndex = this.enemies.indexOf(carrier);
+    const carrierPosition = findOpenGroundPosition(
+      this.collisionWorld,
+      this.enemySpawnPoint(carrierIndex),
+      PLAYER_RADIUS,
+      this.enemyBodyHeight(carrier),
+    );
+    const threatPosition = this.findVisibleThreatPositionNearEnemy(carrier, carrierPosition);
+    if (!threatPosition) {
+      return null;
+    }
+
+    carrier.avatar.group.position.copy(carrierPosition);
+    carrier.movementState.verticalVelocity = 0;
+    carrier.movementState.heightOffset = 0;
+    carrier.movementState.grounded = true;
+    carrier.movementState.crouchBlend = 0;
+    carrier.speed = 0;
+    carrier.qaJumpRequested = false;
+    this.configureEnemyAi(carrier, carrierIndex);
+    carrier.ai.lastProgressPosition.copy(carrierPosition);
+    carrier.ai.canSeePlayer = false;
+    carrier.ai.lastVisibility = 0;
+    carrier.ai.lastSeenAt = Number.NEGATIVE_INFINITY;
+    carrier.ai.lastHeardAt = Number.NEGATIVE_INFINITY;
+    carrier.ai.lastKnownPlayerPosition = null;
+    carrier.ai.lastHeardPosition = null;
+    carrier.ai.burstShotsRemaining = 0;
+    carrier.ai.burstCooldownUntil = Number.NEGATIVE_INFINITY;
+    carrier.ai.lastShotAt = Number.NEGATIVE_INFINITY;
+    carrier.ai.lastShotOutcome = null;
+    carrier.ai.lastShotProfile = null;
+    carrier.ai.shotsFired = 0;
+    carrier.ai.shotHits = 0;
+    carrier.ai.shotMisses = 0;
+    carrier.nextFireAt = 0;
+    this.enemyContactQueue.length = 0;
+    this.lastPlayerNoiseAt = Number.NEGATIVE_INFINITY;
+    this.lastPlayerNoisePosition.copy(threatPosition);
+    this.debugSetView(
+      threatPosition.x,
+      currentEyeHeight(this.movementState),
+      threatPosition.z,
+      carrierPosition.x,
+      this.enemyEyeHeight(carrier),
+      carrierPosition.z,
+    );
+
+    return {
+      carrierEnemyId: carrier.id,
+      carrierEnemyLabel: carrier.name,
+      siteLabel: this.bombState.site.label,
+      playerPosition: this.toPoint(threatPosition, currentEyeHeight(this.movementState)),
+      carrierPosition: this.toPoint(carrierPosition, this.enemyEyeHeight(carrier)),
     };
   }
 
@@ -6656,6 +6736,18 @@ export class LocalMatch {
         strategyDecision.objectiveIntent.startsWith("hostage_") ||
         strategyDecision.objectiveIntent.startsWith("escort_") ||
         strategyDecision.objectiveIntent.startsWith("extraction_");
+      const closeVisibleObjectiveThreat =
+        canSeePlayer &&
+        !this.enemyObjectiveActionActive(enemy) &&
+        playerDistance <= OBJECTIVE_VISIBLE_THREAT_FIRE_DISTANCE &&
+        (behavior === "objective" ||
+          objectivePatrolTarget ||
+          strategyDecision.strategy === "anchor_site" ||
+          strategyDecision.strategy === "pressure_objective" ||
+          strategyDecision.strategy === "objective_commit");
+      if (closeVisibleObjectiveThreat) {
+        shouldShoot = true;
+      }
       if (
         behavior === "patrol" &&
         !objectivePatrolTarget &&
@@ -8075,6 +8167,73 @@ export class LocalMatch {
       clearPlayerLabel: bestCase.clearPlayerLabel,
       blockerName: bestCase.blockerName,
     };
+  }
+
+  private findVisibleThreatPositionNearEnemy(
+    enemy: EnemyActor,
+    enemyPosition: THREE.Vector3,
+  ): THREE.Vector3 | null {
+    const enemyEye = enemyPosition.clone().setY(this.enemyEyeHeight(enemy));
+    const playerEyeHeight = currentEyeHeight(this.movementState);
+    const bodyHeight = currentBodyHeight(this.movementState);
+    const tuning = this.botTuning();
+    const candidateRadii = [4.8, 6.2, 7.6, 9.1, 10.6];
+    const candidateAngles = [
+      0,
+      Math.PI,
+      Math.PI / 2,
+      -Math.PI / 2,
+      Math.PI / 4,
+      -Math.PI / 4,
+      (Math.PI * 3) / 4,
+      (-Math.PI * 3) / 4,
+    ];
+
+    let bestCandidate: { position: THREE.Vector3; score: number } | null = null;
+    for (const radius of candidateRadii) {
+      for (const angle of candidateAngles) {
+        const desired = enemyPosition
+          .clone()
+          .add(new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius));
+        const candidate = findOpenGroundPosition(
+          this.collisionWorld,
+          desired,
+          PLAYER_RADIUS,
+          bodyHeight,
+        );
+        const distance = candidate.distanceTo(enemyPosition);
+        if (distance < 3.8 || distance > OBJECTIVE_VISIBLE_THREAT_FIRE_DISTANCE) {
+          continue;
+        }
+        if (
+          !isSegmentTraversable(
+            this.collisionWorld,
+            enemyPosition,
+            candidate,
+            PLAYER_RADIUS,
+            bodyHeight,
+          )
+        ) {
+          continue;
+        }
+
+        const visibility = evaluateVisibility(
+          this.collisionWorld,
+          enemyEye,
+          buildVisibilityPoints(candidate, playerEyeHeight, false),
+        );
+        if (visibility < tuning.clearShotVisibilityThreshold) {
+          continue;
+        }
+
+        const score = visibility * 2 - Math.abs(distance - 6.2) * 0.08;
+        if (!bestCandidate || score > bestCandidate.score) {
+          bestCandidate = { position: candidate, score };
+        }
+      }
+    }
+
+    return bestCandidate?.position ?? null;
   }
 
   private findDebugDuelPair(): [THREE.Vector3, THREE.Vector3] | null {

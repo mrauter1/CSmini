@@ -198,6 +198,7 @@ Implemented on 2026-06-02 for subgoal `objective-aware-relay-and-evac-bots`.
 
 - `src/game/localMatch.ts` now resolves objective targets from live mission state before handing movement to the existing tactical route planner.
 - Relay Charge attackers distinguish carrier and support duties. The carrier keeps `carrier_site_commit` intent toward the active site, one support bot can escort the carrier, and another can screen through a site route anchor instead of clustering on the same point.
+- Relay Charge carriers and other objective-driven bots keep their objective movement/intent when a close visible player appears, but they are now allowed to fire through the normal LOS, reaction, burst, miss, and cooldown gates instead of staring without shooting.
 - Relay Charge defenders treat both `planted` and active `defusing` states as urgent defuse rotation. Debug intent exposes `defuse_rotate`, and the existing bomb action path still owns plant, defuse, fuse, and round resolution.
 - Evac Escort attackers route rescuers through declared escort route labels before extraction. The resolver chooses the first declared route point the current bot can actually plan to through the graph, so a staged rescuer avoided a direct unreachable extraction path and planned to `Drain Underpass` through graph waypoints.
 - Evac Escort support and defender intents are explicit in debug snapshots: `escort_extract`, `escort_flank_screen`, `hostage_cluster_anchor`, and `hostage_lane_probe`.

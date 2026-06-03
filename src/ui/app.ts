@@ -1728,6 +1728,18 @@ export class TacticalShellApp {
     return this.match?.debugStageEnemyRelayRouteCase() ?? null;
   }
 
+  debugStageEnemyObjectiveThreatCase():
+    | {
+        carrierEnemyId: string;
+        carrierEnemyLabel: string;
+        siteLabel: string;
+        playerPosition: { x: number; y: number; z: number };
+        carrierPosition: { x: number; y: number; z: number };
+      }
+    | null {
+    return this.match?.debugStageEnemyObjectiveThreatCase() ?? null;
+  }
+
   debugStageEnemyRelayDefuseCase():
     | {
         defuserEnemyId: string;

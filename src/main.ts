@@ -130,6 +130,15 @@ declare global {
             sitePosition: { x: number; y: number; z: number };
           }
         | null;
+      stageEnemyObjectiveThreatCase: () =>
+        | {
+            carrierEnemyId: string;
+            carrierEnemyLabel: string;
+            siteLabel: string;
+            playerPosition: { x: number; y: number; z: number };
+            carrierPosition: { x: number; y: number; z: number };
+          }
+        | null;
       stageEnemyRelayDefuseCase: () =>
         | {
             defuserEnemyId: string;
@@ -292,6 +301,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     stageAiRecoveryCase: () => app.debugStageAiRecoveryCase(),
     stageEnemyBombPlantCase: () => app.debugStageEnemyBombPlantCase(),
     stageEnemyRelayRouteCase: () => app.debugStageEnemyRelayRouteCase(),
+    stageEnemyObjectiveThreatCase: () => app.debugStageEnemyObjectiveThreatCase(),
     stageEnemyRelayDefuseCase: () => app.debugStageEnemyRelayDefuseCase(),
     stageEnemyHostageEscortCase: () => app.debugStageEnemyHostageEscortCase(),
     evaluateEnemyShot: (combatantId, overrides) => app.debugEvaluateEnemyShot(combatantId, overrides),

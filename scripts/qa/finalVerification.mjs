@@ -839,6 +839,13 @@ async function stageEnemyRelayRouteCase(page) {
   return routeCase;
 }
 
+async function stageEnemyObjectiveThreatCase(page) {
+  const threatCase = await page.evaluate("window.__dustlineQa__.stageEnemyObjectiveThreatCase()");
+  assert(threatCase, "Expected a deterministic enemy objective-threat case");
+  await delay(180);
+  return threatCase;
+}
+
 async function stageEnemyRelayDefuseCase(page) {
   const defuseCase = await page.evaluate("window.__dustlineQa__.stageEnemyRelayDefuseCase()");
   assert(defuseCase, "Expected a deterministic enemy relay-defuse case");
@@ -2574,6 +2581,53 @@ async function main() {
         enemyBombResolvedState.enemies.find((enemy) => enemy.id === enemyBombPlantCase.carrierEnemyId)?.ai
           ?.shotsFired ?? 0,
       blockerName: enemyBombPlantCase.siteLabel,
+    };
+
+    await setTeamPreference(localPage, "cobalt");
+    await openMap(localPage, "sandline-foundry", "local");
+    await engageControls(localPage);
+    await setInvulnerable(localPage, true);
+    await forceRoundActive(localPage);
+    const enemyObjectiveThreatCase = await stageEnemyObjectiveThreatCase(localPage);
+    const enemyObjectiveThreatStart = await getState(localPage);
+    const objectiveThreatCarrierStart = enemyObjectiveThreatStart.enemies.find(
+      (enemy) => enemy.id === enemyObjectiveThreatCase.carrierEnemyId,
+    );
+    assert(
+      objectiveThreatCarrierStart?.ai?.canSeePlayer === true &&
+        objectiveThreatCarrierStart?.ai?.objectiveIntent === "carrier_site_commit",
+      `Expected carrier to keep objective intent while seeing a close threat, saw ${objectiveThreatCarrierStart?.ai?.objectiveIntent}/${objectiveThreatCarrierStart?.ai?.canSeePlayer}`,
+    );
+    assert(
+      objectiveThreatCarrierStart?.ai?.behavior === "objective",
+      `Expected close-threat carrier to remain objective-driven, saw ${objectiveThreatCarrierStart?.ai?.behavior}`,
+    );
+    const objectiveThreatShotsBefore = objectiveThreatCarrierStart.ai.shotsFired;
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const carrier = (window.__dustlineQa__?.getState()?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(enemyObjectiveThreatCase.carrierEnemyId)});
+          return carrier?.ai?.canSeePlayer === true
+            && carrier?.ai?.objectiveIntent === 'carrier_site_commit'
+            && carrier?.ai?.behavior === 'objective'
+            && carrier?.ai?.shotsFired > ${objectiveThreatShotsBefore}
+            && carrier?.ai?.lastShotProfile;
+        })()
+      `,
+      4_000,
+    );
+    const enemyObjectiveThreatState = await getState(localPage);
+    const objectiveThreatCarrier = enemyObjectiveThreatState.enemies.find(
+      (enemy) => enemy.id === enemyObjectiveThreatCase.carrierEnemyId,
+    );
+    summary.aiObjectiveThreat = {
+      carrierEnemyId: enemyObjectiveThreatCase.carrierEnemyId,
+      siteLabel: enemyObjectiveThreatCase.siteLabel,
+      behavior: objectiveThreatCarrier?.ai?.behavior ?? null,
+      objectiveIntent: objectiveThreatCarrier?.ai?.objectiveIntent ?? null,
+      shotsFired: objectiveThreatCarrier?.ai?.shotsFired ?? 0,
+      lastShotProfile: objectiveThreatCarrier?.ai?.lastShotProfile ?? null,
     };
 
     await setTeamPreference(localPage, "cobalt");
