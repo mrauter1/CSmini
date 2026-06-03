@@ -37,6 +37,12 @@ export function createPrimitiveMesh(primitive: Primitive): THREE.Mesh {
 }
 
 export function disposeObject(root: THREE.Object3D): void {
+  const disposeMaterial = (material: THREE.Material): void => {
+    const materialWithMap = material as THREE.Material & { map?: THREE.Texture | null };
+    materialWithMap.map?.dispose();
+    material.dispose();
+  };
+
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) {
       return;
@@ -45,10 +51,10 @@ export function disposeObject(root: THREE.Object3D): void {
     node.geometry.dispose();
 
     if (Array.isArray(node.material)) {
-      node.material.forEach((material) => material.dispose());
+      node.material.forEach(disposeMaterial);
       return;
     }
 
-    node.material.dispose();
+    disposeMaterial(node.material);
   });
 }

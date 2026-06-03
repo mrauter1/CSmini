@@ -1,6 +1,6 @@
 # Local Play QA
 
-Date: 2026-06-02
+Date: 2026-06-03
 
 ## Scope
 
@@ -178,14 +178,15 @@ Result: the solo AI now exposes observable `objective`, `patrol`, `investigate`,
 
 ### Human-like map-aware bot pass
 
-Fresh `npm run qa:final` and `npm test` runs on 2026-06-02 extended the local tactical AI proof:
+Fresh `npm run qa:final` and `npm test` runs on 2026-06-02, plus a full `npm test` rerun on 2026-06-03, extended the local tactical AI proof:
 
 - Opening fireteam strategies split into `anchor_site`, `route_probe`, and `flank_rotate`, with per-bot roles `anchor`, `route`, and `flank`, deterministic profile seeds, and objective intents in the debug snapshot.
+- Delayed shared-contact responders split away from the same last-known point into separate target-claim buckets (`Central Yard` and `Generator Hall`) with `claimed-contact-route` adjustments.
 - A blocked direct route at `Crate stack west` planned a non-direct graph route through `Central Yard route offset`; the staged obstruction kept `routeUsesGraph: true`, `routeReason: partial-route`, `jumpCount: 0`, and no teleport/deadlock.
 - The same staged sightline kept `visibility: 0`, `canSeePlayer: false`, and `shotsFired: 0` through the blocker, then entered readable combat only from the clear pose.
 - After the player damaged a bot, the bot switched to `cover_reposition` with `strategyReason: recent-damage`, proving meaningful mid-round strategy change rather than frame-by-frame jitter.
-- Relay Charge enemy staging produced carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, distinct support targets `Copper-2 escort` and `Generator Hall`, and defender intent `defuse_rotate` during the planted/defusing state.
-- Evac Escort enemy staging produced rescuer intent `escort_extract`, a graph route toward declared route label `Drain Underpass` through `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, and defender intents `hostage_cluster_anchor` plus `hostage_lane_probe`.
+- Relay Charge enemy staging produced carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, an offset `Copper-2 escort lane` claim with reason `carrier-escort-offset`, a separate `Generator Hall` screen, and defender intent `defuse_rotate` during the planted/defusing state.
+- Evac Escort enemy staging produced rescuer intent `escort_extract`, a graph route toward declared route label `Drain Underpass` through `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, defender intents `hostage_cluster_anchor` plus `hostage_lane_probe`, and extraction completion once an attacking escort reached the zone with all hostages extracted.
 
 Result: browser QA now proves the new map-aware route, recovery, strategy, and objective intent surfaces through staged live states that observe the shipped AI/update loop.
 

@@ -60,9 +60,17 @@ Captured from the current browser build in `assets/screenshots/`:
 
 - `04-sandline-central-yard.png` now shows the active `Kiln Yard` marker tied to central crate-island pressure.
 - `14-sandline-loading-bay-marker.png` shows the north loading/shutter marker treatment for `Shutter Lift`.
-- `15-sandline-water-tower-gate-marker.png` shows the active `Water Tower Gate` extraction threshold, low sign, hostage actors, and low barrier context.
-- The marker treatment stays procedural and primitive: worn floor rings, utility plates, low state panels, low signs, and muted industrial colors. No waypoint beam, neon objective UI, minimap/radar clone, copied site mark, or external asset was added.
+- `15-sandline-water-tower-gate-marker.png` shows the active `Water Tower Gate` extraction threshold, ground stencil, hostage actors, and low barrier context.
+- The marker treatment stays procedural and primitive: worn floor rings, utility plates, low state panels, ground stencils, and muted industrial colors. No waypoint beam, neon objective UI, minimap/radar clone, copied site mark, or external asset was added.
 - Fresh final reruns passed `npm run typecheck`, `npm run build`, `npm test`, and a bounded standalone `npm run qa:final`. The standalone `qa:final` pass refreshed the marker screenshots from current `dist` and completed the full browser harness.
+
+2026-06-03 objective-marker follow-up:
+
+- Objective labels were moved from freestanding vertical planes to surface-height-aware ground stencils.
+- Objective cues now sit on detected broad floor/deck surfaces near each focus point, so markers remain visible on raised floor primitives without floating or anchoring to spawn beacons.
+- Active objective locations use stronger floor-zone opacity, bracket cues, and stencil opacity while inactive alternatives stay secondary.
+- Focused browser verification captured `Kiln Yard`, `Loading Crew`, and `Water Tower Gate` markers with `labelMount: ground-stencil`, `floatingLabel: false`, `objectiveCue: floor-zone`, and non-beacon surface sources such as `South spawn slab`.
+- Follow-up verification passed `npm run typecheck`, `npm run build`, the focused marker probe, and the full `npm test` wrapper. The full wrapper refreshed the tracked screenshots from current `dist`.
 
 ## Commands Run
 

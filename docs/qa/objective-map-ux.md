@@ -210,14 +210,16 @@ Subgoal: `add-world-objective-markers-and-label-match`
 
 ### Implementation
 
-`src/game/objectiveMarkers.ts` now owns Sandline-compatible world objective marker creation, visual state updates, and typed marker debug records.
+`src/game/objectiveMarkers.ts` now owns world objective marker creation, visual state updates, and typed marker debug records.
 
-- Relay Charge sites are created from `map.objectives.bomb.sites`, so both `Kiln Yard` and `Shutter Lift` get procedural floor rings, utility plates, low state panels, and readable low signs tied to their mission labels.
+- Relay Charge sites are created from `map.objectives.bomb.sites`, so both `Kiln Yard` and `Shutter Lift` get procedural floor-zone rings, utility plates, low state panels, and ground-stencil labels tied to their mission labels.
 - Evac Escort markers are created from `map.objectives.hostage`, so `Generator Workers`, `Loading Crew`, and `Water Tower Gate` get holding-zone or extraction-threshold treatment from the same objective metadata used by the HUD.
+- Marker placement derives its Y position from broad floor/deck primitives near the objective focus height. Decorative cylinders, spawn beacons, small props, and overhead beams are ignored, which keeps labels and objective cues attached to raised slabs without floating.
 - Marker visuals are original primitive/procedural geometry and canvas text only. No external assets, copied Counter-Strike site marks, minimap/radar clone, waypoint beam, hologram, or neon objective UI was added.
-- Active objectives are slightly more legible than inactive alternatives. Runtime phases such as planted/defusing/securing/extracting change the marker state panel color/scale in a restrained way.
+- Active objectives are more legible than inactive alternatives through stronger floor-zone opacity, bracket cues, and label opacity. Runtime phases such as planted/defusing/securing/extracting change the marker state panel color/scale in a restrained way.
 - `src/game/localMatch.ts` creates the marker set after scene construction and updates it from live `BombRuntimeState`, `HostageRuntimeState`, and `RoundState`.
-- `debugSnapshot().objectiveMarkers` now reports marker `id`, `kind`, `label`, `focusId`, position, radius, active/visible flags, phase, team role, state hint, and HUD-label match evidence.
+- `debugSnapshot().objectiveMarkers` now reports marker `id`, `kind`, `label`, `focusId`, position, radius, active/visible flags, phase, team role, state hint, HUD-label match evidence, `labelMount: ground-stencil`, `floatingLabel: false`, `objectiveCue: floor-zone`, and rendered surface source/height for objective markers.
+- Escort route debug entries no longer claim ground-stencil presentation until route markers are actually rendered by `createObjectiveMarkerSet`.
 
 ### Browser QA Evidence
 
@@ -228,6 +230,7 @@ Subgoal: `add-world-objective-markers-and-label-match`
 - After local planting, the active Relay marker reports `stateHint: site-armed`.
 - Sandline round-two Evac Escort exposes active `Loading Crew` and active `Water Tower Gate`, with marker labels matching `Loading Crew to Water Tower Gate`.
 - The active hostage marker reports `stateHint: secure-zone`; the extraction marker reports `extract-threshold`, then `extracting` during extraction progress.
+- Marker assertions also require ground-mounted labels, non-floating marker presentation, floor-zone objective cues, rendered surface source/height, and non-beacon anchoring.
 
 The QA harness also refreshes marker screenshots:
 
@@ -252,6 +255,7 @@ Results:
 - `npm run build`: passed with the known non-blocking Vite `localMatch` chunk-size warning.
 - Initial marker-subgoal reruns exposed a later AI sightline/recovery wait outside the marker work.
 - Final 2026-06-02 reruns now pass that later section: `npm test` rebuilt successfully and completed the full browser QA harness, and a bounded standalone `npm run qa:final` returned exit `0` while refreshing screenshots from current `dist`.
+- 2026-06-03 follow-up for ground-stencil markers: `npm run typecheck`, `npm run build`, a focused headless browser marker probe, and the full `npm test` wrapper passed. The probe confirmed `Water Tower Gate` anchors to `South spawn slab`, not a spawn beacon, route debug entries do not expose marker-presentation fields, and the full wrapper refreshed the tracked screenshot set.
 
 ## Reachability Update: Sandline West Route
 

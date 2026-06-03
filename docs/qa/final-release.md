@@ -1,6 +1,6 @@
 # Final Release QA
 
-Date: `2026-06-02`
+Date: `2026-06-03`
 
 ## Scope
 
@@ -11,7 +11,7 @@ Final verification for the current presentation and release guardrail pass cover
 - solo-local smarter-bot difficulty selection with `easy`, `medium`, and `hard` (`medium` default)
 - solo bots using the same walk, crouch, jump, gravity, and collision contract as the player
 - smarter tactical-AI coverage for blocked LOS safety, delayed communication, repositioning, stuck recovery, objective pressure, and bounded solo-round resolution
-- human-like map-aware solo bot coverage for graph waypoint routing, non-repeated stuck jumps, independent strategies, damage-driven strategy switching, Relay carrier/support/defuse intent, and Evac hostage/extraction intent
+- human-like map-aware solo bot coverage for graph waypoint routing, non-repeated stuck jumps, independent strategies, target-claim deconfliction, damage-driven strategy switching, Relay carrier/support/defuse intent, and Evac hostage/extraction intent
 - objective marker visibility, HUD/world label matching, Sandline west-route reachability, roster-wide objective reachability, and final objective-map UX evidence
 - localMatch modularization ownership for objective markers, reachability, objective-bot evidence, HUD/debug snapshots, hostage actors, and scene setup
 - compact in-match HUD behavior, hold-Tab operations board, and viewport fullscreen control
@@ -25,7 +25,7 @@ Final verification for the current presentation and release guardrail pass cover
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh objective-map UX and smarter-bot verifier reruns were completed on `2026-06-02`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper. Broader cloud/manual multiplayer command evidence remains from the earlier release pass and is not re-claimed as newly rerun in this bot-focused update.
+Fresh objective-map UX and smarter-bot verifier reruns were completed on `2026-06-02`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper. A full `npm test` wrapper rerun was completed again on `2026-06-03` for the solo bot target-deconfliction update. Broader cloud/manual multiplayer command evidence remains from the earlier release pass and is not re-claimed as newly rerun in this bot-focused update.
 
 ## Commands Run
 
@@ -45,7 +45,7 @@ Results on the current tree:
 
 Non-blocking note:
 
-- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `689.10 kB`. This did not block verification.
+- The standalone build and the `npm test` build step repeated the existing Vite chunk-size warning for the minified `localMatch` bundle at `700.62 kB`. This did not block verification.
 
 ## Browser-Only Guardrails
 
@@ -93,8 +93,9 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - all five shipped maps loaded round-one bomb metadata live
   - each map preserved distinct spawn separation: `29.17`, `30.41`, `28.16`, `28.07`, and `28.16` units
 - Objective markers and reachability:
-  - Sandline exposes world objective marker debug state, active/inactive marker entries, HUD-label match evidence, and active-state marker hints for armed/extracting phases
-  - final screenshots include the central `Kiln Yard` site marker, `Shutter Lift`/loading-bay marker, and `Water Tower Gate` extraction threshold marker
+  - Sandline exposes world objective marker debug state, active/inactive marker entries, HUD-label match evidence, active-state marker hints for armed/extracting phases, and a ground-stencil/no-floating-label/non-beacon-surface marker contract
+  - final screenshots include the central `Kiln Yard` floor-zone marker, `Shutter Lift`/loading-bay ground marker, and `Water Tower Gate` extraction threshold marker
+  - the 2026-06-03 ground-stencil follow-up passed typecheck/build/focused marker probe, then passed the full `npm test` wrapper and refreshed the tracked screenshot set
   - every shipped map reported zero blocked route/objective reachability checks; Sandline reported `38`, and Transit Crates, Breaker Vault, Quarry Slip, and Ledger Annex each reported `34`
   - Sandline west-route assertions passed for `Water Tower Court` to `Generator Hall`, `Generator Hall` to `Central Yard`, and `Blue Shutter Bay` to `Generator Hall`
 - Round shell:
@@ -116,7 +117,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - the opening objective bot already held a live crouch state, and deterministic bot movement samples matched the player-equivalent tuning: walk `8.6u/s`, crouch `4.82u/s`, gravity `13.6`, jump velocity `5.25`
   - deterministic bot jump samples proved grounded start, airborne phase, readable peak, safe landing, and upright posture with root-pitch/body-yaw separated from weapon pitch while aiming
   - blocker `Crate stack west` prevented through-wall fire at `visibility: 0`
-  - delayed shared contact kept the staged receiver on `patrol` before delivery, then let it switch to `investigate` or `pursue` only after the communication lag elapsed
+  - delayed shared contact kept the staged receiver on `patrol` before delivery, then let receivers switch only after the communication lag elapsed and split into distinct target-claim route buckets instead of stacking on the same last-known point
   - pressure on the staged enemy produced a real `reposition` with reason `angle`, then a `pursue` state after lost sight
   - a blocked traversal case recovered through a graph route to `Central Yard route offset` instead of teleporting, with `routeUsesGraph: true`, `routeReason: partial-route`, and `jumpCount: 0`
   - player damage forced a strategy switch to `cover_reposition` with reason `recent-damage`
@@ -124,8 +125,8 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - bot fire interval now matches the player fire interval at `0.18s`, and enemy damage now matches player damage at `34`
   - staged hard combat fired `6` shots over `1.66s` while still producing both hits and misses
   - an enemy-side `Kiln Yard` plant case proved objective-aware pressure and bounded solo-round resolution without deadlock
-  - Relay-aware staging proved carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, distinct support targets, and defender `defuse_rotate` during planted/defusing state
-  - Evac-aware staging proved rescuer `escort_extract`, a graph route to declared route label `Drain Underpass` through `Loading Bay route offset`, escort support intent, and defender `hostage_cluster_anchor` / `hostage_lane_probe` intent
+  - Relay-aware staging proved carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, an offset `carrier-escort-offset` support lane, a separate screen target, and defender `defuse_rotate` during planted/defusing state
+  - Evac-aware staging proved rescuer `escort_extract`, a graph route to declared route label `Drain Underpass` through `Loading Bay route offset`, escort support intent, attacking-escort extraction completion, and defender `hostage_cluster_anchor` / `hostage_lane_probe` intent
   - shot model produced both hits and misses, with hit-chance dropping from `0.722` close-standing to `0.262` far-moving and `0.449` crouched-partial
   - enemy live fire emitted a playable distance-normalized world-fire audio event
 - Shared-room fallback:
@@ -141,7 +142,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-06-02`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-06-03`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`

@@ -203,6 +203,10 @@ const LOCAL_REPLAY_DELTA_MAX_AGE_MS = 4_000;
 const LOCAL_RECONCILE_SNAP_DISTANCE = 2;
 const PLAYER_NOISE_INTERVAL = 0.28;
 const PLAYER_NOISE_HEARING_RADIUS = 19;
+const ENEMY_TARGET_MIN_SPACING = 2.75;
+const ENEMY_CARRIER_ESCORT_BACK_OFFSET = 3.1;
+const ENEMY_CARRIER_ESCORT_SIDE_OFFSET = 2.4;
+const ENEMY_CONTACT_SCREEN_OFFSET = 4.2;
 const COMBATANT_AIM_PITCH_LIMIT = Math.PI * 0.34;
 const FIRE_INTERVAL_MS = FIRE_INTERVAL * 1000;
 const RELOAD_DURATION_MS = RELOAD_DURATION * 1000;
@@ -289,11 +293,30 @@ interface LocalMatchOptions {
 }
 
 type EnemyJumpReason = "qa" | "stuck-recovery";
+type EnemyTargetAdjustmentReason =
+  | "none"
+  | "carrier-escort-offset"
+  | "claimed-contact-route"
+  | "claimed-objective-route"
+  | "claimed-target-offset";
 
 interface EnemyRecoveryTarget {
   position: THREE.Vector3;
   label: string;
   nodeId: string | null;
+}
+
+interface EnemyTargetClaimRegistry {
+  buckets: Set<string>;
+  positions: THREE.Vector3[];
+}
+
+interface EnemyTargetAssignment {
+  position: THREE.Vector3;
+  label: string;
+  bucket: string | null;
+  adjusted: boolean;
+  reason: EnemyTargetAdjustmentReason;
 }
 
 interface EnemyActor {
@@ -329,6 +352,9 @@ interface EnemyActor {
     stance: EnemyStance;
     targetLabel: string;
     targetPosition: THREE.Vector3;
+    targetClaimBucket: string | null;
+    targetAdjusted: boolean;
+    targetAdjustmentReason: EnemyTargetAdjustmentReason;
     objectiveAnchor: TacticalAnchor;
     patrolRoute: TacticalAnchor[];
     patrolIndex: number;
@@ -963,6 +989,11 @@ export class LocalMatch {
           stance: enemy.ai.stance,
           targetLabel: enemy.ai.targetLabel,
           targetPosition: this.toPoint(enemy.ai.targetPosition, 0),
+          targetClaim: {
+            bucket: enemy.ai.targetClaimBucket,
+            adjusted: enemy.ai.targetAdjusted,
+            reason: enemy.ai.targetAdjustmentReason,
+          },
           objectiveLabel: enemy.ai.objectiveAnchor.label,
           patrolRoute: enemy.ai.patrolRoute.map((anchor) => anchor.label),
           patrolIndex: enemy.ai.patrolIndex,
@@ -2802,6 +2833,9 @@ export class LocalMatch {
           stance: "standing",
           targetLabel: "Spawn",
           targetPosition: spawnPoint.clone(),
+          targetClaimBucket: null,
+          targetAdjusted: false,
+          targetAdjustmentReason: "none",
           objectiveAnchor: resolveObjectiveAnchor(
             this.tacticalProfile,
             this.map,
@@ -2961,6 +2995,9 @@ export class LocalMatch {
         ? objectiveAnchor.position
         : patrolRoute[enemy.ai.patrolIndex]?.position ?? objectiveAnchor.position,
     );
+    enemy.ai.targetClaimBucket = null;
+    enemy.ai.targetAdjusted = false;
+    enemy.ai.targetAdjustmentReason = "none";
     enemy.ai.lastKnownPlayerPosition = null;
     enemy.ai.lastHeardPosition = null;
     enemy.ai.lastSeenAt = Number.NEGATIVE_INFINITY;
@@ -4551,16 +4588,48 @@ export class LocalMatch {
     }
 
     if (this.hostageState.phase === "escorting") {
-      const rescuer = this.objectiveEnemyById(this.hostageState.rescuerId);
-      if (
-        rescuer &&
-        this.allHostagesAtExtraction() &&
-        this.distanceToExtractionZone(rescuer.avatar.group.position) <=
-          this.hostageState.extraction.radius
-      ) {
-        this.startHostageExtraction(now, rescuer.id, rescuer.name);
-      }
+      this.tryStartEnemyHostageExtraction(now);
     }
+  }
+
+  private tryStartEnemyHostageExtraction(now: number): boolean {
+    if (
+      this.hostageState?.phase !== "escorting" ||
+      this.activeMode !== "local" ||
+      (this.qaInvulnerable && !this.qaAllowEnemyObjectiveActions) ||
+      !this.allHostagesAtExtraction()
+    ) {
+      return false;
+    }
+
+    const recordedRescuer = this.objectiveEnemyById(this.hostageState.rescuerId);
+    const recordedRescuerInZone =
+      recordedRescuer &&
+      this.distanceToExtractionZone(recordedRescuer.avatar.group.position) <=
+        this.hostageState.extraction.radius;
+    const extractor =
+      (recordedRescuerInZone ? recordedRescuer : null) ??
+      this.enemies
+        .filter(
+          (enemy) =>
+            enemy.alive &&
+            enemy.teamId === this.hostageState?.attackingTeam &&
+            this.distanceToExtractionZone(enemy.avatar.group.position) <=
+              (this.hostageState?.extraction.radius ?? 0),
+        )
+        .sort(
+          (left, right) =>
+            this.distanceToExtractionZone(left.avatar.group.position) -
+            this.distanceToExtractionZone(right.avatar.group.position),
+        )[0] ??
+      null;
+
+    if (!extractor) {
+      return false;
+    }
+
+    this.startHostageExtraction(now, extractor.id, extractor.name);
+    return true;
   }
 
   private hostageObjectiveAuthority(): boolean {
@@ -4711,6 +4780,8 @@ export class LocalMatch {
       hostages: nextHostages,
       updatedAt: now,
     };
+
+    this.tryStartEnemyHostageExtraction(now);
   }
 
   private updateHostageObjectiveState(delta: number, now: number): void {
@@ -6027,6 +6098,356 @@ export class LocalMatch {
     return fallback;
   }
 
+  private enemySideSign(enemy: EnemyActor): number {
+    if (enemy.ai.role === "flank") {
+      return 1;
+    }
+
+    if (enemy.ai.role === "route") {
+      return -1;
+    }
+
+    return enemy.ai.profile.seed % 2 === 0 ? 1 : -1;
+  }
+
+  private targetBucketFromPosition(kind: string, label: string, position: THREE.Vector3): string {
+    return `${kind}:${label}:${Math.round(position.x * 2)}:${Math.round(position.z * 2)}`;
+  }
+
+  private targetBucketForSelection(
+    decision: EnemyStrategyDecision,
+    behavior: EnemyBehavior,
+    targetLabel: string,
+    targetPosition: THREE.Vector3,
+    moveTowardTarget: boolean,
+  ): string | null {
+    if (!moveTowardTarget) {
+      return null;
+    }
+
+    if (
+      decision.strategy === "pursue_contact" ||
+      targetLabel === "Sound contact" ||
+      targetLabel === "Last known position" ||
+      targetLabel === "Last seen angle" ||
+      targetLabel === "Clear shot" ||
+      targetLabel === "Partial angle"
+    ) {
+      return this.targetBucketFromPosition("contact", "shared", targetPosition);
+    }
+
+    if (decision.objectiveIntent === "carrier_escort") {
+      return this.targetBucketFromPosition("escort", targetLabel, targetPosition);
+    }
+
+    if (
+      behavior === "objective" ||
+      decision.strategy === "anchor_site" ||
+      decision.strategy === "pressure_objective" ||
+      decision.strategy === "objective_commit" ||
+      decision.objectiveIntent.startsWith("carrier_") ||
+      decision.objectiveIntent.startsWith("site_") ||
+      decision.objectiveIntent.startsWith("hostage_") ||
+      decision.objectiveIntent.startsWith("escort_") ||
+      decision.objectiveIntent.startsWith("extraction_")
+    ) {
+      return this.targetBucketFromPosition("objective", targetLabel, targetPosition);
+    }
+
+    if (behavior === "patrol" || behavior === "investigate") {
+      return this.targetBucketFromPosition("route", targetLabel, targetPosition);
+    }
+
+    return null;
+  }
+
+  private activeRouteAnchorsForEnemy(
+    enemy: EnemyActor,
+    decision: EnemyStrategyDecision,
+  ): TacticalAnchor[] {
+    const anchors: TacticalAnchor[] = [];
+    const add = (anchor: TacticalAnchor | null | undefined): void => {
+      if (!anchor) {
+        return;
+      }
+
+      if (anchors.some((entry) => entry.focusId === anchor.focusId && entry.kind === anchor.kind)) {
+        return;
+      }
+
+      anchors.push(anchor);
+    };
+    const addRouteIds = (routeIds: string[]): void => {
+      const ordered = enemy.ai.role === "flank" ? [...routeIds].reverse() : routeIds;
+      for (const routeId of ordered) {
+        add(this.anchorForRouteId(routeId));
+      }
+    };
+
+    if (this.roundState.activeMission.missionType === "bomb" && this.bombState) {
+      addRouteIds(this.bombSiteRouteIds());
+    } else if (this.roundState.activeMission.missionType === "hostage" && this.hostageState) {
+      const hostageMoving =
+        this.hostageState.phase === "escorting" ||
+        this.hostageState.phase === "extracting";
+      if (
+        hostageMoving &&
+        (decision.objectiveIntent.startsWith("escort_") ||
+          decision.objectiveIntent.startsWith("extraction_"))
+      ) {
+        addRouteIds(this.hostageState.extraction.routeIds);
+      }
+      addRouteIds(this.hostageClusterRouteIds());
+    }
+
+    for (const anchor of enemy.ai.patrolRoute) {
+      add(anchor);
+    }
+    for (const anchor of this.tacticalProfile.routeAnchors) {
+      add(anchor);
+    }
+
+    return anchors;
+  }
+
+  private targetPositionClaimed(
+    registry: EnemyTargetClaimRegistry,
+    position: THREE.Vector3,
+  ): boolean {
+    const flat = position.clone().setY(0);
+    return registry.positions.some(
+      (claimed) => claimed.distanceTo(flat) < ENEMY_TARGET_MIN_SPACING,
+    );
+  }
+
+  private enemyCanRouteTo(enemy: EnemyActor, position: THREE.Vector3, label: string): boolean {
+    const plan = planTacticalRoute({
+      graph: this.tacticalRouteGraph,
+      world: this.collisionWorld,
+      start: enemy.avatar.group.position.clone().setY(0),
+      destination: position,
+      destinationLabel: label,
+      radius: PLAYER_RADIUS,
+      bodyHeight: this.enemyBodyHeight(enemy),
+    });
+    return plan.reason !== "unreachable";
+  }
+
+  private chooseUnclaimedRouteTarget(
+    enemy: EnemyActor,
+    decision: EnemyStrategyDecision,
+    registry: EnemyTargetClaimRegistry,
+  ): TacticalAnchor | null {
+    for (const anchor of this.activeRouteAnchorsForEnemy(enemy, decision)) {
+      const bucket = this.targetBucketFromPosition("route", anchor.label, anchor.position);
+      if (
+        registry.buckets.has(bucket) ||
+        this.targetPositionClaimed(registry, anchor.position) ||
+        !this.enemyCanRouteTo(enemy, anchor.position, anchor.label)
+      ) {
+        continue;
+      }
+
+      return anchor;
+    }
+
+    return null;
+  }
+
+  private carrierEscortTarget(
+    enemy: EnemyActor,
+    carrier: EnemyActor,
+    siteAnchor: TacticalAnchor,
+  ): TacticalAnchor {
+    const carrierFeet = carrier.avatar.group.position.clone().setY(0);
+    const toSite = siteAnchor.position.clone().sub(carrierFeet).setY(0);
+    if (toSite.lengthSq() < 0.001) {
+      toSite.copy(carrier.lookDirection).setY(0);
+    }
+    if (toSite.lengthSq() < 0.001) {
+      toSite.set(0, 0, -1);
+    }
+    toSite.normalize();
+
+    const right = new THREE.Vector3(toSite.z, 0, -toSite.x).normalize();
+    const sideSign = this.enemySideSign(enemy);
+    const candidates = [
+      carrierFeet
+        .clone()
+        .add(toSite.clone().multiplyScalar(-ENEMY_CARRIER_ESCORT_BACK_OFFSET))
+        .add(right.clone().multiplyScalar(ENEMY_CARRIER_ESCORT_SIDE_OFFSET * sideSign)),
+      carrierFeet
+        .clone()
+        .add(right.clone().multiplyScalar(ENEMY_CARRIER_ESCORT_SIDE_OFFSET * sideSign)),
+      carrierFeet
+        .clone()
+        .add(toSite.clone().multiplyScalar(-(ENEMY_CARRIER_ESCORT_BACK_OFFSET + 1.2))),
+    ];
+
+    const position =
+      candidates
+        .map((candidate) =>
+          findOpenGroundPosition(
+            this.collisionWorld,
+            candidate,
+            PLAYER_RADIUS,
+            this.enemyBodyHeight(enemy),
+          ),
+        )
+        .find((candidate) => candidate.distanceTo(carrierFeet) >= ENEMY_TARGET_MIN_SPACING) ??
+      findOpenGroundPosition(
+        this.collisionWorld,
+        candidates[0],
+        PLAYER_RADIUS,
+        this.enemyBodyHeight(enemy),
+      );
+
+    return {
+      id: `objective:escort:${carrier.id}:offset:${enemy.id}`,
+      focusId: siteAnchor.focusId,
+      label: `${carrier.name} escort lane`,
+      kind: "objective",
+      position,
+    };
+  }
+
+  private offsetTargetNear(
+    enemy: EnemyActor,
+    targetPosition: THREE.Vector3,
+    targetLabel: string,
+    registry: EnemyTargetClaimRegistry,
+  ): TacticalAnchor | null {
+    const enemyFeet = enemy.avatar.group.position.clone().setY(0);
+    const toTarget = targetPosition.clone().sub(enemyFeet).setY(0);
+    if (toTarget.lengthSq() < 0.001) {
+      toTarget.copy(enemy.lookDirection).setY(0);
+    }
+    if (toTarget.lengthSq() < 0.001) {
+      toTarget.set(0, 0, -1);
+    }
+    toTarget.normalize();
+
+    const right = new THREE.Vector3(toTarget.z, 0, -toTarget.x).normalize();
+    const sideSign = this.enemySideSign(enemy);
+    const preferred = targetPosition
+      .clone()
+      .setY(0)
+      .add(toTarget.clone().multiplyScalar(-ENEMY_CONTACT_SCREEN_OFFSET))
+      .add(right.multiplyScalar((ENEMY_CONTACT_SCREEN_OFFSET * 0.72) * sideSign));
+    const position = findOpenGroundPosition(
+      this.collisionWorld,
+      preferred,
+      PLAYER_RADIUS,
+      this.enemyBodyHeight(enemy),
+    );
+    if (
+      this.targetPositionClaimed(registry, position) ||
+      !this.enemyCanRouteTo(enemy, position, `${targetLabel} side angle`)
+    ) {
+      return null;
+    }
+
+    return {
+      id: `offset:${enemy.id}:${targetLabel}`,
+      focusId: enemy.ai.objectiveAnchor.focusId,
+      label: `${targetLabel} side angle`,
+      kind: "route",
+      position,
+    };
+  }
+
+  private deconflictEnemyTarget(input: {
+    enemy: EnemyActor;
+    decision: EnemyStrategyDecision;
+    behavior: EnemyBehavior;
+    targetPosition: THREE.Vector3;
+    targetLabel: string;
+    moveTowardTarget: boolean;
+    registry: EnemyTargetClaimRegistry;
+  }): EnemyTargetAssignment {
+    const originalBucket = this.targetBucketForSelection(
+      input.decision,
+      input.behavior,
+      input.targetLabel,
+      input.targetPosition,
+      input.moveTowardTarget,
+    );
+    let assignment: EnemyTargetAssignment = {
+      position: input.targetPosition.clone(),
+      label: input.targetLabel,
+      bucket: originalBucket,
+      adjusted: false,
+      reason: "none",
+    };
+
+    if (input.decision.objectiveIntent === "carrier_escort" && this.bombState) {
+      const siteAnchor =
+        this.anchorForFocus(this.bombState.site.focusId, this.bombState.site.label) ??
+        input.enemy.ai.objectiveAnchor;
+      const carrier = this.objectiveEnemyById(this.bombState.carrierId);
+      if (carrier && carrier !== input.enemy) {
+        const escortTarget = this.carrierEscortTarget(input.enemy, carrier, siteAnchor);
+        assignment = {
+          position: escortTarget.position.clone(),
+          label: escortTarget.label,
+          bucket: this.targetBucketFromPosition("escort", escortTarget.label, escortTarget.position),
+          adjusted: true,
+          reason: "carrier-escort-offset",
+        };
+      }
+    }
+
+    const criticalObjectiveCollapse =
+      input.decision.objectiveIntent === "defuse_rotate" ||
+      input.decision.reason === "planted-objective";
+    const bucketClaimed = assignment.bucket ? input.registry.buckets.has(assignment.bucket) : false;
+    const positionClaimed = this.targetPositionClaimed(input.registry, assignment.position);
+    if (
+      assignment.bucket &&
+      !criticalObjectiveCollapse &&
+      (bucketClaimed || positionClaimed)
+    ) {
+      const routeTarget = this.chooseUnclaimedRouteTarget(
+        input.enemy,
+        input.decision,
+        input.registry,
+      );
+      if (routeTarget) {
+        const contactClaim = assignment.bucket.startsWith("contact:");
+        assignment = {
+          position: routeTarget.position.clone(),
+          label: routeTarget.label,
+          bucket: this.targetBucketFromPosition("route", routeTarget.label, routeTarget.position),
+          adjusted: true,
+          reason: contactClaim ? "claimed-contact-route" : "claimed-objective-route",
+        };
+      } else {
+        const offsetTarget = this.offsetTargetNear(
+          input.enemy,
+          assignment.position,
+          assignment.label,
+          input.registry,
+        );
+        if (offsetTarget) {
+          assignment = {
+            position: offsetTarget.position.clone(),
+            label: offsetTarget.label,
+            bucket: this.targetBucketFromPosition("route", offsetTarget.label, offsetTarget.position),
+            adjusted: true,
+            reason: "claimed-target-offset",
+          };
+        }
+      }
+    }
+
+    if (assignment.bucket) {
+      input.registry.buckets.add(assignment.bucket);
+      input.registry.positions.push(assignment.position.clone().setY(0));
+    }
+
+    return assignment;
+  }
+
   private objectiveTargetForEnemy(
     enemy: EnemyActor,
     decision: EnemyStrategyDecision,
@@ -6402,6 +6823,10 @@ export class LocalMatch {
       },
       {},
     );
+    const targetClaimRegistry: EnemyTargetClaimRegistry = {
+      buckets: new Set(),
+      positions: [],
+    };
 
     for (const enemy of this.enemies) {
       enemy.recoil = THREE.MathUtils.damp(enemy.recoil, 0, 12, delta);
@@ -6761,6 +7186,22 @@ export class LocalMatch {
         targetDistance = targetPosition.clone().sub(enemyFeet).setY(0).length();
       }
 
+      const targetAssignment = this.deconflictEnemyTarget({
+        enemy,
+        decision: strategyDecision,
+        behavior,
+        targetPosition,
+        targetLabel,
+        moveTowardTarget,
+        registry: targetClaimRegistry,
+      });
+      targetPosition = targetAssignment.position;
+      targetLabel = targetAssignment.label;
+      targetDistance = targetPosition.clone().sub(enemyFeet).setY(0).length();
+      enemy.ai.targetClaimBucket = targetAssignment.bucket;
+      enemy.ai.targetAdjusted = targetAssignment.adjusted;
+      enemy.ai.targetAdjustmentReason = targetAssignment.reason;
+
       const routePlan = this.updateEnemyRoutePlan(enemy, behavior, targetPosition, targetLabel, now);
       const moveTargetPosition = routePlan.waypoint.clone();
       const waypointDistance = moveTargetPosition.distanceTo(enemyFeet);
@@ -6970,17 +7411,7 @@ export class LocalMatch {
       ) {
         this.startBombDefuse(now, enemy.id, enemy.name);
       }
-      if (
-        this.hostageState?.phase === "escorting" &&
-        enemy.alive &&
-        enemy.id === this.hostageState.rescuerId &&
-        this.activeMode === "local" &&
-        (!this.qaInvulnerable || this.qaAllowEnemyObjectiveActions) &&
-        this.allHostagesAtExtraction() &&
-        this.distanceToExtractionZone(enemy.avatar.group.position) <= this.hostageState.extraction.radius
-      ) {
-        this.startHostageExtraction(now, enemy.id, enemy.name);
-      }
+      this.tryStartEnemyHostageExtraction(now);
 
       if (behavior !== enemy.ai.behavior) {
         enemy.ai.behaviorEnteredAt = now;
@@ -7004,6 +7435,9 @@ export class LocalMatch {
       enemy.ai.stance = stance;
       enemy.ai.targetLabel = targetLabel;
       enemy.ai.targetPosition.copy(targetPosition);
+      enemy.ai.targetClaimBucket = targetAssignment.bucket;
+      enemy.ai.targetAdjusted = targetAssignment.adjusted;
+      enemy.ai.targetAdjustmentReason = targetAssignment.reason;
 
       const currentEnemyEye = this.enemyEyePosition(enemy);
       const lookTarget = canSeePlayer

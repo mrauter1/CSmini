@@ -25,6 +25,7 @@ Browser-only tactical FPS homage built on Vite, TypeScript, and Three.js. The cu
   - pursue
   - graph waypoint routing around blocked direct paths
   - independent anchor, route, and flank strategy selection
+  - target deconfliction so shared-contact responders and objective escorts avoid stacking on the same point when a useful lane is available
   - map-aware Relay Charge carrier/escort/defuse intent
   - map-aware Evac Escort rescue/escort/extraction guard intent
 

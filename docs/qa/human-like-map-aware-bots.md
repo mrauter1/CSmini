@@ -1,10 +1,10 @@
 # Human-Like Map-Aware Bots Analysis
 
-Date: 2026-06-02
+Date: 2026-06-03
 
 ## Scope
 
-This artifact covers the planning subgoal for the human-like solo bot pass. It is based on the current repository docs and implementation, with no gameplay edits in this pass.
+This artifact covers the planning subgoal for the human-like solo bot pass, plus the follow-up target-deconfliction slice implemented on 2026-06-03.
 
 The active implementation target remains Dustline Protocol's browser-only Vite/TypeScript/Three.js tactical FPS homage. The plan preserves `three` as the only runtime dependency, static Render-compatible output, original maps/assets/names, current controls, short round structure, shared player-equivalent movement, and the solo bot difficulty contract where `medium` is the clean-load default and the latest valid value restores from `localStorage` when storage works.
 
@@ -19,7 +19,7 @@ The active implementation target remains Dustline Protocol's browser-only Vite/T
 - `src/game/rounds.ts` owns the round shell: briefing, active, resolution, elimination/timeout resolution, and mission rotation through `resolveActiveMission()`.
 - `src/game/bombState.ts` owns Relay Charge runtime state: carrier assignment, carried/planting/planted/defusing phases, timers, serialization, carrier synchronization, and progress.
 - `src/game/hostageState.ts` owns Evac Escort runtime state: cluster, extraction zone, route points built from declared route IDs, hostage slots, securing/escorting/extracting phases, serialization, and progress.
-- `scripts/qa/finalVerification.mjs` now proves the route-graph slice: a blocked direct route produces a non-direct graph/partial route waypoint, debug snapshots expose route/stuck/recovery/jump-suppression state, and the staged obstruction does not repeat stuck-recovery jumps. It still does not yet prove independent strategy diversity, strategy switching because of objective/health/team signals, or hostage-specific bot routing intent.
+- `scripts/qa/finalVerification.mjs` now proves route-graph traversal, independent strategy/profile debug data, target-claim deconfliction for shared-contact responders and carrier escort support, objective-aware Relay/Evac intent, and the staged obstruction's non-repeated stuck-recovery jump behavior.
 
 ## Current Navigation Model
 
@@ -69,7 +69,7 @@ Repeated jump vulnerability comes from missing failed-jump memory. A `stuck-reco
 
 Exposure near walls comes from cover scoring without path and escape context. `chooseRepositionAnchor()` can find anchors that break sight or create a better angle, but it does not reason about connected escape routes, known player lines across the planned path, teammate support, objective urgency, or whether the bot will step through a dangerous open lane to reach the anchor.
 
-Synchronized decisions come from fixed role labels and shared stimuli. The three bots start as anchor/route/flank and patrol routes vary by index, but the behavior tree, timers, objective anchor, sound priority, and contact handling are otherwise similar. A delayed contact is broadcast to all eligible teammates after the same delay, and there is no reservation system to avoid duplicate route, cover, or recovery choices.
+Synchronized decisions come from fixed role labels and shared stimuli. The three bots start as anchor/route/flank and patrol routes vary by index, but the behavior tree, timers, objective anchor, sound priority, and contact handling are otherwise similar. The 2026-06-03 target-claim registry now avoids duplicate shared-contact and objective escort targets when route alternatives or offset lanes are available; broader cover and recovery reservations remain future work.
 
 Stale sound/contact can override objective pressure too easily. Last-heard and last-known positions drive `investigate` and `pursue` for fixed windows. Bomb/hostage state changes update the objective anchor and range-gated action checks, but they do not yet produce a higher-level strategy priority such as "ignore stale sound and rotate to planted charge" or "screen the hostage rescuer."
 

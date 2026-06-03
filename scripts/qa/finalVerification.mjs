@@ -488,6 +488,12 @@ function assertObjectiveMarker(state, { kind, label, active = undefined, hudLabe
   assert(marker.visible === true, `Expected ${label} marker to be visible`);
   assert(typeof marker.radius === "number" && marker.radius > 0, `Expected ${label} marker to expose radius`);
   assert(marker.position, `Expected ${label} marker to expose position`);
+  assert(marker.labelMount === "ground-stencil", `Expected ${label} marker label to be ground-mounted`);
+  assert(marker.floatingLabel === false, `Expected ${label} marker label not to float`);
+  assert(marker.objectiveCue === "floor-zone", `Expected ${label} marker to expose a floor-zone cue`);
+  assert(typeof marker.surfaceY === "number", `Expected ${label} marker to expose a rendered surface height`);
+  assert(typeof marker.surfaceSource === "string" && marker.surfaceSource.length > 0, `Expected ${label} marker to expose a rendered surface source`);
+  assert(!/beacon/i.test(marker.surfaceSource), `Expected ${label} marker not to anchor to a spawn beacon`);
   if (active !== undefined) {
     assert(marker.active === active, `Expected ${label} active marker state ${active}, saw ${marker.active}`);
   }
@@ -498,6 +504,17 @@ function assertObjectiveMarker(state, { kind, label, active = undefined, hudLabe
     );
   }
   return marker;
+}
+
+function assertEscortRoutesDoNotClaimWorldMarkers(state) {
+  for (const marker of objectiveMarkerEntries(state, "escort-route")) {
+    assert(
+      marker.labelMount === undefined &&
+        marker.floatingLabel === undefined &&
+        marker.objectiveCue === undefined,
+      `Expected escort route ${marker.label} not to claim rendered world-marker presentation`,
+    );
+  }
 }
 
 async function captureScreenshot(page, filename, capturedScreenshots) {
@@ -1775,6 +1792,7 @@ async function main() {
       localHostageStart.hostage.route.length >= 3,
       "Expected hostage mode to expose a named escort route",
     );
+    assertEscortRoutesDoNotClaimWorldMarkers(localHostageStart);
     const localHostageClusterMarker = assertObjectiveMarker(localHostageStart, {
       kind: "hostage-cluster",
       label: localHostageStart.hostage.clusterLabel,
@@ -1946,9 +1964,12 @@ async function main() {
           enemy.ai.profile &&
           typeof enemy.ai.strategyAge === "number" &&
           typeof enemy.ai.strategyCooldownRemaining === "number" &&
-          typeof enemy.ai.objectiveIntent === "string",
+          typeof enemy.ai.objectiveIntent === "string" &&
+          enemy.ai.targetClaim &&
+          typeof enemy.ai.targetClaim.adjusted === "boolean" &&
+          typeof enemy.ai.targetClaim.reason === "string",
       ),
-      "Expected every bot debug snapshot to expose strategy profile, age/cooldown, and objective intent",
+      "Expected every bot debug snapshot to expose strategy profile, age/cooldown, objective intent, and target-claim data",
     );
     assert(
       aiOpeningState.enemies.some((enemy) => enemy.ai.strategy === "anchor_site") &&
@@ -2024,6 +2045,29 @@ async function main() {
     assert(
       delayedReceiver?.ai?.lastSharedContactAgo !== null,
       "Expected receiver to record delayed shared contact",
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const responders = (state?.enemies ?? [])
+            .filter((enemy) =>
+              enemy.id !== ${JSON.stringify(communicationCase.observerEnemyId)}
+              && enemy?.ai?.lastSharedContactAgo !== null
+            );
+          if (responders.length < 2) return false;
+          const buckets = new Set(responders.map((enemy) => enemy?.ai?.targetClaim?.bucket ?? enemy?.ai?.targetLabel));
+          return buckets.size >= 2
+            && responders.some((enemy) => enemy?.ai?.targetClaim?.adjusted === true);
+        })()
+      `,
+      5_000,
+    );
+    const communicationSplitState = await getState(localPage);
+    const sharedContactResponders = communicationSplitState.enemies.filter(
+      (enemy) =>
+        enemy.id !== communicationCase.observerEnemyId &&
+        enemy.ai.lastSharedContactAgo !== null,
     );
     const sightlineCase = await stageAiSightlineCase(localPage);
     await localPage.waitForExpression(
@@ -2453,6 +2497,13 @@ async function main() {
         immediateBehavior: immediateReceiver?.ai?.behavior ?? null,
         delayedBehavior: delayedReceiver?.ai?.behavior ?? null,
         delayedContactAgo: delayedReceiver?.ai?.lastSharedContactAgo ?? null,
+        responderTargetClaims: sharedContactResponders.map((enemy) => ({
+          id: enemy.id,
+          targetLabel: enemy.ai.targetLabel,
+          bucket: enemy.ai.targetClaim.bucket,
+          adjusted: enemy.ai.targetClaim.adjusted,
+          reason: enemy.ai.targetClaim.reason,
+        })),
       },
       difficultyShots: {
         easy: easyDifficultyShot,
@@ -2662,9 +2713,20 @@ async function main() {
       enemyRelayRouteCase.supportEnemyIds.includes(enemy.id),
     );
     const relaySupportTargets = new Set(relaySupports.map((enemy) => enemy.ai.targetLabel));
+    const relayEscortSupport = relaySupports.find(
+      (enemy) => enemy.ai.objectiveIntent === "carrier_escort",
+    );
     assert(
       relaySupportTargets.size >= 2,
       `Expected relay support bots to avoid clustering on one target, saw ${[...relaySupportTargets].join(", ")}`,
+    );
+    assert(
+      relayCarrier &&
+        relayEscortSupport &&
+        relayEscortSupport.ai.targetClaim.adjusted === true &&
+        relayEscortSupport.ai.targetClaim.reason === "carrier-escort-offset" &&
+        pointDistance2d(relayEscortSupport.ai.targetPosition, relayCarrier.position) >= 2,
+      `Expected carrier escort to hold an offset lane instead of stacking on the carrier, saw ${JSON.stringify(relayEscortSupport?.ai?.targetClaim ?? null)}`,
     );
     assert(
       relayCarrier?.ai?.route?.pathLabels?.length >= 1,
@@ -2778,14 +2840,24 @@ async function main() {
       `
         (() => {
           const state = window.__dustlineQa__?.getState();
-          const rescuer = (state?.enemies ?? [])
-            .find((enemy) => enemy.id === ${JSON.stringify(enemyHostageEscortCase.rescuerEnemyId)});
+          if (
+            state?.hostage?.phase === 'extracting' ||
+            (state?.round?.phase === 'resolution' && /extracted/i.test(state?.round?.result ?? ''))
+          ) {
+            return true;
+          }
+          const escortIds = ${JSON.stringify([
+            enemyHostageEscortCase.rescuerEnemyId,
+            ...enemyHostageEscortCase.supportEnemyIds,
+          ])};
+          const escortInZone = (state?.enemies ?? [])
+            .find((enemy) => escortIds.includes(enemy.id) && enemy.alive);
           const extraction = state?.hostage?.extractionPosition;
-          return rescuer
+          return escortInZone
             && extraction
             && Math.hypot(
-              (rescuer.position?.x ?? 999) - extraction.x,
-              (rescuer.position?.z ?? 999) - extraction.z
+              (escortInZone.position?.x ?? 999) - extraction.x,
+              (escortInZone.position?.z ?? 999) - extraction.z
             ) <= (state?.hostage?.extractionRadius ?? 0);
         })()
       `,
@@ -2793,7 +2865,13 @@ async function main() {
     );
     try {
       await localPage.waitForExpression(
-        "window.__dustlineQa__?.getState()?.hostage?.phase === 'extracting'",
+        `
+          (() => {
+            const state = window.__dustlineQa__?.getState();
+            return state?.hostage?.phase === 'extracting' ||
+              (state?.round?.phase === 'resolution' && /extracted/i.test(state?.round?.result ?? ''));
+          })()
+        `,
         5_000,
       );
     } catch (error) {
@@ -2813,6 +2891,8 @@ async function main() {
             phase: state?.hostage?.phase ?? null,
             roundPhase: state?.round?.phase ?? null,
             roundResult: state?.round?.result ?? null,
+            stateRescuerId: state?.hostage?.rescuerId ?? null,
+            stateRescuerName: state?.hostage?.rescuerName ?? null,
             extractedCount: state?.hostage?.extractedCount ?? null,
             hostageCount: state?.hostage?.hostages?.length ?? null,
             extractionRadius: state?.hostage?.extractionRadius ?? null,
@@ -2876,6 +2956,7 @@ async function main() {
       carrierRoute: relayCarrier?.ai?.route ?? null,
       supportIntents: relaySupports.map((enemy) => enemy.ai.objectiveIntent),
       supportTargets: relaySupports.map((enemy) => enemy.ai.targetLabel),
+      supportTargetClaims: relaySupports.map((enemy) => enemy.ai.targetClaim),
       defuserEnemyId: enemyRelayDefuseCase.defuserEnemyId,
       defuserIntent: relayDefuser?.ai?.objectiveIntent ?? null,
       defusePhase: enemyRelayDefuseState.bomb.phase,
