@@ -1940,13 +1940,11 @@ async function main() {
       `Expected extraction marker to expose extracting state, saw ${localHostageExtractingMarker.stateHint}`,
     );
 
-    const localHostageHud = await localPage.evaluate(`
-      ({
-        status: document.querySelector('[data-ui="objective-status"]')?.textContent?.trim() ?? '',
-        progress: document.querySelector('[data-ui="objective-progress-label"]')?.textContent?.trim() ?? ''
-      })
-    `);
     const localHostageHudShell = localHostageExtractHudShell;
+    const localHostageHud = {
+      status: localHostageHudShell.objectiveStatus,
+      progress: localHostageHudShell.objectiveProgress,
+    };
     assert(
       /clear/i.test(localHostageHud.progress),
       "Expected the local hostage HUD to expose extraction progress",

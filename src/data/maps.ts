@@ -204,6 +204,14 @@ const sandlineFoundryScene: SceneBlueprint = {
       cameraPosition: v(16, 6, -5),
       target: v(8, 2, -11),
     },
+    {
+      id: "shutter-gap",
+      label: "Shutter Gap",
+      description:
+        "Narrow Cobalt-side service opening into the west hall before Central Yard.",
+      cameraPosition: v(-7, 6.5, -20),
+      target: v(-16, 2, -14),
+    },
   ],
   primitives: [
     box("West perimeter", v(2, 9, 42), v(-30, 4.5, 0), "#5F564A"),
@@ -218,12 +226,16 @@ const sandlineFoundryScene: SceneBlueprint = {
     box("Generator hall outer wall", v(2, 6, 30), v(-21, 3, 1), "#6F665C"),
     box("Generator hall inner north", v(2, 6, 12), v(-11, 3, -7), "#7C7163"),
     box("Generator hall inner south", v(2, 6, 7), v(-11, 3, 11.5), "#7C7163"),
-    box("Generator hall north cap", v(10, 5, 2), v(-16, 2.5, -14), "#756B5D"),
+    box("Generator hall north cap west jamb", v(2.6, 5, 2), v(-19.7, 2.5, -14), "#756B5D"),
+    box("Generator hall north cap east jamb", v(3.1, 5, 2), v(-12.55, 2.5, -14), "#756B5D"),
     box("Generator hall south west jamb", v(2.4, 5, 2), v(-19.8, 2.5, 16), "#756B5D"),
     box("Generator hall south east jamb", v(2.4, 5, 2), v(-12.2, 2.5, 16), "#756B5D"),
     box("Generator core", v(4, 4, 4), v(-16, 2, 1), "#4A5457"),
     box("Generator hall south route band", v(5.2, 0.26, 5.4), v(-16, 0.36, 14), "#8A6A43"),
     box("Generator hall threshold stripe", v(4.6, 0.28, 0.7), v(-16, 0.38, 16.9), "#B49A62"),
+    box("Shutter gap service floor", v(5.4, 0.28, 4.6), v(-16, 0.36, -16.8), "#7E6B53"),
+    box("Shutter gap threshold stripe", v(3.2, 0.28, 0.7), v(-16, 0.38, -14.8), "#B49A62"),
+    box("Shutter gap defender crate", v(1.4, 1.6, 2.3), v(-13.7, 0.8, -17.3), "#6A6257"),
     box("South shed", v(8, 5, 6), v(-6.8, 2.5, 18), "#6F7651"),
     box("South low building", v(13, 4, 4), v(11, 2, 19), "#8A5E44"),
     box("South divider wall", v(6, 2.2, 1), v(4, 1.1, 11), "#756253"),
@@ -236,7 +248,7 @@ const sandlineFoundryScene: SceneBlueprint = {
     box("Broken arch pillar east", v(2, 6, 2), v(4, 3, -8), "#8D7C67"),
     box("Broken arch lintel", v(10, 2, 2), v(0, 7, -8), "#7A6856"),
     box("North bay hall", v(18, 7, 8), v(8, 3.5, -17), "#627487"),
-    box("North side stack", v(8, 6, 6), v(-13, 3, -18), "#6A6255"),
+    box("North service stack east", v(3.8, 6, 6), v(-10.9, 3, -18), "#6A6255"),
     box("Loading awning", v(10, 1, 4), v(8, 5.5, -11), "#8B503A"),
     box("Loading barrier", v(8, 2, 1), v(11, 1, -9), "#67615A"),
     box("Tunnel wall west", v(2, 5, 18), v(10, 2.5, 3), "#695A48"),
@@ -666,13 +678,13 @@ export const mapCatalog: MapDefinition[] = [
     spawnSetup:
       "Water Tower Court in the south and Blue Shutter Bay in the north, each with two immediate route choices.",
     cover:
-      "Crate island cover, low walls, tunnel boxes, loading barriers, and corridor corners.",
+      "Crate island cover, low walls, tunnel boxes, loading barriers, the Shutter Gap crate, and corridor corners.",
     chokePoints:
-      "Broken Arch mid-crossing, the narrow south Generator Hall entry, west-hall elbows, and the catwalk stair exit.",
+      "Broken Arch mid-crossing, the narrow south Generator Hall entry, the Cobalt-side Shutter Gap, west-hall elbows, and the catwalk stair exit.",
     landmark:
       "The east catwalk over the underpass defines the flank and overlooks both the central yard and loading bay.",
     tacticalSummary:
-      "Main lane pushes through Central Yard, a tighter left-side Generator Hall entry leaves Water Tower Court through a narrow west threshold, and a Drain Underpass flank rises into the East Catwalk before reconnecting near Blue Shutter Bay.",
+      "Main lane pushes through Central Yard, a tighter left-side Generator Hall entry leaves Water Tower Court through a narrow west threshold, Cobalt can contest mid through the Shutter Gap service opening, and a Drain Underpass flank rises into the East Catwalk before reconnecting near Blue Shutter Bay.",
     mainMap: true,
     preview: preview("#11140F", [
       rect(22, 22, 42, 44, "#586149"),
@@ -683,6 +695,7 @@ export const mapCatalog: MapDefinition[] = [
       rect(114, 84, 34, 22, "#9D825A"),
       route("129,168 129,132 129,116 129,92 129,56 129,28", ROUTE_COLORS.main),
       route("54,158 54,132 54,104 54,78 54,50 96,50", ROUTE_COLORS.corridor),
+      route("129,32 110,42 96,50", ROUTE_COLORS.corridor, true),
       route("208,150 208,126 208,104 208,80 194,60 164,60", ROUTE_COLORS.flank),
       circle(129, 164, 8, ROUTE_COLORS.spawn),
       circle(129, 32, 8, ROUTE_COLORS.spawn),
@@ -693,6 +706,7 @@ export const mapCatalog: MapDefinition[] = [
       text(129, 190, "Water Tower Court"),
       text(129, 114, "Central Yard"),
       text(54, 176, "Generator Hall", "preview__sub"),
+      text(88, 62, "Gap", "preview__sub"),
       text(208, 168, "Drain Underpass", "preview__sub"),
     ]),
     scene: sandlineFoundryScene,
@@ -725,8 +739,16 @@ export const mapCatalog: MapDefinition[] = [
           kind: "corridor",
           name: "Generator Hall",
           description:
-            "Roofless interior-feel corridor reached through the south west threshold, with tight turns, close cover, and quick rotations into mid.",
+            "Roofless interior-feel corridor reached through the south west threshold or the north Shutter Gap, with tight turns, close cover, and quick rotations into mid.",
           focusId: "corridor",
+        },
+        {
+          id: "shutter-gap",
+          kind: "corridor",
+          name: "Shutter Gap",
+          description:
+            "Short Cobalt-side service opening into the west hall that lets defenders contest Central Yard without a direct free angle onto Kiln Yard.",
+          focusId: "shutter-gap",
         },
         {
           id: "drain-underpass",
@@ -762,6 +784,12 @@ export const mapCatalog: MapDefinition[] = [
           focusId: "loading-bay",
         },
         {
+          name: "Shutter Gap",
+          description:
+            "Small north-west service opening and crate pocket where Cobalt can contest the Kiln Yard approach.",
+          focusId: "shutter-gap",
+        },
+        {
           name: "East Catwalk",
           description:
             "Semi-elevated platform that adds readable verticality without turning the arena into a parkour map.",
@@ -784,7 +812,7 @@ export const mapCatalog: MapDefinition[] = [
               "Kiln Yard",
               "Crate-island pressure point in the middle of the foundry yard.",
               "courtyard",
-              ["main-yard", "generator-hall"],
+              ["main-yard", "shutter-gap", "generator-hall"],
             ),
             bombSite(
               "shutter-lift",
