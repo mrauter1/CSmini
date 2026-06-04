@@ -821,6 +821,13 @@ async function forceDeath(page, attackerName) {
   await page.evaluate(`window.__dustlineQa__.forcePlayerDeath(${JSON.stringify(attackerName)})`);
 }
 
+async function downEnemy(page, combatantId) {
+  const downed = await page.evaluate(
+    `window.__dustlineQa__.downEnemy(${JSON.stringify(combatantId)})`,
+  );
+  assert(downed, `Expected to down enemy ${combatantId}`);
+}
+
 async function forceRoundActive(page) {
   await page.evaluate("window.__dustlineQa__.forceRoundActive()");
 }
@@ -2930,6 +2937,39 @@ async function main() {
     const hostageRescuer = enemyHostageEscortState.enemies.find(
       (enemy) => enemy.id === enemyHostageEscortCase.rescuerEnemyId,
     );
+    await downEnemy(localPage, enemyHostageEscortCase.rescuerEnemyId);
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const original = (state?.enemies ?? [])
+            .find((enemy) => enemy.id === ${JSON.stringify(enemyHostageEscortCase.rescuerEnemyId)});
+          return original?.alive === false &&
+            state?.hostage?.phase === 'escorting';
+        })()
+      `,
+      3_000,
+    );
+    await localPage.waitForExpression(
+      `
+        (() => {
+          const state = window.__dustlineQa__?.getState();
+          const rescuerId = state?.hostage?.rescuerId ?? null;
+          const replacement = (state?.enemies ?? []).find((enemy) => enemy.id === rescuerId);
+          return state?.hostage?.phase === 'escorting' &&
+            rescuerId &&
+            rescuerId !== ${JSON.stringify(enemyHostageEscortCase.rescuerEnemyId)} &&
+            replacement?.alive === true;
+        })()
+      `,
+      24_000,
+    );
+    const enemyHostageRelinkState = await getState(localPage);
+    const replacementHostageRescuerId = enemyHostageRelinkState.hostage.rescuerId;
+    assert(
+      enemyHostageEscortCase.supportEnemyIds.includes(replacementHostageRescuerId),
+      `Expected a support bot to pick up hostage escort, saw ${replacementHostageRescuerId}`,
+    );
     await localPage.waitForExpression(
       `
         (() => {
@@ -3072,6 +3112,7 @@ async function main() {
       supportIntents: enemyHostageEscortState.enemies
         .filter((enemy) => enemyHostageEscortCase.supportEnemyIds.includes(enemy.id))
         .map((enemy) => enemy.ai.objectiveIntent),
+      replacementRescuerId: replacementHostageRescuerId,
       defenderIntents: hostageDefenseIntents,
       phase: enemyHostageEscortState.hostage.phase,
       extractedCount: enemyHostageExtractedState.hostage.extractedCount,

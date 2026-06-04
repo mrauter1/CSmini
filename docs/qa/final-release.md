@@ -1,6 +1,6 @@
 # Final Release QA
 
-Date: `2026-06-03`
+Date: `2026-06-04`
 
 ## Scope
 
@@ -11,7 +11,7 @@ Final verification for the current presentation and release guardrail pass cover
 - solo-local smarter-bot difficulty selection with `easy`, `medium`, and `hard` (`medium` default)
 - solo bots using the same walk, crouch, jump, gravity, and collision contract as the player
 - smarter tactical-AI coverage for blocked LOS safety, delayed communication, repositioning, stuck recovery, objective pressure, and bounded solo-round resolution
-- human-like map-aware solo bot coverage for graph waypoint routing, non-repeated stuck jumps, independent strategies, target-claim deconfliction, damage-driven strategy switching, Relay carrier/support/defuse intent, and Evac hostage/extraction intent
+- human-like map-aware solo bot coverage for graph waypoint routing, non-repeated stuck jumps, independent strategies, target-claim deconfliction, damage-driven strategy switching, Relay carrier/support/defuse intent, Evac hostage/extraction intent, and Evac escort relink after the original rescuer is downed
 - objective marker visibility, HUD/world label matching, Sandline west-route reachability, roster-wide objective reachability, and final objective-map UX evidence
 - localMatch modularization ownership for objective markers, reachability, objective-bot evidence, HUD/debug snapshots, hostage actors, and scene setup
 - compact in-match HUD behavior, hold-Tab operations board, and viewport fullscreen control
@@ -25,14 +25,13 @@ Final verification for the current presentation and release guardrail pass cover
 - screenshot refresh for the shipped browser views
 - README and docs sweep for controls, modes, missions, and limitations
 
-Fresh objective-map UX and smarter-bot verifier reruns were completed on `2026-06-02`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper. A full `npm test` wrapper rerun was completed again on `2026-06-03` for the solo bot target-deconfliction update. Broader cloud/manual multiplayer command evidence remains from the earlier release pass and is not re-claimed as newly rerun in this bot-focused update.
+Fresh objective-map UX and smarter-bot verifier reruns were completed on `2026-06-02`, including a standalone `npm run qa:final` screenshot-refresh pass and the full `npm test` wrapper. A full `npm test` wrapper rerun was completed again on `2026-06-04` for the Evac escort relink update. Broader cloud/manual multiplayer command evidence remains from the earlier release pass and is not re-claimed as newly rerun in this bot-focused update.
 
 ## Commands Run
 
 ```bash
 npm run typecheck
 npm run build
-npm run qa:final
 npm test
 ```
 
@@ -40,8 +39,7 @@ Results on the current tree:
 
 - `npm run typecheck`: passed
 - `npm run build`: passed and produced static `dist/` output
-- `npm run qa:final`: passed and refreshed `assets/screenshots/` from the current `dist/` output
-- `npm test`: passed and returned successfully after rebuilding the app and running the full browser QA harness
+- `npm test`: passed and returned successfully after rebuilding the app, running the full browser QA harness, and refreshing `assets/screenshots/`
 
 Non-blocking note:
 
@@ -123,10 +121,10 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
   - player damage forced a strategy switch to `cover_reposition` with reason `recent-damage`
   - ordered difficulty danger stayed fair: `easy` `0.487s / 7.124 / 0.407`, `medium` `0.377s / 6.037 / 0.537`, `hard` `0.237s / 4.951 / 0.657`
   - bot fire interval now matches the player fire interval at `0.18s`, and enemy damage now matches player damage at `34`
-  - staged hard combat fired `6` shots over `1.71s` while still producing both hits and misses
+  - staged hard combat fired `6` shots over `2.04s` while still producing both hits and misses
   - an enemy-side `Kiln Yard` plant case proved objective-aware pressure and bounded solo-round resolution without deadlock
   - Relay-aware staging proved carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, an offset `carrier-escort-offset` support lane, a separate screen target, and defender `defuse_rotate` during planted/defusing state
-  - Evac-aware staging proved rescuer `escort_extract`, a graph route to declared route label `Drain Underpass` through `Loading Bay route offset`, escort support intent, attacking-escort extraction completion, and defender `hostage_cluster_anchor` / `hostage_lane_probe` intent
+  - Evac-aware staging proved rescuer `escort_extract`, a graph route to declared route label `Drain Underpass` through `Loading Bay route offset`, escort support intent, replacement rescuer `enemy-1` after the linked rescuer was downed, attacking-escort extraction completion, and defender `hostage_cluster_anchor` / `hostage_lane_probe` intent
   - shot model produced both hits and misses, with hit-chance dropping from `0.722` close-standing to `0.262` far-moving and `0.449` crouched-partial
   - enemy live fire emitted a playable distance-normalized world-fire audio event
 - Shared-room fallback:
@@ -142,7 +140,7 @@ The passing browser summary from the fresh `npm test` rerun explicitly covered t
 ## Originality And Screenshot Evidence
 
 - `docs/assets.md` records the shipped originality posture for teams, mission labels, map names, route callouts, HUD treatment, procedural audio, and low-poly geometry.
-- `assets/screenshots/` was refreshed by the final QA harness on `2026-06-03`, including:
+- `assets/screenshots/` was refreshed by the final QA harness on `2026-06-04`, including:
   - `01-menu-briefing.png`
   - `02-map-select-roster.png`
   - `03-sandline-spawn-view.png`

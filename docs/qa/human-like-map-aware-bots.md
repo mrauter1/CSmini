@@ -1,10 +1,10 @@
 # Human-Like Map-Aware Bots Analysis
 
-Date: 2026-06-03
+Date: 2026-06-04
 
 ## Scope
 
-This artifact covers the planning subgoal for the human-like solo bot pass, plus the follow-up target-deconfliction slice implemented on 2026-06-03.
+This artifact covers the planning subgoal for the human-like solo bot pass, plus the follow-up target-deconfliction and Evac escort relink slices implemented through 2026-06-04.
 
 The active implementation target remains Dustline Protocol's browser-only Vite/TypeScript/Three.js tactical FPS homage. The plan preserves `three` as the only runtime dependency, static Render-compatible output, original maps/assets/names, current controls, short round structure, shared player-equivalent movement, and the solo bot difficulty contract where `medium` is the clean-load default and the latest valid value restores from `localStorage` when storage works.
 
@@ -19,7 +19,7 @@ The active implementation target remains Dustline Protocol's browser-only Vite/T
 - `src/game/rounds.ts` owns the round shell: briefing, active, resolution, elimination/timeout resolution, and mission rotation through `resolveActiveMission()`.
 - `src/game/bombState.ts` owns Relay Charge runtime state: carrier assignment, carried/planting/planted/defusing phases, timers, serialization, carrier synchronization, and progress.
 - `src/game/hostageState.ts` owns Evac Escort runtime state: cluster, extraction zone, route points built from declared route IDs, hostage slots, securing/escorting/extracting phases, serialization, and progress.
-- `scripts/qa/finalVerification.mjs` now proves route-graph traversal, independent strategy/profile debug data, target-claim deconfliction for shared-contact responders and carrier escort support, objective-aware Relay/Evac intent, and the staged obstruction's non-repeated stuck-recovery jump behavior.
+- `scripts/qa/finalVerification.mjs` now proves route-graph traversal, independent strategy/profile debug data, target-claim deconfliction for shared-contact responders and carrier escort support, objective-aware Relay/Evac intent, Evac escort relink after the original rescuer is downed, and the staged obstruction's non-repeated stuck-recovery jump behavior.
 
 ## Current Navigation Model
 
@@ -201,12 +201,13 @@ Implemented on 2026-06-02 for subgoal `objective-aware-relay-and-evac-bots`.
 - Relay Charge carriers and other objective-driven bots keep their objective movement/intent when a close visible player appears, but they are now allowed to fire through the normal LOS, reaction, burst, miss, and cooldown gates instead of staring without shooting.
 - Relay Charge defenders treat both `planted` and active `defusing` states as urgent defuse rotation. Debug intent exposes `defuse_rotate`, and the existing bomb action path still owns plant, defuse, fuse, and round resolution.
 - Evac Escort attackers route rescuers through declared escort route labels before extraction. The resolver chooses the first declared route point the current bot can actually plan to through the graph, so a staged rescuer avoided a direct unreachable extraction path and planned to `Drain Underpass` through graph waypoints.
+- Evac Escort now treats a dead or missing escort owner as a broken link. Live attacking bots route back to the stopped hostage group, and the first suitable bot to reach them becomes the new escort owner without resetting hostage route progress.
 - Evac Escort support and defender intents are explicit in debug snapshots: `escort_extract`, `escort_flank_screen`, `hostage_cluster_anchor`, and `hostage_lane_probe`.
 - QA staging hooks in `scripts/qa/finalVerification.mjs` place bots in realistic live objective states, then let the shipped AI/update loop expose strategy, route, and objective-action behavior. The hooks do not add a second movement model or bypass the underlying plant/defuse/secure/escort/extract state machines.
 - Fresh `npm test` passed. The final QA summary reported:
   - Relay route: carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, support targets `Copper-2 escort` and `Generator Hall`.
   - Relay defuse: defender intent `defuse_rotate`, bomb phase `defusing`.
-  - Evac escort: rescuer intent `escort_extract`, route destination `Drain Underpass`, graph route via `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, defender intents `hostage_cluster_anchor` and `hostage_lane_probe`.
+  - Evac escort: rescuer intent `escort_extract`, route destination `Drain Underpass`, graph route via `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, replacement rescuer `enemy-1` after the original linked rescuer was downed, defender intents `hostage_cluster_anchor` and `hostage_lane_probe`.
   - Existing solo/shared objective flows still resolved: enemy-side Relay breach, local/shared Relay defuse, local/shared Evac extraction, and bounded solo round resolution.
 
 ## Final Browser QA And Docs Evidence
@@ -229,7 +230,7 @@ Completed on 2026-06-02 for subgoal `browser-qa-docs-and-final-evidence`.
   - recovery route `graph-route` via `Central Yard route offset`, `routeUsesGraph: true`, and `jumpCount: 0`
   - strategy switch `cover_reposition` with `strategyReason: recent-damage`
   - Relay carrier intent `carrier_site_commit`, support intents `carrier_escort` and `carrier_flank_screen`, support targets `Copper-2 escort lane` and `Drain Underpass`, and defender intent `defuse_rotate`
-  - Evac rescuer intent `escort_extract`, route destination `Drain Underpass`, graph waypoint `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, and defender intents `hostage_cluster_anchor` plus `hostage_lane_probe`
+  - Evac rescuer intent `escort_extract`, route destination `Drain Underpass`, graph waypoint `Loading Bay route offset`, support intents `escort_extract` and `escort_flank_screen`, replacement rescuer handoff after the linked rescuer is downed, and defender intents `hostage_cluster_anchor` plus `hostage_lane_probe`
   - local Relay breach, local Evac extraction/reset, shared Relay defuse, shared Evac extraction, and bounded solo enemy Relay breach
 - Fresh guardrail checks confirmed `three` remains the only runtime dependency and source/content additions did not introduce sprint, copied Counter-Strike names/assets/UI/maps/sounds, a second movement model, or a server/matchmaking requirement for solo bots.
 

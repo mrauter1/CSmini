@@ -34,6 +34,7 @@ declare global {
       returnToCatalog: () => void;
       getState: () => Record<string, unknown> | null;
       engageControls: () => void;
+      downEnemy: (combatantId: string) => boolean;
       setPose: (x: number, z: number, yaw: number, pitch?: number) => void;
       setCameraPose: (
         x: number,
@@ -281,6 +282,7 @@ if (navigator.webdriver || new URLSearchParams(window.location.search).has("qa")
     returnToCatalog: () => app.debugReturnToCatalog(),
     getState: () => app.debugGetState(),
     engageControls: () => app.debugEngageControls(),
+    downEnemy: (combatantId) => app.debugDownEnemy(combatantId),
     setPose: (x, z, yaw, pitch) => app.debugSetPose(x, z, yaw, pitch),
     setCameraPose: (x, y, z, yaw, pitch) => app.debugSetCameraPose(x, y, z, yaw, pitch),
     stageSharedRemotePose: (peerId, x, y, z, yaw) =>

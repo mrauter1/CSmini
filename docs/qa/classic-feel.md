@@ -66,7 +66,7 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
 - Opening strategy split: `anchor_site`, `route_probe`, `flank_rotate`
 - Damage-driven strategy switch: `cover_reposition` with reason `recent-damage`
 - Relay objective intent: `carrier_site_commit`, `carrier_escort`, `carrier_flank_screen`, and `defuse_rotate`
-- Evac objective intent: `escort_extract`, `escort_flank_screen`, `hostage_cluster_anchor`, and `hostage_lane_probe`
+- Evac objective intent: `escort_extract`, `escort_flank_screen`, replacement escort relink, `hostage_cluster_anchor`, and `hostage_lane_probe`
 - Enemy fire interval: `0.18s`
 - Engage distance: `20u`
 - Medium investigation window: `3.8s`
@@ -84,7 +84,7 @@ Rationale: the round shell stays short enough to keep pressure on the objective,
   - `easy`: `0.487s` reaction, `7.124` spread, `0.407` hit chance
   - `medium`: `0.377s` reaction, `6.037` spread, `0.537` hit chance
   - `hard`: `0.237s` reaction, `4.951` spread, `0.657` hit chance
-- Staged hard combat cadence: `6` shots over `1.71s`, with mixed hit/miss results in the staged firefight
+- Staged hard combat cadence: `6` shots over `2.04s`, with mixed hit/miss results in the staged firefight
 
 Rationale: the solo fireteam now closes space, crouches, jumps, lands, and routes around blocked traversals before considering a bounded stuck-recovery hop, so the threat comes from angle choice, timing, delayed communication, burst discipline, objective intent, and readable pressure rather than hidden bot-only locomotion. They still have time to react, miss, recover, reposition, and pressure objectives without snapping instantly into perfect hits.
 
@@ -100,7 +100,7 @@ Test surfaces used for the checklist:
 ### Checklist Results
 
 - Movement cadence: `pass`
-  Evidence: fresh same-window travel sample was `1.37` standing vs `0.79` crouched, with walk `8.6u/s` and crouch `4.82u/s`.
+  Evidence: fresh same-window travel sample was `1.72` standing vs `0.98` crouched, with walk `8.6u/s` and crouch `4.82u/s`.
 - Crouch readability: `pass`
   Evidence: camera dropped from `1.62` to `1.18` in the live sample, crouch speed stayed below standing pace, and recoil kick dropped from `0.8` standing to `0.58` crouched.
 - Jump readability: `pass`
@@ -110,7 +110,7 @@ Test surfaces used for the checklist:
 - Short round pacing: `pass`
   Evidence: the round shell stays at `4.5s` briefing / `72s` live / `5.5s` reset, while bomb fuse timing stays in the `11.9-15.8s` range and hostage secure/extract stays at `1.45s` / `1.8s`.
 - Objective pressure: `pass`
-  Evidence: fresh HUD samples showed solo bomb `14.6s to breach`, shared bomb `12.9s to breach`, solo hostage `0.7s to clear Water Tower Gate`, and shared hostage `0.6s to clear Water Tower Gate`.
+  Evidence: fresh HUD samples showed solo bomb `14.7s to breach`, shared bomb `12.9s to breach`, solo hostage `0.8s to clear Water Tower Gate`, and shared hostage `0.7s to clear Water Tower Gate`.
 - Cover-oriented combat: `pass`
   Evidence: the AI used `Crate stack west` as a real blocker, held fire at blocked visibility `0`, then entered `reposition` and objective pressure after contact and broken sight.
 - Squad coordination: `pass`
@@ -120,7 +120,7 @@ Test surfaces used for the checklist:
 - Objective resolution: `pass`
   Evidence: a staged enemy carrier planted at `Kiln Yard` and the same solo-local round resolved by breach without a forced round advance.
 - Objective-aware bot intent: `pass`
-  Evidence: Relay staging exposed carrier, escort, flank-screen, and defuse-rotate intent; Evac staging exposed escort extraction, escort flank support, hostage cluster anchor, and hostage lane probe intent through live debug snapshots.
+  Evidence: Relay staging exposed carrier, escort, flank-screen, and defuse-rotate intent; Evac staging exposed escort extraction, support relinking after the linked rescuer was downed, escort flank support, hostage cluster anchor, and hostage lane probe intent through live debug snapshots.
 - HUD clarity: `pass`
   Evidence: the solo HUD simultaneously exposed team `Amber Vanguard`, `Round 1`, `Round Live`, `Relay Charge`, and `Kiln Yard`; the shared HUD simultaneously exposed team context, `Round 2`, `Round Live`, `Evac Escort`, and `Loading Crew to Water Tower Gate`.
 

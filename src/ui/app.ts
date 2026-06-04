@@ -1467,6 +1467,10 @@ export class TacticalShellApp {
     this.exitMatchFlow("catalog");
   }
 
+  debugDownEnemy(combatantId: string): boolean {
+    return this.match?.debugDownEnemy(combatantId) ?? false;
+  }
+
   debugGetState(): Record<string, unknown> | null {
     const matchState = this.match?.debugSnapshot() ?? null;
     const roomSetupState = this.roomSetup

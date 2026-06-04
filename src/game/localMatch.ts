@@ -1445,6 +1445,24 @@ export class LocalMatch {
     this.emitSnapshot();
   }
 
+  debugDownEnemy(combatantId: string): boolean {
+    const enemy = this.enemies.find((entry) => entry.id === combatantId);
+    if (!enemy) {
+      return false;
+    }
+
+    enemy.health = 0;
+    if (enemy.alive) {
+      enemy.alive = false;
+      enemy.deaths += 1;
+    }
+    enemy.speed = 0;
+    enemy.moveBlend = 0;
+    this.pushFeed(`${enemy.name} dropped.`, 1.7);
+    this.emitSnapshot();
+    return true;
+  }
+
   debugForceNextRound(): void {
     this.applyRoundState(
       createBriefingRoundState(this.map, this.roundState.roundNumber + 1, this.roundNow()),
@@ -4541,6 +4559,63 @@ export class LocalMatch {
     );
   }
 
+  private hostageEscortLinkBroken(): boolean {
+    return (
+      this.hostageState?.phase === "escorting" &&
+      !this.bombCombatantById(this.hostageState.rescuerId)?.alive
+    );
+  }
+
+  private hostageEscortLinkPosition(): THREE.Vector3 | null {
+    if (!this.hostageState) {
+      return null;
+    }
+
+    const activeHostages = this.hostageState.hostages.filter((hostage) => !hostage.extracted);
+    if (activeHostages.length <= 0) {
+      return new THREE.Vector3(
+        this.hostageState.extraction.position[0],
+        0,
+        this.hostageState.extraction.position[2],
+      );
+    }
+
+    const position = activeHostages.reduce(
+      (sum, hostage) => sum.add(new THREE.Vector3(hostage.position[0], 0, hostage.position[2])),
+      new THREE.Vector3(),
+    );
+    return position.multiplyScalar(1 / activeHostages.length);
+  }
+
+  private hostageEscortRelinkRadius(): number {
+    if (!this.hostageState) {
+      return 0;
+    }
+
+    return this.allHostagesAtExtraction()
+      ? this.hostageState.extraction.radius
+      : Math.min(2.4, this.hostageState.cluster.radius * 0.55);
+  }
+
+  private hostageEscortRelinkAnchor(): TacticalAnchor | null {
+    if (!this.hostageState) {
+      return null;
+    }
+
+    const position = this.hostageEscortLinkPosition();
+    if (!position) {
+      return null;
+    }
+
+    return {
+      id: `objective:hostage-relink:${this.hostageState.cluster.id}`,
+      focusId: this.hostageState.cluster.focusId,
+      label: `${this.hostageState.cluster.label} escort link`,
+      kind: "objective",
+      position,
+    };
+  }
+
   private remoteHostageActorAtCluster(requireInteracting: boolean): RemoteActor | undefined {
     if (!this.hostageState) {
       return undefined;
@@ -4593,8 +4668,60 @@ export class LocalMatch {
     }
 
     if (this.hostageState.phase === "escorting") {
+      if (this.hostageEscortLinkBroken()) {
+        this.tryRelinkEnemyHostageEscort(now);
+        return;
+      }
+
       this.tryStartEnemyHostageExtraction(now);
     }
+  }
+
+  private tryRelinkEnemyHostageEscort(now: number): boolean {
+    if (
+      !this.hostageState ||
+      this.hostageState.phase !== "escorting" ||
+      this.activeMode !== "local" ||
+      (this.qaInvulnerable && !this.qaAllowEnemyObjectiveActions) ||
+      !this.hostageEscortLinkBroken()
+    ) {
+      return false;
+    }
+
+    const linkPosition = this.hostageEscortLinkPosition();
+    if (!linkPosition) {
+      return false;
+    }
+
+    const relinkRadius = this.hostageEscortRelinkRadius();
+    const relinker =
+      this.enemies
+        .filter(
+          (enemy) =>
+            enemy.alive &&
+            enemy.teamId === this.hostageState?.attackingTeam &&
+            this.enemyCanCommitObjectiveAction(enemy) &&
+            enemy.avatar.group.position.clone().setY(0).distanceTo(linkPosition) <= relinkRadius,
+        )
+        .sort(
+          (left, right) =>
+            left.avatar.group.position.clone().setY(0).distanceTo(linkPosition) -
+            right.avatar.group.position.clone().setY(0).distanceTo(linkPosition),
+        )[0] ?? null;
+
+    if (!relinker) {
+      return false;
+    }
+
+    this.hostageState = {
+      ...this.hostageState,
+      rescuerId: relinker.id,
+      rescuerName: relinker.name,
+      updatedAt: now,
+    };
+    this.pushFeed(`${relinker.name} picked up escort link.`, 1.2);
+    this.publishHostSnapshot(true);
+    return true;
   }
 
   private tryStartEnemyHostageExtraction(now: number): boolean {
@@ -4702,7 +4829,9 @@ export class LocalMatch {
 
     const rescuer = this.bombCombatantById(this.hostageState.rescuerId);
     if (!rescuer?.alive) {
-      return;
+      if (!this.tryRelinkEnemyHostageEscort(now)) {
+        return;
+      }
     }
 
     const hostageState = this.hostageState;
@@ -6197,6 +6326,7 @@ export class LocalMatch {
         this.hostageState.phase === "extracting";
       if (
         hostageMoving &&
+        !this.hostageEscortLinkBroken() &&
         (decision.objectiveIntent.startsWith("escort_") ||
           decision.objectiveIntent.startsWith("extraction_"))
       ) {
@@ -6512,8 +6642,15 @@ export class LocalMatch {
       const hostageMoving =
         this.hostageState.phase === "escorting" ||
         this.hostageState.phase === "extracting";
+      const relinkAnchor = this.hostageEscortLinkBroken()
+        ? this.hostageEscortRelinkAnchor()
+        : null;
 
       if (enemy.teamId === this.hostageState.attackingTeam) {
+        if (relinkAnchor) {
+          return relinkAnchor;
+        }
+
         if (this.hostageState.rescuerId === enemy.id || enemy.ai.role === "anchor") {
           return hostageMoving
             ? this.hostageEscortProgressAnchorForEnemy(enemy) ?? extractionAnchor
