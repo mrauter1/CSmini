@@ -918,6 +918,7 @@ export class LocalMatch {
       },
       bomb: this.debugBombStateSnapshot(roundNow, objectiveDebugLocal, objectiveDebugDistances),
       hostage: this.debugHostageStateSnapshot(roundNow, objectiveDebugLocal, objectiveDebugDistances),
+      hostageActors: this.hostageActorPoseSnapshot(),
       objectiveMarkers: buildObjectiveMarkerDebugState({
         map: this.map,
         roundState: this.roundState,
@@ -7924,6 +7925,27 @@ export class LocalMatch {
       now,
       local,
       distances,
+    });
+  }
+
+  private hostageActorPoseSnapshot(): Array<Record<string, unknown>> {
+    return [...this.hostageActors.values()].map((actor) => {
+      const rotation = actor.avatar.group.rotation;
+      const pitch = Number(rotation.x.toFixed(4));
+      const roll = Number(rotation.z.toFixed(4));
+
+      return {
+        id: actor.id,
+        visible: actor.avatar.group.visible,
+        position: this.toPoint(actor.avatar.group.position),
+        rotation: {
+          pitch,
+          yaw: Number(rotation.y.toFixed(4)),
+          roll,
+        },
+        moveBlend: Number(actor.moveBlend.toFixed(3)),
+        upright: Math.abs(pitch) <= 0.001 && Math.abs(roll) <= 0.001,
+      };
     });
   }
 

@@ -458,6 +458,7 @@ export function createHostageAvatar(): HostageAvatar {
       leftLegPivot.rotation.x = -swing;
       rightLegPivot.rotation.x = swing;
       torso.rotation.z = Math.sin(elapsed * 2.6) * 0.03 * moveBlend;
+      group.rotation.x = 0;
       group.rotation.z = 0;
       group.position.y = 0;
     },

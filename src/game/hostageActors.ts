@@ -11,6 +11,18 @@ export interface HostageActor {
   lastPosition: THREE.Vector3;
 }
 
+function setYawFromMovement(group: THREE.Object3D, movement: THREE.Vector3): void {
+  const directionX = movement.x;
+  const directionZ = movement.z;
+  if (directionX * directionX + directionZ * directionZ <= 0.0001) {
+    group.rotation.x = 0;
+    group.rotation.z = 0;
+    return;
+  }
+
+  group.rotation.set(0, Math.atan2(directionX, directionZ), 0);
+}
+
 export function syncHostageActors(
   scene: THREE.Scene,
   actors: Map<string, HostageActor>,
@@ -87,11 +99,7 @@ export function updateHostageActors(
     );
 
     if (moveAmount > 0.01) {
-      actor.avatar.group.lookAt(
-        nextPosition.x + movement.x,
-        1.2,
-        nextPosition.z + movement.z,
-      );
+      setYawFromMovement(actor.avatar.group, movement);
     }
 
     actor.avatar.update(now, actor.moveBlend, hostageState.phase !== "awaiting-rescue");

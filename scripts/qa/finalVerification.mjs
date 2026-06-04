@@ -523,6 +523,26 @@ function assertEscortRoutesDoNotClaimWorldMarkers(state) {
   }
 }
 
+function assertHostageActorsUpright(state, label) {
+  const hostageById = new Map(
+    (state?.hostage?.hostages ?? []).map((hostage) => [hostage.id, hostage]),
+  );
+  const activeActors = (state?.hostageActors ?? []).filter((actor) => {
+    const hostage = hostageById.get(actor.id);
+    return actor.visible === true && hostage && hostage.extracted !== true;
+  });
+
+  assert(activeActors.length > 0, `Expected visible hostage actors while checking ${label}`);
+  for (const actor of activeActors) {
+    const pitch = Math.abs(actor.rotation?.pitch ?? 999);
+    const roll = Math.abs(actor.rotation?.roll ?? 999);
+    assert(
+      actor.upright === true && pitch <= 0.001 && roll <= 0.001,
+      `Expected hostage actor ${actor.id} to stay upright during ${label}, saw ${JSON.stringify(actor.rotation)}`,
+    );
+  }
+}
+
 async function captureScreenshot(page, filename, capturedScreenshots) {
   assert(SCREENSHOTS.includes(filename), `Unexpected screenshot target: ${filename}`);
   await page.captureScreenshot(filename);
@@ -1902,6 +1922,7 @@ async function main() {
       28_000,
     );
     const localHostageRouteState = await getState(localPage);
+    assertHostageActorsUpright(localHostageRouteState, "local hostage escort");
     await localPage.waitForExpression(
       `(window.__dustlineQa__?.getState()?.hostage?.extractedCount ?? 0) === ${localHostageCount}`,
       28_000,
@@ -3416,6 +3437,7 @@ async function main() {
       18_000,
     );
     const sharedHostageRouteState = await getState(sharedPageOne);
+    assertHostageActorsUpright(sharedHostageRouteState, "shared hostage escort");
     await sharedPageOne.waitForExpression(
       `(window.__dustlineQa__?.getState()?.hostage?.extractedCount ?? 0) === ${sharedHostageCount}`,
       28_000,
